@@ -52,11 +52,6 @@ class BenchmarkDataset(ABC):
         """Returns the total number of test cases."""
         pass
 
-# might start with exact string matching, 
-# but as benchmarks get more sophisticated, 
-# will likely want to swap to an LLM-as-a-judge
-class Evaluator(ABC):
-    
     @abstractmethod
     def evaluate(self, query: str, expected_answer: str, actual_result: PredictionResult) -> dict:
         """
@@ -66,4 +61,7 @@ class Evaluator(ABC):
         Example Return:
         {"is_correct": True, "score": 1.0, "hallucinated": False}
         """
+        # might start with exact string matching, 
+        # but as benchmarks get more sophisticated, 
+        # will likely want to swap to an LLM-as-a-judge
         pass
