@@ -14,7 +14,6 @@ class BasicRAG(BaselineSystem):
 
     settings_initialized = False
 
-
     def setup(self, document_text: str) -> None:
         if not BasicRAG.settings_initialized:
             Settings.embed_model = HuggingFaceEmbedding(
@@ -28,9 +27,6 @@ class BasicRAG(BaselineSystem):
         self.db_uri = "./lancedb"
         if os.path.exists(self.db_uri):
             shutil.rmtree(self.db_uri) # Ensure a clean slate
-        
-        # Initialize LanceDB
-        db = lancedb.connect(self.db_uri)
 
         # Create a table
         # We define the vector store via LlamaIndex
@@ -49,14 +45,24 @@ class BasicRAG(BaselineSystem):
 
 
     def predict(self, query: str) -> PredictionResult:
-        query_engine = self.index.as_query_engine(similarity_top_k=5)
+        query_engine = self.index.as_query_engine(similarity_top_k=30)
         
         start_time = time.perf_counter()
         response = query_engine.query(query)
         end_time = time.perf_counter()
+
+        # Get retrieved context
+        retrieved_context = []
+        for source_node in response.source_nodes:
+            # source_node is a wrapper that contains the chunk and its similarity score
+            chunk_text = source_node.node.text
+            score = source_node.score
+            
+            retrieved_context.append((chunk_text, score))
         
         return PredictionResult(answer=response.response, 
-                                  execution_time_seconds=end_time-start_time)
+                                  execution_time_seconds=end_time-start_time,
+                                  retrieved_context=retrieved_context)
 
 
     def teardown(self) -> None:

@@ -30,7 +30,7 @@ pip install -r requirements.txt
 mkdir -p ~/.ollama
 curl -fsSL https://ollama.com/download/ollama-linux-amd64.tar.zst | tar --zstd -x -C ~/.ollama
 ~/.ollama/bin/ollama pull llama3
-nohup ~/.ollama/bin/ollama serve > ollama.log 2>&1 &
+CUDA_VISIBLE_DEVICES=0 nohup ~/.ollama/bin/ollama serve > ollama.log 2>&1 &
 ```
 
 Optional GPU wake lock (use only if you hit Ollama timeout / GPU sleep issues):
