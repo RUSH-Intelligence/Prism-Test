@@ -10,51 +10,45 @@ from .base import Benchmark, BenchmarkInfo
 from .common import parse_answers, substring_match_any
 
 
-RULER_SUBSETS = [
-    "cwe",
-    "fwe",
-    "niah_multikey_1",
-    "niah_multikey_2",
-    "niah_multikey_3",
-    "niah_multiquery",
-    "niah_multivalue",
-    "niah_single_1",
-    "niah_single_2",
-    "niah_single_3",
-    "qa_1",
-    "qa_2",
-    "vt",
-]
+PRISM1M_DEFAULT_PATH = "/scratch/sj157/Prism-Test/datasets/Prism-Data/1M/qa_1.jsonl"
 
 
-class Ruler32KBenchmark(Benchmark):
+class Prism1MBenchmark(Benchmark):
     @property
     def info(self) -> BenchmarkInfo:
         return BenchmarkInfo(
-            name="ruler32k",
-            description="RULER 32k long-context retrieval benchmark",
-            default_subsets=RULER_SUBSETS,
+            name="prism1m",
+            description="Local Prism 1M-context JSONL QA benchmark",
+            default_subsets=[PRISM1M_DEFAULT_PATH],
         )
 
     def load(self, subsets: List[str] | None = None) -> pd.DataFrame:
         subsets = self.resolve_subsets(subsets)
         frames: List[pd.DataFrame] = []
+
         for subset in subsets:
-            local_subset = Path(subset)
-            if local_subset.exists() and local_subset.is_file() and local_subset.suffix == ".jsonl":
-                ds = load_dataset("json", data_files=str(local_subset), split="train")
-            else:
-                ds = load_dataset("xAlg-AI/att-hub-ruler-32k", subset, split=subset)
+            jsonl_path = Path(subset)
+            if not jsonl_path.exists() or not jsonl_path.is_file() or jsonl_path.suffix != ".jsonl":
+                raise ValueError(f"prism1m expects a local .jsonl file path, got: {subset}")
+
+            ds = load_dataset("json", data_files=str(jsonl_path), split="train")
             sdf = ds.to_pandas()
+
+            for col in ["context", "question", "answer"]:
+                if col not in sdf.columns:
+                    raise ValueError(f"prism1m dataset is missing required column: {col}")
+
             if "task" not in sdf.columns:
-                sdf["task"] = local_subset.stem if local_subset.exists() else subset
+                sdf["task"] = jsonl_path.stem
             if "context_length" not in sdf.columns:
-                sdf["context_length"] = 1_000_000 if "1m" in subset.lower() else 32768
+                sdf["context_length"] = 1_000_000
             if "answer_prefix" not in sdf.columns:
                 sdf["answer_prefix"] = ""
             if "max_new_tokens" not in sdf.columns:
                 sdf["max_new_tokens"] = 64
+
             frames.append(sdf)
+
         return pd.concat(frames, ignore_index=True)
 
     def score(self, df: pd.DataFrame) -> Dict[str, object]:

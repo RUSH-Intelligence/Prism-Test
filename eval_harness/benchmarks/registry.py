@@ -7,6 +7,7 @@ from .base import Benchmark
 from .loft import LoftBenchmark
 from .longbench import LongBenchBenchmark
 from .longbenchv2 import LongBenchV2Benchmark
+from .prism1m import Prism1MBenchmark
 from .ruler32k import Ruler32KBenchmark
 
 
@@ -16,6 +17,7 @@ BENCHMARKS: Dict[str, Benchmark] = {
     "longbench": LongBenchBenchmark(),
     "longbenchv2": LongBenchV2Benchmark(),
     "loft": LoftBenchmark(),
+    "prism1m": Prism1MBenchmark(),
 }
 
 
