@@ -1,0 +1,14 @@
+llama-index-embeddings-huggingface
+llama-index-vector-stores-lancedb 
+llama-index-llms-ollama
+
+lancedb
+
+pandas
+numpy
+torch
+
+transformers
+sentence-transformers
+
+pyarrow

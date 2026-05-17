@@ -1,12 +1,12 @@
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
-from typing import List, Optional, Any
+from typing import List, Optional, Tuple
 
 @dataclass
 class PredictionResult:
     answer: str
     execution_time_seconds: float
-    retrieved_context: Optional[List[str]] = None
+    retrieved_context: Optional[List[Tuple[str, float]]] = None
     metadata: Optional[dict] = None # For custom attention timing or memory stats
 
 class BaselineSystem(ABC):
