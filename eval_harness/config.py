@@ -26,6 +26,7 @@ class EvalConfig:
     max_new_tokens: Optional[int] = None
     temperature: float = 0.0
     top_p: float = 1.0
+    system_prompt: Optional[str] = None
     seed: int = 42
 
     # Evaluation behavior.

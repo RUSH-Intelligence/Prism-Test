@@ -1,29 +1,36 @@
 # Standalone vLLM eval harness config for Prism-Test
 
-# Available benchmarks: aime, ruler32k, longbench, longbenchv2, loft, prism1m
+# Available benchmarks:
+# aime, aime2024, aime2025, infinite_bench, mock_benchmark,
+# ruler, ruler16k, ruler32k, ruler64k, ruler128k, longbench, longbenchv2,
+# loft, loft_rag, loogle, prism1m, zero_scrolls
 benchmark: prism1m
 # Optional comma-separated subset list. Leave null to use benchmark defaults.
 # Examples:
 #   "qa_1,qa_2" for ruler32k
+#   "passkey,kv_retrieval" for infinite_bench
 #   "narrativeqa,hotpotqa" for longbench
 #   "0shot" for longbenchv2
 #   "nq_32k,hotpotqa_32k" for loft
-subsets: /scratch/sj157/Prism-Test/datasets/Prism-Data/1M/qa_1.jsonl
+subsets: /scratch/sj157/Prism-Test/datasets/Prism-Data/128K/qa_8.jsonl
 
-model: Qwen/Qwen2.5-7B-Instruct-1M
+model: meta-llama/Llama-3.1-8B-Instruct
 
 # Runtime
-tensor_parallel_size: 8
+tensor_parallel_size: 1
 dtype: auto
-max_model_len: 1000000
+max_model_len: 232000
 gpu_memory_utilization: 0.9
 trust_remote_code: true
 enable_prefix_caching: true
 
 # Generation
-max_new_tokens: 64
+max_new_tokens: 256
 temperature: 0.0
 top_p: 1.0
+# Optional instruction prepended to each prompt.
+# Keep null for RULER-style benchmarks where prompts are already fully formatted.
+system_prompt: null
 seed: 42
 
 # Eval controls
@@ -37,4 +44,4 @@ output_dir: ./results
 # llm_kwargs:
 #   enforce_eager: true
 llm_kwargs:
-  decode_context_parallel_size: 8
+  decode_context_parallel_size: 1

@@ -9,26 +9,26 @@ from .common import extract_int_0_999, parse_answers
 from .registry import register_benchmark
 
 
-@register_benchmark("aime")
-class AIMEBenchmark(Benchmark):
+@register_benchmark("aime2024")
+class AIME2024Benchmark(Benchmark):
     @property
     def info(self) -> BenchmarkInfo:
         return BenchmarkInfo(
-            name="aime",
-            description="AIME math reasoning benchmark",
-            default_subsets=["aime2025"],
+            name="aime2024",
+            description="AIME 2024 math reasoning benchmark",
+            default_subsets=["aime2024"],
         )
 
     def load(self, subsets: List[str] | None = None) -> pd.DataFrame:
         del subsets
         from datasets import load_dataset
 
-        df = load_dataset("xAlg-AI/att-hub-aime2025", split="test").to_pandas()
-        df["task"] = "aime2025"
+        df = load_dataset("xAlg-AI/att-hub-aime2024", split="test").to_pandas()
+        df["task"] = "aime2024"
         if "answer_prefix" not in df.columns:
             df["answer_prefix"] = ""
         if "max_new_tokens" not in df.columns:
-            df["max_new_tokens"] = 32000
+            df["max_new_tokens"] = 512
         return df
 
     def score(self, df: pd.DataFrame) -> Dict[str, object]:
@@ -54,4 +54,5 @@ class AIMEBenchmark(Benchmark):
             "exact_match": round(exact * 100, 2),
             "extraction_rate": round(extraction_rate * 100, 2),
             "total_samples": total,
+            "task_scores": {"aime2024": {"exact_match": round(exact * 100, 2)}},
         }

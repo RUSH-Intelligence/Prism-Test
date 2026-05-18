@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Dict, List
 
 import pandas as pd
@@ -10,7 +9,7 @@ from .common import parse_answers, substring_match_any
 from .registry import register_benchmark
 
 
-RULER_SUBSETS = [
+RULER_TASK_SUBSETS = [
     "cwe",
     "fwe",
     "niah_multikey_1",
@@ -27,37 +26,35 @@ RULER_SUBSETS = [
 ]
 
 
-@register_benchmark("ruler32k")
-class Ruler32KBenchmark(Benchmark):
+@register_benchmark("ruler16k")
+class Ruler16KBenchmark(Benchmark):
     @property
     def info(self) -> BenchmarkInfo:
         return BenchmarkInfo(
-            name="ruler32k",
-            description="RULER 32k long-context retrieval benchmark",
-            default_subsets=RULER_SUBSETS,
+            name="ruler16k",
+            description="Ruler 16k benchmark",
+            default_subsets=RULER_TASK_SUBSETS,
         )
 
     def load(self, subsets: List[str] | None = None) -> pd.DataFrame:
         subsets = self.resolve_subsets(subsets)
         frames: List[pd.DataFrame] = []
+
         for subset in subsets:
-            local_subset = Path(subset)
             from datasets import load_dataset
 
-            if local_subset.exists() and local_subset.is_file() and local_subset.suffix == ".jsonl":
-                ds = load_dataset("json", data_files=str(local_subset), split="train")
-            else:
-                ds = load_dataset("xAlg-AI/att-hub-ruler-32k", subset, split=subset)
+            ds = load_dataset("xAlg-AI/att-hub-ruler-16k", subset, split=subset)
             sdf = ds.to_pandas()
             if "task" not in sdf.columns:
-                sdf["task"] = local_subset.stem if local_subset.exists() else subset
+                sdf["task"] = subset
             if "context_length" not in sdf.columns:
-                sdf["context_length"] = 1_000_000 if "1m" in subset.lower() else 32768
+                sdf["context_length"] = 16384
             if "answer_prefix" not in sdf.columns:
                 sdf["answer_prefix"] = ""
             if "max_new_tokens" not in sdf.columns:
                 sdf["max_new_tokens"] = 64
             frames.append(sdf)
+
         return pd.concat(frames, ignore_index=True)
 
     def score(self, df: pd.DataFrame) -> Dict[str, object]:
@@ -68,7 +65,8 @@ class Ruler32KBenchmark(Benchmark):
         for task, tdf in df.groupby("task"):
             vals = []
             for _, row in tdf.iterrows():
-                vals.append(substring_match_any(row.get("predicted_answer", ""), parse_answers(row.get("answer", []))))
+                refs = parse_answers(row.get("answer", row.get("answers", [])))
+                vals.append(substring_match_any(row.get("predicted_answer", ""), refs))
             task_scores[str(task)] = round((sum(vals) / len(vals)) * 100, 2) if vals else 0.0
 
         overall = sum(task_scores.values()) / len(task_scores) if task_scores else 0.0

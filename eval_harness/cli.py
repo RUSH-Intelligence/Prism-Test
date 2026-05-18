@@ -37,6 +37,7 @@ def _build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--subsets", default=None)
     run_parser.add_argument("--model", default=None)
     run_parser.add_argument("--max_new_tokens", type=int, default=None)
+    run_parser.add_argument("--system_prompt", default=None)
     run_parser.add_argument("--max_requests", type=int, default=None)
     run_parser.add_argument("--fraction", type=float, default=None)
 
@@ -56,6 +57,7 @@ def main() -> None:
         "subsets": args.subsets,
         "model": args.model,
         "max_new_tokens": args.max_new_tokens,
+        "system_prompt": args.system_prompt,
         "max_requests": args.max_requests,
         "fraction": args.fraction,
     }

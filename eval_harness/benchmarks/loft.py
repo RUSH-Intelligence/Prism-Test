@@ -4,10 +4,10 @@ import ast
 from typing import Dict, List
 
 import pandas as pd
-from datasets import load_dataset
 
 from .base import Benchmark, BenchmarkInfo
 from .common import normalize_text, parse_answers, substring_match_any
+from .registry import register_benchmark
 
 
 LOFT_SUBSETS = [
@@ -34,6 +34,7 @@ def _extract_list_like_prediction(text: str) -> List[str]:
     return [raw]
 
 
+@register_benchmark("loft", aliases=["loft_rag"])
 class LoftBenchmark(Benchmark):
     @property
     def info(self) -> BenchmarkInfo:
@@ -54,6 +55,8 @@ class LoftBenchmark(Benchmark):
             ds_name = "_".join(parts[:-1])
             length = parts[-1]
             hf_id = f"f20180301/loft-rag-{ds_name}-{length}"
+            from datasets import load_dataset
+
             dsd = load_dataset(hf_id)
             subframes = []
             for split in ["dev", "test"]:

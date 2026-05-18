@@ -44,7 +44,8 @@ class EvalRunner:
             torch.cuda.manual_seed_all(seed)
 
     def _build_prompt(self, context: str, question: str, answer_prefix: str) -> str:
-        return f"{context}\n\nQuestion:\n{question}\n\nAnswer:\n{answer_prefix}"
+        # Use only the raw prompt from datasets without additional wrappers.
+        return context
 
     def _load_dataset(self) -> None:
         subsets = None

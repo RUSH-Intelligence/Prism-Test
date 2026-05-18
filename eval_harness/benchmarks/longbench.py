@@ -3,19 +3,22 @@ from __future__ import annotations
 from typing import Dict, List
 
 import pandas as pd
-from datasets import load_dataset
 
 from .base import Benchmark, BenchmarkInfo
 from .common import parse_answers, token_f1_any
+from .registry import register_benchmark
 
 
 LONG_BENCH_SUBSETS = [
     "narrativeqa", "qasper", "multifieldqa_en", "multifieldqa_zh", "hotpotqa", "2wikimqa", "musique",
     "dureader", "gov_report", "qmsum", "multi_news", "vcsum", "trec", "triviaqa", "samsum", "lsht",
     "passage_count", "passage_retrieval_en", "passage_retrieval_zh", "lcc", "repobench-p",
+    "qasper_e", "multifieldqa_en_e", "hotpotqa_e", "2wikimqa_e", "gov_report_e", "multi_news_e",
+    "trec_e", "triviaqa_e", "samsum_e", "passage_count_e", "passage_retrieval_en_e", "lcc_e", "repobench-p_e",
 ]
 
 
+@register_benchmark("longbench")
 class LongBenchBenchmark(Benchmark):
     @property
     def info(self) -> BenchmarkInfo:
@@ -29,6 +32,8 @@ class LongBenchBenchmark(Benchmark):
         subsets = self.resolve_subsets(subsets)
         frames: List[pd.DataFrame] = []
         for subset in subsets:
+            from datasets import load_dataset
+
             ds = load_dataset("Xnhyacinth/LongBench", subset, split="test")
             sdf = ds.to_pandas()
             sdf["task"] = subset

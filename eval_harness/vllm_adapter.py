@@ -39,6 +39,8 @@ class VLLMAdapter:
             kwargs["max_model_len"] = max_model_len
         kwargs.update(llm_kwargs)
         self._llm = LLM(**kwargs)
+        # Store tokenizer for direct tokenization (bypasses chat template)
+        self._tokenizer = self._llm.get_tokenizer()
 
     def generate(self, prompts: List[str], gen_cfg: VLLMGenerateConfig) -> List[str]:
         sampling = SamplingParams(
@@ -46,7 +48,21 @@ class VLLMAdapter:
             top_p=gen_cfg.top_p,
             max_tokens=gen_cfg.max_tokens,
         )
-        outputs = self._llm.generate(prompts, sampling_params=sampling, use_tqdm=False)
+        
+        # Tokenize prompts directly to bypass automatic chat template application
+        # This follows the pattern from sparse-attention-hub adapter
+        prompt_token_ids = []
+        for prompt in prompts:
+            token_ids = self._tokenizer.encode(prompt)
+            prompt_token_ids.append(token_ids)
+        
+        # Pass token IDs positionally to stay compatible with vLLM API keyword changes.
+        outputs = self._llm.generate(
+            prompt_token_ids,
+            sampling_params=sampling,
+            use_tqdm=False,
+        )
+        
         texts: List[str] = []
         for output in outputs:
             if not output.outputs:

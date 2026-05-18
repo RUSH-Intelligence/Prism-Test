@@ -4,15 +4,16 @@ from pathlib import Path
 from typing import Dict, List
 
 import pandas as pd
-from datasets import load_dataset
 
 from .base import Benchmark, BenchmarkInfo
 from .common import parse_answers, substring_match_any
+from .registry import register_benchmark
 
 
 PRISM1M_DEFAULT_PATH = "/scratch/sj157/Prism-Test/datasets/Prism-Data/1M/qa_1.jsonl"
 
 
+@register_benchmark("prism1m")
 class Prism1MBenchmark(Benchmark):
     @property
     def info(self) -> BenchmarkInfo:
@@ -31,8 +32,17 @@ class Prism1MBenchmark(Benchmark):
             if not jsonl_path.exists() or not jsonl_path.is_file() or jsonl_path.suffix != ".jsonl":
                 raise ValueError(f"prism1m expects a local .jsonl file path, got: {subset}")
 
-            ds = load_dataset("json", data_files=str(jsonl_path), split="train")
-            sdf = ds.to_pandas()
+            # Read local jsonl directly to avoid HF datasets cache writes.
+            sdf = pd.read_json(jsonl_path, lines=True)
+
+            # Support legacy/raw Prism files that use input/outputs instead of
+            # context/question/answer.
+            if "context" not in sdf.columns and "input" in sdf.columns:
+                sdf["context"] = sdf["input"]
+            if "question" not in sdf.columns:
+                sdf["question"] = ""
+            if "answer" not in sdf.columns and "outputs" in sdf.columns:
+                sdf["answer"] = sdf["outputs"]
 
             for col in ["context", "question", "answer"]:
                 if col not in sdf.columns:
@@ -45,7 +55,7 @@ class Prism1MBenchmark(Benchmark):
             if "answer_prefix" not in sdf.columns:
                 sdf["answer_prefix"] = ""
             if "max_new_tokens" not in sdf.columns:
-                sdf["max_new_tokens"] = 64
+                sdf["max_new_tokens"] = 512
 
             frames.append(sdf)
 
