@@ -13,6 +13,9 @@ class EvalConfig:
     benchmark: str = "ruler32k"
     subsets: Optional[str] = None
 
+    # Inference backend: "vllm" or "rag"
+    backend: str = "vllm"
+
     # Model and runtime.
     model: str = "meta-llama/Llama-3.1-8B-Instruct"
     tensor_parallel_size: int = 1
@@ -59,7 +62,7 @@ class EvalConfig:
         components = [
             self.benchmark,
             self.model.replace("/", "--"),
-            "vllm",
+            self.backend,
             f"t{self.temperature:g}",
             f"p{self.top_p:g}",
         ]

@@ -1,10 +1,10 @@
-# Standalone vLLM eval harness config for Prism-Test
+# Standalone vLLM and RAG eval harness config for Prism-Test
 
 # Available benchmarks:
 # aime, aime2024, aime2025, infinite_bench, mock_benchmark,
 # ruler, ruler16k, ruler32k, ruler64k, ruler128k, longbench, longbenchv2,
 # loft, loft_rag, loogle, prism1m, zero_scrolls
-benchmark: prism1m
+benchmark: longbench
 # Optional comma-separated subset list. Leave null to use benchmark defaults.
 # Examples:
 #   "qa_1,qa_2" for ruler32k
@@ -12,9 +12,11 @@ benchmark: prism1m
 #   "narrativeqa,hotpotqa" for longbench
 #   "0shot" for longbenchv2
 #   "nq_32k,hotpotqa_32k" for loft
-subsets: /scratch/sj157/Prism-Test/datasets/Prism-Data/128K/qa_8.jsonl
+subsets: qasper
 
-model: meta-llama/Llama-3.1-8B-Instruct
+backend: rag    # vllm or rag
+
+model: meta-llama/Llama-3.1-8B-Instruct   # ignored if backend = rag
 
 # Runtime
 tensor_parallel_size: 1
@@ -35,7 +37,7 @@ seed: 42
 
 # Eval controls
 fraction: 1.0
-max_requests: 1
+max_requests: 256
 query_aware: false
 
 output_dir: ./results

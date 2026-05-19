@@ -14,7 +14,7 @@ from tqdm import tqdm
 
 from .config import EvalConfig
 from .benchmarks.registry import available_benchmarks, get_benchmark
-from .vllm_adapter import VLLMAdapter, VLLMGenerateConfig
+from .rag_adapter import RAGAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,7 @@ class EvalRunner:
     def __init__(self, config: EvalConfig) -> None:
         self.config = config
         self.benchmark = get_benchmark(config.benchmark)
-        self.adapter: VLLMAdapter | None = None
+        self.adapter: VLLMAdapter | RAGAdapter | None = None
         self.df: pd.DataFrame | None = None
         self._setup_logging()
         self._set_seed(config.seed)
@@ -83,17 +83,21 @@ class EvalRunner:
         logger.info("Loaded %d evaluation rows", len(df))
 
     def _setup_adapter(self) -> None:
-        self.adapter = VLLMAdapter(
-            model=self.config.model,
-            tensor_parallel_size=self.config.tensor_parallel_size,
-            dtype=self.config.dtype,
-            max_model_len=self.config.max_model_len,
-            gpu_memory_utilization=self.config.gpu_memory_utilization,
-            trust_remote_code=self.config.trust_remote_code,
-            enable_prefix_caching=self.config.enable_prefix_caching,
-            seed=self.config.seed,
-            **(self.config.llm_kwargs or {}),
-        )
+        if self.config.backend == "rag":
+            self.adapter = RAGAdapter()
+        else:
+            from .vllm_adapter import VLLMAdapter
+            self.adapter = VLLMAdapter(
+                model=self.config.model,
+                tensor_parallel_size=self.config.tensor_parallel_size,
+                dtype=self.config.dtype,
+                max_model_len=self.config.max_model_len,
+                gpu_memory_utilization=self.config.gpu_memory_utilization,
+                trust_remote_code=self.config.trust_remote_code,
+                enable_prefix_caching=self.config.enable_prefix_caching,
+                seed=self.config.seed,
+                **(self.config.llm_kwargs or {}),
+            )
 
     def _run_generation(self) -> None:
         assert self.df is not None
@@ -104,26 +108,32 @@ class EvalRunner:
 
         grouped = self.df.groupby("context", sort=False)
         for context, group in tqdm(grouped, total=self.df["context"].nunique(), desc="Generating"):
-            prompts: List[str] = []
-            for _, row in group.iterrows():
-                prompts.append(
-                    self._build_prompt(
-                        context=context,
-                        question=str(row["question"]),
-                        answer_prefix=str(row["answer_prefix"]),
+            if isinstance(self.adapter, RAGAdapter):
+                questions = [str(row["question"]) for _, row in group.iterrows()]
+                answers = self.adapter.generate_for_context(context, questions)
+            else:
+                prompts: List[str] = []
+                for _, row in group.iterrows():
+                    prompts.append(
+                        self._build_prompt(
+                            context=context,
+                            question=str(row["question"]),
+                            answer_prefix=str(row["answer_prefix"]),
+                        )
                     )
+
+                max_tokens = self.config.max_new_tokens
+                if max_tokens is None:
+                    max_tokens = int(group["max_new_tokens"].iloc[0])
+
+                from .vllm_adapter import VLLMGenerateConfig
+                gen_cfg = VLLMGenerateConfig(
+                    max_tokens=max_tokens,
+                    temperature=self.config.temperature,
+                    top_p=self.config.top_p,
                 )
+                answers = self.adapter.generate(prompts, gen_cfg)
 
-            max_tokens = self.config.max_new_tokens
-            if max_tokens is None:
-                max_tokens = int(group["max_new_tokens"].iloc[0])
-
-            gen_cfg = VLLMGenerateConfig(
-                max_tokens=max_tokens,
-                temperature=self.config.temperature,
-                top_p=self.config.top_p,
-            )
-            answers = self.adapter.generate(prompts, gen_cfg)
             self.df.loc[group.index, "predicted_answer"] = answers
 
             if torch.cuda.is_available():
