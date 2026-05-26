@@ -35,6 +35,7 @@ class EvalConfig:
     # Evaluation behavior.
     fraction: float = 1.0
     max_requests: Optional[int] = None
+    max_requests_per_subset: Optional[Dict[str, int]] = None
     query_aware: bool = False
     output_dir: str = "./results"
 
@@ -54,6 +55,19 @@ class EvalConfig:
             )
         if self.llm_kwargs is None:
             self.llm_kwargs = {}
+        if self.max_requests_per_subset is None:
+            self.max_requests_per_subset = {}
+        else:
+            cleaned: Dict[str, int] = {}
+            for key, value in self.max_requests_per_subset.items():
+                name = str(key).strip()
+                if not name:
+                    continue
+                ivalue = int(value)
+                if ivalue < 0:
+                    raise ValueError(f"max_requests_per_subset[{name}] must be >= 0, got {ivalue}")
+                cleaned[name] = ivalue
+            self.max_requests_per_subset = cleaned
 
     def get_results_dir(self) -> Path:
         base = Path(self.output_dir)

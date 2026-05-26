@@ -15,6 +15,15 @@ def normalize_text(text: str) -> str:
 
 
 def parse_answers(value) -> List[str]:
+    # Handle ndarray/Series-like values without a hard numpy dependency.
+    if hasattr(value, "tolist") and not isinstance(value, (str, bytes)):
+        try:
+            listed = value.tolist()
+            if isinstance(listed, (list, tuple)):
+                return [str(v) for v in listed]
+        except Exception:
+            pass
+
     if isinstance(value, list):
         return [str(v) for v in value]
     if isinstance(value, tuple):
@@ -24,12 +33,21 @@ def parse_answers(value) -> List[str]:
     if isinstance(value, str):
         s = value.strip()
         if s.startswith("[") and s.endswith("]"):
+            # Handle numpy-style formatting: ['a' 'b' 'c'] (no commas).
+            if re.search(r"'\s+'|\"\s+\"", s):
+                quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", s)
+                recovered = [a or b for a, b in quoted if (a or b)]
+                if recovered:
+                    return recovered
             try:
                 parsed = ast.literal_eval(s)
                 if isinstance(parsed, (list, tuple)):
                     return [str(v) for v in parsed]
             except Exception:
-                pass
+                quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", s)
+                recovered = [a or b for a, b in quoted if (a or b)]
+                if recovered:
+                    return recovered
         return [s]
     return [str(value)]
 

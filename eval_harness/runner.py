@@ -44,8 +44,38 @@ class EvalRunner:
             torch.cuda.manual_seed_all(seed)
 
     def _build_prompt(self, context: str, question: str, answer_prefix: str) -> str:
-        # Use only the raw prompt from datasets without additional wrappers.
-        return context
+        # Match sparse-attention-hub request assembly for RULER benchmarks.
+        return f"{context}{question}{answer_prefix}"
+
+    @staticmethod
+    def _apply_max_requests(
+        df: pd.DataFrame,
+        max_requests: int | None,
+        max_requests_per_subset: Dict[str, int] | None,
+    ) -> pd.DataFrame:
+        if max_requests is None and not max_requests_per_subset:
+            return df
+        if max_requests is not None and max_requests <= 0:
+            return df.head(0)
+
+        subset_limits = max_requests_per_subset or {}
+
+        # Apply request cap per task/subset when available.
+        if "task" in df.columns:
+            parts: List[pd.DataFrame] = []
+            for task, task_df in df.groupby("task", sort=False):
+                limit = subset_limits.get(str(task), max_requests)
+                if limit is None:
+                    parts.append(task_df)
+                elif limit <= 0:
+                    parts.append(task_df.head(0))
+                else:
+                    parts.append(task_df.head(limit))
+            return pd.concat(parts, ignore_index=True) if parts else df.head(0)
+
+        if max_requests is None:
+            return df
+        return df.head(max_requests)
 
     def _load_dataset(self) -> None:
         subsets = None
@@ -62,8 +92,11 @@ class EvalRunner:
         if self.config.fraction < 1.0:
             df = df.sample(frac=self.config.fraction, random_state=self.config.seed)
 
-        if self.config.max_requests is not None:
-            df = df.head(self.config.max_requests)
+        df = self._apply_max_requests(
+            df,
+            self.config.max_requests,
+            self.config.max_requests_per_subset,
+        )
 
         for col in ["context", "question"]:
             if col not in df.columns:
