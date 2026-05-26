@@ -35,6 +35,7 @@ def _build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--config_file", default="./evaluate_config.yaml")
     run_parser.add_argument("--benchmark", default=None)
     run_parser.add_argument("--subsets", default=None)
+    run_parser.add_argument("--backend", default=None)
     run_parser.add_argument("--model", default=None)
     run_parser.add_argument("--max_new_tokens", type=int, default=None)
     run_parser.add_argument("--system_prompt", default=None)
@@ -55,6 +56,7 @@ def main() -> None:
     overrides: Dict[str, Any] = {
         "benchmark": args.benchmark,
         "subsets": args.subsets,
+        "backend": args.backend,
         "model": args.model,
         "max_new_tokens": args.max_new_tokens,
         "system_prompt": args.system_prompt,

@@ -14,7 +14,7 @@ benchmark: ruler32k
 #   "nq_32k,hotpotqa_32k" for loft
 subsets: niah_multikey_2,niah_multikey_3
 
-backend: vllm    # vllm or rag
+backend: hf   # vllm, hf, or rag
 
 model: meta-llama/Llama-3.1-8B-Instruct   # ignored if backend = rag
 
@@ -25,6 +25,18 @@ max_model_len: 50000
 gpu_memory_utilization: 0.9
 trust_remote_code: true
 enable_prefix_caching: true
+
+# Long-context compression for research backends (especially backend: hf).
+enable_long_context_compression: false
+compression_sink_tokens: 32
+compression_local_tokens: 4096
+# null means use all remaining budget after sink/local.
+compression_top_k_tokens: null
+# Expand each selected middle token by +/- span//2 before merge.
+compression_span_tokens: 32
+
+# Naive HF ReAttention scorer setting: query window size used for per-layer QK scoring.
+hf_naive_reattn_query_tokens: 128
 
 # Generation
 max_new_tokens: 128
@@ -45,7 +57,8 @@ query_aware: false
 output_dir: ./results
 
 # Extra vLLM LLM(...) kwargs can go here, for example:
+# Should remove if using hf backend
 # llm_kwargs:
 #   enforce_eager: true
-llm_kwargs:
-  decode_context_parallel_size: 1
+# llm_kwargs:
+#   decode_context_parallel_size: 1

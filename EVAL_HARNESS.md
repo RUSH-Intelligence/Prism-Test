@@ -1,8 +1,8 @@
-# Prism-Test vLLM Eval Harness
+# Prism-Test Eval Harness
 
 This is a fully standalone evaluation harness for Prism-Test.
 
-It runs vLLM inference and computes benchmark metrics inside Prism-Test itself.
+It runs backend inference (`vllm`, `hf`, or `rag`) and computes benchmark metrics inside Prism-Test itself.
 
 ## Supported benchmarks
 
@@ -35,6 +35,8 @@ It runs vLLM inference and computes benchmark metrics inside Prism-Test itself.
 - `eval_harness/config.py`: run configuration and output naming
 - `eval_harness/benchmarks/`: standalone benchmark loaders and scorers
 - `eval_harness/vllm_adapter.py`: vLLM model wrapper
+- `eval_harness/hf_adapter.py`: HuggingFace model wrapper with naive ReAttention-style compression path
+- `eval_harness/long_context.py`: shared long-context selection and compression helpers
 - `eval_harness/rag/base.py`: `RAGSystem` ABC and `PredictionResult` dataclass
 - `eval_harness/rag/one_pass_rag.py`: OnePassRAG implementation
 - `eval_harness/rag_adapter.py`: RAG inference backend wrapper
@@ -84,6 +86,10 @@ Each run writes to:
 - The harness batches by shared context for efficient long-context evaluation.
 - Prefix caching is enabled by default for better throughput on repeated contexts.
 - If your model needs custom vLLM settings, add them under `llm_kwargs` in `evaluate_config.yaml`.
+- `backend: hf` supports a research-first naive ReAttention implementation that computes per-layer
+  QK relevance scores over middle tokens, keeps sink and local tokens, and then runs generation on
+  the selected prompt.
+- This HF path is intentionally naive (accuracy-first / iteration-first), and can be slower than vLLM.
 
 ---
 

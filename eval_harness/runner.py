@@ -23,7 +23,7 @@ class EvalRunner:
     def __init__(self, config: EvalConfig) -> None:
         self.config = config
         self.benchmark = get_benchmark(config.benchmark)
-        self.adapter: VLLMAdapter | RAGAdapter | None = None
+        self.adapter: VLLMAdapter | HFAdapter | RAGAdapter | None = None
         self.df: pd.DataFrame | None = None
         self._setup_logging()
         self._set_seed(config.seed)
@@ -118,8 +118,26 @@ class EvalRunner:
     def _setup_adapter(self) -> None:
         if self.config.backend == "rag":
             self.adapter = RAGAdapter()
+        elif self.config.backend == "hf":
+            from .hf_adapter import HFAdapter
+
+            self.adapter = HFAdapter(
+                model=self.config.model,
+                dtype=self.config.dtype,
+                max_model_len=self.config.max_model_len,
+                trust_remote_code=self.config.trust_remote_code,
+                seed=self.config.seed,
+                enable_long_context_compression=self.config.enable_long_context_compression,
+                compression_sink_tokens=self.config.compression_sink_tokens,
+                compression_local_tokens=self.config.compression_local_tokens,
+                compression_top_k_tokens=self.config.compression_top_k_tokens,
+                compression_span_tokens=self.config.compression_span_tokens,
+                hf_naive_reattn_query_tokens=self.config.hf_naive_reattn_query_tokens,
+                **(self.config.llm_kwargs or {}),
+            )
         else:
             from .vllm_adapter import VLLMAdapter
+
             self.adapter = VLLMAdapter(
                 model=self.config.model,
                 tensor_parallel_size=self.config.tensor_parallel_size,
@@ -159,12 +177,22 @@ class EvalRunner:
                 if max_tokens is None:
                     max_tokens = int(group["max_new_tokens"].iloc[0])
 
-                from .vllm_adapter import VLLMGenerateConfig
-                gen_cfg = VLLMGenerateConfig(
-                    max_tokens=max_tokens,
-                    temperature=self.config.temperature,
-                    top_p=self.config.top_p,
-                )
+                if self.config.backend == "hf":
+                    from .hf_adapter import HFGenerateConfig
+
+                    gen_cfg = HFGenerateConfig(
+                        max_tokens=max_tokens,
+                        temperature=self.config.temperature,
+                        top_p=self.config.top_p,
+                    )
+                else:
+                    from .vllm_adapter import VLLMGenerateConfig
+
+                    gen_cfg = VLLMGenerateConfig(
+                        max_tokens=max_tokens,
+                        temperature=self.config.temperature,
+                        top_p=self.config.top_p,
+                    )
                 answers = self.adapter.generate(prompts, gen_cfg)
 
             self.df.loc[group.index, "predicted_answer"] = answers

@@ -13,7 +13,7 @@ class EvalConfig:
     benchmark: str = "ruler32k"
     subsets: Optional[str] = None
 
-    # Inference backend: "vllm" or "rag"
+    # Inference backend: "vllm", "hf", or "rag"
     backend: str = "vllm"
 
     # Model and runtime.
@@ -24,6 +24,16 @@ class EvalConfig:
     gpu_memory_utilization: float = 0.9
     trust_remote_code: bool = True
     enable_prefix_caching: bool = True
+
+    # Long-context compression controls (for research backends).
+    enable_long_context_compression: bool = False
+    compression_sink_tokens: int = 32
+    compression_local_tokens: int = 4096
+    compression_top_k_tokens: Optional[int] = None
+    compression_span_tokens: int = 32
+
+    # HF naive ReAttention scorer controls.
+    hf_naive_reattn_query_tokens: int = 128
 
     # Generation.
     max_new_tokens: Optional[int] = None
@@ -43,6 +53,8 @@ class EvalConfig:
     llm_kwargs: Optional[Dict[str, Any]] = None
 
     def __post_init__(self) -> None:
+        if self.backend not in {"vllm", "hf", "rag"}:
+            raise ValueError(f"backend must be one of vllm|hf|rag, got {self.backend}")
         if not (0.0 < self.fraction <= 1.0):
             raise ValueError(f"fraction must be in (0, 1], got {self.fraction}")
         if not (0.0 <= self.temperature):
@@ -52,6 +64,28 @@ class EvalConfig:
         if not (0.0 < self.gpu_memory_utilization <= 1.0):
             raise ValueError(
                 f"gpu_memory_utilization must be in (0, 1], got {self.gpu_memory_utilization}"
+            )
+        if self.compression_sink_tokens < 0:
+            raise ValueError(
+                f"compression_sink_tokens must be >= 0, got {self.compression_sink_tokens}"
+            )
+        if self.compression_local_tokens < 0:
+            raise ValueError(
+                f"compression_local_tokens must be >= 0, got {self.compression_local_tokens}"
+            )
+        if self.compression_top_k_tokens is not None and self.compression_top_k_tokens < 0:
+            raise ValueError(
+                "compression_top_k_tokens must be >= 0 when provided, "
+                f"got {self.compression_top_k_tokens}"
+            )
+        if self.compression_span_tokens < 0:
+            raise ValueError(
+                f"compression_span_tokens must be >= 0, got {self.compression_span_tokens}"
+            )
+        if self.hf_naive_reattn_query_tokens <= 0:
+            raise ValueError(
+                "hf_naive_reattn_query_tokens must be > 0, "
+                f"got {self.hf_naive_reattn_query_tokens}"
             )
         if self.llm_kwargs is None:
             self.llm_kwargs = {}
