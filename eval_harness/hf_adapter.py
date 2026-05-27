@@ -6,10 +6,10 @@ from typing import Any, List, Optional, Sequence
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+from baselines import ReAttentionTopKSelector
 from .long_context import (
     LongContextCompressionConfig,
     merge_budgeted_indices,
-    select_topk_indices_from_scores,
 )
 
 
@@ -20,18 +20,11 @@ class HFGenerateConfig:
     top_p: float = 1.0
 
 
-def _repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
-    batch, num_key_value_heads, slen, head_dim = hidden_states.shape
-    if n_rep == 1:
-        return hidden_states
-    hidden_states = hidden_states[:, :, None, :, :].expand(batch, num_key_value_heads, n_rep, slen, head_dim)
-    return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
-
-
 class HFAdapter:
     def __init__(
         self,
         model: str,
+        baseline: Optional[str] = None,
         dtype: str = "auto",
         trust_remote_code: bool = True,
         seed: int = 42,
@@ -42,9 +35,20 @@ class HFAdapter:
         compression_top_k_tokens: Optional[int] = None,
         compression_span_tokens: int = 32,
         hf_naive_reattn_query_tokens: int = 128,
+        hf_reattn_query_chunk_tokens: int = 32,
+        hf_reattn_vote_top_k: int = 4,
+        hf_reattn_streaming: bool = False,
+        hf_reattn_streaming_chunk_tokens: int = 4096,
         **model_kwargs: Any,
     ) -> None:
         del seed
+        self._baseline = baseline
+
+        if self._baseline not in {None, "reattention_topk"}:
+            raise ValueError(
+                f"Unsupported HF baseline: {self._baseline}. "
+                "Expected one of: null, reattention_topk"
+            )
 
         self._tokenizer = AutoTokenizer.from_pretrained(model, trust_remote_code=trust_remote_code)
         if self._tokenizer.pad_token_id is None:
@@ -75,14 +79,20 @@ class HFAdapter:
             resolved_max_len = getattr(self._model.config, "max_position_embeddings", None)
 
         self._compression_cfg = LongContextCompressionConfig(
-            enabled=enable_long_context_compression,
+            enabled=(enable_long_context_compression or self._baseline is not None),
             max_context_len=resolved_max_len,
             sink_tokens=compression_sink_tokens,
             local_tokens=compression_local_tokens,
             top_k_tokens=compression_top_k_tokens,
             span_tokens=compression_span_tokens,
         )
-        self._naive_query_tokens = max(int(hf_naive_reattn_query_tokens), 1)
+        self._reattn_topk_selector = ReAttentionTopKSelector(
+            query_tokens=hf_naive_reattn_query_tokens,
+            query_chunk_tokens=hf_reattn_query_chunk_tokens,
+            vote_top_k=hf_reattn_vote_top_k,
+            streaming=hf_reattn_streaming,
+            streaming_chunk_tokens=hf_reattn_streaming_chunk_tokens,
+        )
 
     def _build_budget(self, seq_len: int) -> tuple[list[int], list[int], list[int], int]:
         max_context_len = int(self._compression_cfg.max_context_len or 0)
@@ -103,51 +113,10 @@ class HFAdapter:
             top_k_budget = min(max(int(self._compression_cfg.top_k_tokens), 0), remaining_budget)
         return sink_indices, local_indices, candidate_indices, top_k_budget
 
-    def _naive_layerwise_qk_scores(self, input_ids: torch.Tensor, candidate_indices: Sequence[int]) -> List[float]:
-        if not candidate_indices:
-            return []
-
-        with torch.no_grad():
-            outputs = self._model(input_ids=input_ids, output_hidden_states=True, use_cache=False)
-        hidden_states = outputs.hidden_states
-        if hidden_states is None:
-            raise RuntimeError("Model did not return hidden_states; cannot compute naive ReAttention scores")
-
-        layers = getattr(self._model, "model", None)
-        if layers is None or not hasattr(layers, "layers"):
-            raise RuntimeError("Unsupported architecture for naive ReAttention scorer: missing model.layers")
-
-        per_layer_scores: List[torch.Tensor] = []
-        candidate_tensor = torch.tensor(candidate_indices, device=input_ids.device, dtype=torch.long)
-
-        for layer_idx, layer in enumerate(layers.layers):
-            hs = hidden_states[layer_idx]
-            attn = layer.self_attn
-            q_proj = attn.q_proj
-            k_proj = attn.k_proj
-
-            q_start = max(0, hs.shape[1] - self._naive_query_tokens)
-            query_hs = hs[:, q_start:, :]
-            key_hs = hs.index_select(1, candidate_tensor)
-
-            q = q_proj(query_hs)
-            k = k_proj(key_hs)
-
-            num_heads = getattr(attn, "num_heads")
-            num_kv_heads = getattr(attn, "num_key_value_heads", num_heads)
-            head_dim = getattr(attn, "head_dim")
-
-            q = q.view(1, -1, num_heads, head_dim).transpose(1, 2)
-            k = k.view(1, -1, num_kv_heads, head_dim).transpose(1, 2)
-            k = _repeat_kv(k, max(num_heads // num_kv_heads, 1))
-
-            layer_scores = torch.einsum("bhqd,bhkd->bhqk", q, k).mean(dim=(1, 2)).squeeze(0)
-            per_layer_scores.append(layer_scores.to(torch.float32))
-
-        stacked = torch.stack(per_layer_scores, dim=0).mean(dim=0)
-        return stacked.detach().cpu().tolist()
-
     def _compress_token_ids(self, token_ids: Sequence[int]) -> List[int]:
+        if self._baseline is None:
+            return list(token_ids)
+
         seq_len = len(token_ids)
         if (
             not self._compression_cfg.enabled
@@ -162,11 +131,12 @@ class HFAdapter:
             return [token_ids[idx] for idx in kept]
 
         input_ids = torch.tensor([token_ids], dtype=torch.long, device=self._model.device)
-        scores = self._naive_layerwise_qk_scores(input_ids=input_ids, candidate_indices=candidate_indices)
-        topk_indices = select_topk_indices_from_scores(
+        topk_indices = self._reattn_topk_selector.select_indices(
+            model=self._model,
+            input_ids=input_ids,
             candidate_indices=candidate_indices,
-            scores=scores,
             top_k=top_k_budget,
+            token_ids=token_ids,
         )
 
         from .long_context import CompressionBudget

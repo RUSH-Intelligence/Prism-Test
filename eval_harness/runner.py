@@ -123,6 +123,7 @@ class EvalRunner:
 
             self.adapter = HFAdapter(
                 model=self.config.model,
+                baseline=self.config.baseline,
                 dtype=self.config.dtype,
                 max_model_len=self.config.max_model_len,
                 trust_remote_code=self.config.trust_remote_code,
@@ -133,6 +134,10 @@ class EvalRunner:
                 compression_top_k_tokens=self.config.compression_top_k_tokens,
                 compression_span_tokens=self.config.compression_span_tokens,
                 hf_naive_reattn_query_tokens=self.config.hf_naive_reattn_query_tokens,
+                hf_reattn_query_chunk_tokens=self.config.hf_reattn_query_chunk_tokens,
+                hf_reattn_vote_top_k=self.config.hf_reattn_vote_top_k,
+                hf_reattn_streaming=self.config.hf_reattn_streaming,
+                hf_reattn_streaming_chunk_tokens=self.config.hf_reattn_streaming_chunk_tokens,
                 **(self.config.llm_kwargs or {}),
             )
         else:

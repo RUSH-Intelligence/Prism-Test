@@ -36,6 +36,7 @@ def _build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--benchmark", default=None)
     run_parser.add_argument("--subsets", default=None)
     run_parser.add_argument("--backend", default=None)
+    run_parser.add_argument("--baseline", default=None)
     run_parser.add_argument("--model", default=None)
     run_parser.add_argument("--max_new_tokens", type=int, default=None)
     run_parser.add_argument("--system_prompt", default=None)
@@ -57,6 +58,7 @@ def main() -> None:
         "benchmark": args.benchmark,
         "subsets": args.subsets,
         "backend": args.backend,
+        "baseline": args.baseline,
         "model": args.model,
         "max_new_tokens": args.max_new_tokens,
         "system_prompt": args.system_prompt,

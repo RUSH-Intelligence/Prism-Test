@@ -4,7 +4,7 @@
 # aime, aime2024, aime2025, infinite_bench, mock_benchmark,
 # ruler, ruler16k, ruler32k, ruler64k, ruler128k, longbench, longbenchv2,
 # loft, loft_rag, loogle, prism1m, zero_scrolls
-benchmark: ruler32k
+benchmark: loft
 # Optional comma-separated subset list. Leave null to use benchmark defaults.
 # Examples:
 #   "qa_1,qa_2" for ruler32k
@@ -12,16 +12,20 @@ benchmark: ruler32k
 #   "narrativeqa,hotpotqa" for longbench
 #   "0shot" for longbenchv2
 #   "nq_32k,hotpotqa_32k" for loft
-subsets: niah_multikey_2,niah_multikey_3
+subsets: nq_128k,hotpotqa_128k,musique_128k,qampari_128k,quest_128k
 
 backend: hf   # vllm, hf, or rag
+# Baseline selector strategy for long-context methods.
+# Current option: reattention_topk
+# Set to null to use backend default behavior.
+baseline: reattention_topk
 
 model: meta-llama/Llama-3.1-8B-Instruct   # ignored if backend = rag
 
 # Runtime
 tensor_parallel_size: 1
 dtype: auto
-max_model_len: 50000
+max_model_len: 131072
 gpu_memory_utilization: 0.9
 trust_remote_code: true
 enable_prefix_caching: true
@@ -29,7 +33,7 @@ enable_prefix_caching: true
 # Long-context compression for research backends (especially backend: hf).
 enable_long_context_compression: false
 compression_sink_tokens: 32
-compression_local_tokens: 4096
+compression_local_tokens: 2048
 # null means use all remaining budget after sink/local.
 compression_top_k_tokens: null
 # Expand each selected middle token by +/- span//2 before merge.
@@ -37,6 +41,13 @@ compression_span_tokens: 32
 
 # Naive HF ReAttention scorer setting: query window size used for per-layer QK scoring.
 hf_naive_reattn_query_tokens: 128
+# Query chunk size for prefill voting aggregation across multiple queries.
+hf_reattn_query_chunk_tokens: 1024
+# Per head/chunk vote proposals over middle candidates.
+hf_reattn_vote_top_k: 4
+# Streaming selector mode: score candidates in chunks instead of one full forward pass.
+hf_reattn_streaming: false
+hf_reattn_streaming_chunk_tokens: 4096
 
 # Generation
 max_new_tokens: 128
@@ -52,6 +63,10 @@ fraction: 1.0
 max_requests_per_subset:
   qa_1: 100
   qa_2: 100
+  niah_multikey_2: 100
+  niah_multikey_3: 100
+  vt: 100
+  fwe: 100
 query_aware: false
 
 output_dir: ./results
