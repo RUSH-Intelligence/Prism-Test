@@ -17,6 +17,11 @@ except ImportError:
     Gemma3ForConditionalGeneration = None  # type: ignore[assignment]
 
 try:
+    from transformers import Mistral3ForConditionalGeneration
+except ImportError:
+    Mistral3ForConditionalGeneration = None  # type: ignore[assignment]
+
+try:
     from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 except ImportError:
     ALL_ATTENTION_FUNCTIONS = None
@@ -62,9 +67,17 @@ class HFAdapter:
     ) -> None:
         del seed, max_model_len  # unused at HF load time
 
-        self._tokenizer = AutoTokenizer.from_pretrained(
-            model, trust_remote_code=trust_remote_code
-        )
+        tokenizer_kwargs: dict[str, Any] = {"trust_remote_code": trust_remote_code}
+        if "mistral" in model.lower() or "ministral" in model.lower():
+            tokenizer_kwargs["fix_mistral_regex"] = True
+
+        try:
+            self._tokenizer = AutoTokenizer.from_pretrained(model, **tokenizer_kwargs)
+        except TypeError:
+            # Older tokenizer classes may not accept fix_mistral_regex.
+            tokenizer_kwargs.pop("fix_mistral_regex", None)
+            self._tokenizer = AutoTokenizer.from_pretrained(model, **tokenizer_kwargs)
+
         if self._tokenizer.pad_token_id is None:
             self._tokenizer.pad_token_id = self._tokenizer.eos_token_id
 
@@ -229,41 +242,40 @@ def _resolve_dtype(dtype: str) -> Optional[torch.dtype]:
 
 def _load_model(model_name: str, load_kwargs: dict[str, Any]) -> PreTrainedModel:
     explicit_impl = load_kwargs.pop("attn_implementation", None)
-    is_gemma3 = "gemma-3" in model_name.lower()
     use_gemma3_conditional = False
+    use_mistral3_conditional = False
 
-    if is_gemma3 and Gemma3ForConditionalGeneration is not None:
-        try:
-            cfg = AutoConfig.from_pretrained(model_name, trust_remote_code=load_kwargs.get("trust_remote_code", True))
-            architectures = [a.lower() for a in (getattr(cfg, "architectures", None) or [])]
-            model_type = str(getattr(cfg, "model_type", "")).lower()
-            # Only use conditional class when the checkpoint architecture expects it.
-            use_gemma3_conditional = (
-                "gemma3forconditionalgeneration" in architectures or model_type == "gemma3"
-            )
-        except Exception:
-            # If config probing fails, stay on AutoModelForCausalLM for compatibility.
-            use_gemma3_conditional = False
+    try:
+        cfg = AutoConfig.from_pretrained(model_name, trust_remote_code=load_kwargs.get("trust_remote_code", True))
+        architectures = [a.lower() for a in (getattr(cfg, "architectures", None) or [])]
+        model_type = str(getattr(cfg, "model_type", "")).lower()
+        use_gemma3_conditional = Gemma3ForConditionalGeneration is not None and (
+            "gemma3forconditionalgeneration" in architectures
+        )
+        use_mistral3_conditional = Mistral3ForConditionalGeneration is not None and (
+            "mistral3forconditionalgeneration" in architectures or model_type in {"mistral3", "ministral3"}
+        )
+    except Exception:
+        # If config probing fails, stay on AutoModelForCausalLM for compatibility.
+        pass
 
     if use_gemma3_conditional:
-        if explicit_impl is not None:
-            m = Gemma3ForConditionalGeneration.from_pretrained(
-                model_name, attn_implementation=explicit_impl, **load_kwargs
-            )
-            logger.info("Loaded Gemma3 conditional model with attn_implementation=%s", explicit_impl)
-            return m
+        return _load_conditional_model(
+            Gemma3ForConditionalGeneration,
+            model_name,
+            load_kwargs,
+            explicit_impl,
+            family_label="Gemma3 conditional",
+        )
 
-        for attn_impl in ("flash_attention_2", "sdpa"):
-            try:
-                m = Gemma3ForConditionalGeneration.from_pretrained(
-                    model_name, attn_implementation=attn_impl, **load_kwargs
-                )
-                logger.info("Loaded Gemma3 conditional model with attn_implementation=%s", attn_impl)
-                return m
-            except (ImportError, ValueError, RuntimeError):
-                continue
-
-        return Gemma3ForConditionalGeneration.from_pretrained(model_name, **load_kwargs)
+    if use_mistral3_conditional:
+        return _load_conditional_model(
+            Mistral3ForConditionalGeneration,
+            model_name,
+            load_kwargs,
+            explicit_impl,
+            family_label="Mistral3 conditional",
+        )
 
     if explicit_impl is not None:
         m = AutoModelForCausalLM.from_pretrained(
@@ -282,6 +294,33 @@ def _load_model(model_name: str, load_kwargs: dict[str, Any]) -> PreTrainedModel
         except (ImportError, ValueError, RuntimeError):
             continue
     return AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
+
+
+def _load_conditional_model(
+    model_cls,
+    model_name: str,
+    load_kwargs: dict[str, Any],
+    explicit_impl: Optional[str],
+    family_label: str,
+) -> PreTrainedModel:
+    if explicit_impl is not None:
+        m = model_cls.from_pretrained(
+            model_name, attn_implementation=explicit_impl, **load_kwargs
+        )
+        logger.info("Loaded %s model with attn_implementation=%s", family_label, explicit_impl)
+        return m
+
+    for attn_impl in ("flash_attention_2", "sdpa"):
+        try:
+            m = model_cls.from_pretrained(
+                model_name, attn_implementation=attn_impl, **load_kwargs
+            )
+            logger.info("Loaded %s model with attn_implementation=%s", family_label, attn_impl)
+            return m
+        except (ImportError, ValueError, RuntimeError):
+            continue
+
+    return model_cls.from_pretrained(model_name, **load_kwargs)
 
 
 def _unique_attention_name() -> str:

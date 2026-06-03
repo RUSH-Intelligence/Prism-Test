@@ -22,12 +22,31 @@ class _FakePipe:
         return {"answer": f"ok:{len(context)}"}
 
 
+class _FakeCacheAdapter:
+    def initialize_cache(self, cache):
+        return cache
+
+    def get_seq_length(self, cache):
+        return 5
+
+
+class _HybridLikeCache:
+    def __len__(self):
+        return 3
+
+    def get_seq_length(self, layer_idx=0):
+        if layer_idx == 1:
+            raise ValueError("linear layer")
+        return 5
+
+
 class TestResearchAdapterSketchSelection(unittest.TestCase):
     def _shell(self, cfg: CacheConfig):
         adapter = object.__new__(ResearchAdapter)
         adapter._cache_cfg = cfg
         adapter._max_context_length = cfg.max_context_length
         adapter._pipe = _FakePipe()
+        adapter._cache_adapter = _FakeCacheAdapter()
         return adapter
 
     def test_build_none_sketch(self):
@@ -70,6 +89,7 @@ class TestResearchAdapterGenerate(unittest.TestCase):
         adapter._max_context_length = 4096
         adapter._sketch = None
         adapter._pipe = _FakePipe()
+        adapter._cache_adapter = _FakeCacheAdapter()
 
         cfg = HFGenerateConfig(max_tokens=5)
         outs = adapter.generate(["hello", "world"], cfg)
@@ -79,18 +99,19 @@ class TestResearchAdapterGenerate(unittest.TestCase):
         self.assertEqual(adapter._pipe.calls[0][1]["max_new_tokens"], 5)
         self.assertEqual(adapter._pipe.calls[0][1]["max_context_length"], 4096)
 
+    def test_log_cache_seq_lengths_tolerates_linear_layers(self):
+        # Should not raise when some layers do not expose sequence lengths.
+        ResearchAdapter._log_cache_seq_lengths(_HybridLikeCache(), _FakeCacheAdapter())
+
 
 class TestResearchAdapterInitRopeScaling(unittest.TestCase):
     @patch("eval_harness.research_adapter.SketchTextGenerationPipeline")
     @patch("eval_harness.research_adapter.HFAdapter.__init__", autospec=True)
-    @patch("eval_harness.research_adapter.AutoConfig.from_pretrained")
-    def test_auto_rope_scaling_enabled_when_requested_ctx_exceeds_base(
-        self, mock_cfg, mock_hf_init, mock_pipe
+    @patch("eval_harness.research_adapter.create_cache_adapter")
+    def test_init_builds_cache_adapter_and_pipeline(
+        self, mock_create_cache_adapter, mock_hf_init, mock_pipe
     ):
-        class _Cfg:
-            max_position_embeddings = 8192
-
-        mock_cfg.return_value = _Cfg()
+        mock_create_cache_adapter.return_value = _FakeCacheAdapter()
 
         def _hf_init(inst, **kwargs):
             inst._model = object()
@@ -99,11 +120,10 @@ class TestResearchAdapterInitRopeScaling(unittest.TestCase):
         mock_hf_init.side_effect = _hf_init
 
         cfg = CacheConfig(max_context_length=65536)
-        ResearchAdapter(model="dummy/model", cache_config=cfg)
+        adapter = ResearchAdapter(model="dummy/model", cache_config=cfg)
 
-        kwargs = mock_hf_init.call_args.kwargs
-        self.assertIn("rope_scaling", kwargs)
-        self.assertAlmostEqual(kwargs["rope_scaling"]["factor"], 8.0)
+        self.assertTrue(mock_create_cache_adapter.called)
+        self.assertIsNotNone(adapter._cache_adapter)
 
 
 if __name__ == "__main__":

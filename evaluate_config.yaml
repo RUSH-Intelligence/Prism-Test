@@ -4,7 +4,7 @@
 #   aime, aime2024, aime2025, infinite_bench, mock_benchmark,
 #   ruler, ruler16k, ruler32k, ruler64k, ruler128k,
 #   longbench, longbenchv2, loft, loft_rag, loogle, prism1m, zero_scrolls
-benchmark: ruler64k
+benchmark: ruler16k
 # Optional comma-separated subset list. Leave null for benchmark defaults.
 # Examples: "qa_1,qa_2" for ruler64k | "passkey,kv_retrieval" for infinite_bench
 subsets: qa_1
@@ -12,7 +12,7 @@ subsets: qa_1
 # Inference backend: vllm | hf | rag | research
 backend: research
 
-model: google/gemma-3-1b-it
+model: mistralai/Ministral-3-3B-Instruct-2512
 
 # Runtime
 tensor_parallel_size: 1
@@ -41,7 +41,7 @@ output_dir: ./results
 llm_kwargs:
   attn_implementation: flash_attention_2
   cache_config:
-    sketch_name: knorm
-    compression_ratio: 0.6
+    sketch_name: none
+    compression_ratio: 0
     max_context_length: 65536
     log_cache_seq_len: true

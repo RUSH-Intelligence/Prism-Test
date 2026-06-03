@@ -6,11 +6,14 @@ from eval_harness.research_adapter import CacheConfig
 
 
 class TestCacheConfigCompatibility(unittest.TestCase):
-    def test_legacy_fields_still_exist(self):
+    def test_legacy_fields_removed(self):
         cfg = CacheConfig()
-        self.assertTrue(hasattr(cfg, "global_size"))
-        self.assertTrue(hasattr(cfg, "local_size"))
-        self.assertTrue(hasattr(cfg, "selection"))
+        self.assertFalse(hasattr(cfg, "global_size"))
+        self.assertFalse(hasattr(cfg, "local_size"))
+        self.assertFalse(hasattr(cfg, "mid_budget"))
+        self.assertFalse(hasattr(cfg, "span_size"))
+        self.assertFalse(hasattr(cfg, "selection"))
+        self.assertFalse(hasattr(cfg, "chunk_size"))
 
     def test_new_sketch_fields_exist(self):
         cfg = CacheConfig()

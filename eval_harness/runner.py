@@ -5,7 +5,7 @@ import logging
 import random
 from dataclasses import asdict
 from pathlib import Path
-from typing import Dict, List
+from typing import TYPE_CHECKING, Dict, List
 
 import numpy as np
 import pandas as pd
@@ -14,7 +14,11 @@ from tqdm import tqdm
 
 from .config import EvalConfig
 from .benchmarks.registry import available_benchmarks, get_benchmark
-from .rag_adapter import RAGAdapter
+
+if TYPE_CHECKING:
+    from .hf_adapter import HFAdapter
+    from .rag_adapter import RAGAdapter
+    from .vllm_adapter import VLLMAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +27,7 @@ class EvalRunner:
     def __init__(self, config: EvalConfig) -> None:
         self.config = config
         self.benchmark = get_benchmark(config.benchmark)
-        self.adapter: VLLMAdapter | HFAdapter | RAGAdapter | None = None
+        self.adapter: "VLLMAdapter | HFAdapter | RAGAdapter | None" = None
         self.df: pd.DataFrame | None = None
         self._setup_logging()
         self._set_seed(config.seed)
@@ -125,6 +129,8 @@ class EvalRunner:
 
     def _setup_adapter(self) -> None:
         if self.config.backend == "rag":
+            from .rag_adapter import RAGAdapter
+
             self.adapter = RAGAdapter()
         elif self.config.backend == "research":
             from .research_adapter import ResearchAdapter, CacheConfig
@@ -182,8 +188,9 @@ class EvalRunner:
 
         grouped = self.df.groupby("context", sort=False)
         for context, group in tqdm(grouped, total=self.df["context"].nunique(), desc="Generating"):
-            if isinstance(self.adapter, RAGAdapter):
+            if self.config.backend == "rag":
                 questions = [str(row["question"]) for _, row in group.iterrows()]
+                assert self.adapter is not None
                 answers = self.adapter.generate_for_context(context, questions)
             elif self.config.backend == "research":
                 from .hf_adapter import HFGenerateConfig

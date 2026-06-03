@@ -12,15 +12,17 @@ class _FakePipe:
         return {"answer": context[:3] + str(kwargs["max_new_tokens"])}
 
 
+class _FakeCacheAdapter:
+    def initialize_cache(self, cache):
+        return cache
+
+
 class TestResearchAdapterContract(unittest.TestCase):
     @patch("eval_harness.research_adapter.SketchTextGenerationPipeline")
     @patch("eval_harness.research_adapter.HFAdapter.__init__", autospec=True)
-    @patch("eval_harness.research_adapter.AutoConfig.from_pretrained")
-    def test_init_builds_pipe_and_sketch(self, mock_cfg, mock_hf_init, mock_pipe):
-        class _Cfg:
-            max_position_embeddings = 4096
-
-        mock_cfg.return_value = _Cfg()
+    @patch("eval_harness.research_adapter.create_cache_adapter")
+    def test_init_builds_pipe_and_sketch(self, mock_create_cache_adapter, mock_hf_init, mock_pipe):
+        mock_create_cache_adapter.return_value = _FakeCacheAdapter()
 
         def _hf_init(inst, **kwargs):
             inst._model = object()
@@ -41,6 +43,7 @@ class TestResearchAdapterContract(unittest.TestCase):
         adapter._sketch = None
         adapter._max_context_length = 2048
         adapter._pipe = _FakePipe()
+        adapter._cache_adapter = _FakeCacheAdapter()
 
         out = adapter.generate(["abcdef", "xyz"], HFGenerateConfig(max_tokens=7))
         self.assertEqual(len(out), 2)

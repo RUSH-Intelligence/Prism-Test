@@ -3,10 +3,11 @@ import logging
 from typing import Optional
 
 import torch
-from transformers import AutoModelForCausalLM, Cache, DynamicCache, Pipeline, QuantizedCache
+from transformers import AutoModelForCausalLM, Cache, Pipeline
 from transformers.pipelines import PIPELINE_REGISTRY
 from transformers.pipelines.base import GenericTensor
 
+from eval_harness.sketch.cache_adapter import CacheAdapter, create_cache_adapter
 from eval_harness.sketch.sketches.base_sketch import BaseSketch
 from eval_harness.sketch.sketches.decoding_sketch import DecodingSketch
 from eval_harness.sketch.sketches.prefill_decoding_sketch import PrefillDecodingSketch
@@ -25,6 +26,7 @@ class SketchTextGenerationPipeline(Pipeline):
         max_context_length: Optional[int] = None,
         enable_thinking: bool = False,
         cache: Optional[Cache] = None,
+        cache_adapter: Optional[CacheAdapter] = None,
         **kwargs,
     ):
         answer_prefix = answer_prefix or ""
@@ -39,7 +41,12 @@ class SketchTextGenerationPipeline(Pipeline):
             "max_context_length": max_context_length,
             "enable_thinking": enable_thinking,
         }
-        forward_kwargs = {"sketch": sketch, "max_new_tokens": max_new_tokens, "cache": cache}
+        forward_kwargs = {
+            "sketch": sketch,
+            "max_new_tokens": max_new_tokens,
+            "cache": cache,
+            "cache_adapter": cache_adapter,
+        }
         return preprocess_kwargs, forward_kwargs, postprocess_kwargs
 
     def preprocess(
@@ -85,6 +92,7 @@ class SketchTextGenerationPipeline(Pipeline):
         max_new_tokens: int = 50,
         sketch: Optional[BaseSketch] = None,
         cache: Optional[Cache] = None,
+        cache_adapter: Optional[CacheAdapter] = None,
     ):
         if isinstance(sketch, (DecodingSketch, PrefillDecodingSketch)) and len(input_tensors["questions_ids"]) > 1:
             raise ValueError("DecodingSketch is not compatible with multiple questions. Please specify one question.")
@@ -92,8 +100,8 @@ class SketchTextGenerationPipeline(Pipeline):
         context_ids = input_tensors["context_ids"].to(self.model.device)
         context_length = context_ids.shape[1]
 
-        if cache is None:
-            cache = DynamicCache()
+        cache_adapter = cache_adapter or create_cache_adapter(self.model)
+        cache = cache_adapter.initialize_cache(cache)
 
         perform_prefill_compression = sketch is not None and not isinstance(sketch, DecodingSketch)
         with sketch(self.model) if perform_prefill_compression else contextlib.nullcontext():
@@ -101,38 +109,25 @@ class SketchTextGenerationPipeline(Pipeline):
                 input_ids=context_ids,
                 past_key_values=cache,
             )
+            cache_adapter.maybe_slice_prefill(cache)
 
             logger.debug(f"Context Length: {context_length}")
-            logger.debug(f"Compressed Context Length: {cache.get_seq_length()}")
+            logger.debug(f"Compressed Context Length: {cache_adapter.get_seq_length(cache)}")
 
         perform_decoding_compression = sketch is not None and isinstance(sketch, (DecodingSketch, PrefillDecodingSketch))
         with sketch(self.model) if perform_decoding_compression else contextlib.nullcontext():
             answers = []
             for question_ids in input_tensors["questions_ids"]:
-                cache_seq_lengths = [cache.get_seq_length(layer_idx) for layer_idx in range(len(cache))]
+                checkpoint = cache_adapter.clone_or_checkpoint_for_multi_question(cache)
                 answer = self.generate_answer(
                     question_ids=question_ids.to(self.model.device),
                     cache=cache,
                     context_length=context_length,
                     max_new_tokens=max_new_tokens,
                 )
-                self._remove_answer_from_cache(cache, cache_seq_lengths)
+                cache_adapter.restore_after_question(cache, checkpoint)
                 answers.append(answer)
         return answers
-
-    def _remove_answer_from_cache(self, cache: Cache, cache_seq_lengths: list[int]):
-        for layer_idx, sequence_length in enumerate(cache_seq_lengths):
-            cache.layers[layer_idx].keys = cache.layers[layer_idx].keys[:, :, :sequence_length]
-            cache.layers[layer_idx].values = cache.layers[layer_idx].values[:, :, :sequence_length]
-
-        if isinstance(cache, QuantizedCache):
-            for layer_idx, sequence_length in enumerate(cache_seq_lengths):
-                cache.layers[layer_idx]._quantized_keys = cache.layers[layer_idx]._quantized_keys[
-                    :, :, :sequence_length
-                ]
-                cache.layers[layer_idx]._quantized_values = cache.layers[layer_idx]._quantized_values[
-                    :, :, :sequence_length
-                ]
 
     def generate_answer(self, question_ids: torch.Tensor, cache: Cache, context_length: int, max_new_tokens: int) -> str:
         position_ids = torch.arange(

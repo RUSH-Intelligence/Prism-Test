@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import types
 import unittest
+from unittest.mock import patch
 
 import torch
 
-from eval_harness.hf_adapter import HFAdapter, HFGenerateConfig, _sample, _sdpa
+import eval_harness.hf_adapter as hf_adapter
+from eval_harness.hf_adapter import HFAdapter, HFGenerateConfig, _load_model, _sample, _sdpa
 
 try:
     from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS as _ALL_ATTN_FNS
@@ -122,6 +124,56 @@ class TestGenerate(unittest.TestCase):
         self.assertEqual(len(results), 2)
         for r in results:
             self.assertIsInstance(r, str)
+
+
+class TestInitTokenizerOptions(unittest.TestCase):
+    @patch("eval_harness.hf_adapter._load_model")
+    @patch("eval_harness.hf_adapter.AutoTokenizer.from_pretrained")
+    def test_mistral_tokenizer_uses_fix_regex(self, mock_tok, mock_load_model):
+        mock_tok.return_value = _FakeTokenizer()
+        mock_load_model.return_value = _FakeModel()
+
+        HFAdapter(model="mistralai/Ministral-3-3B-Instruct-2512")
+
+        kwargs = mock_tok.call_args.kwargs
+        self.assertTrue(kwargs.get("fix_mistral_regex"))
+
+    @patch("eval_harness.hf_adapter._load_model")
+    @patch("eval_harness.hf_adapter.AutoTokenizer.from_pretrained")
+    def test_mistral_tokenizer_retries_without_fix_regex_on_typeerror(self, mock_tok, mock_load_model):
+        fake_tokenizer = _FakeTokenizer()
+
+        def _tok_side_effect(*args, **kwargs):
+            if kwargs.get("fix_mistral_regex"):
+                raise TypeError("unexpected keyword")
+            return fake_tokenizer
+
+        mock_tok.side_effect = _tok_side_effect
+        mock_load_model.return_value = _FakeModel()
+
+        HFAdapter(model="mistralai/Ministral-3-3B-Instruct-2512")
+
+        self.assertEqual(mock_tok.call_count, 2)
+        self.assertTrue(mock_tok.call_args_list[0].kwargs.get("fix_mistral_regex"))
+        self.assertNotIn("fix_mistral_regex", mock_tok.call_args_list[1].kwargs)
+
+
+class TestModelLoaderSelection(unittest.TestCase):
+    def test_mistral3_config_uses_conditional_class(self):
+        mistral_loader = types.SimpleNamespace(from_pretrained=lambda *args, **kwargs: object())
+
+        with patch.object(hf_adapter, "Mistral3ForConditionalGeneration", mistral_loader), \
+            patch.object(hf_adapter.AutoConfig, "from_pretrained") as mock_cfg, \
+            patch.object(hf_adapter.AutoModelForCausalLM, "from_pretrained") as mock_auto:
+
+            mock_cfg.return_value = types.SimpleNamespace(
+                architectures=[],
+                model_type="mistral3",
+            )
+            out = _load_model("mistralai/Ministral-3-3B-Instruct-2512", {"trust_remote_code": True})
+
+            self.assertIsNotNone(out)
+            mock_auto.assert_not_called()
 
 
 class TestSampleHelper(unittest.TestCase):

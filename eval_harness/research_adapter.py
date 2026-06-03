@@ -4,8 +4,6 @@ import logging
 from dataclasses import dataclass
 from typing import Any, List, Optional
 
-from transformers import DynamicCache
-
 from .hf_adapter import HFAdapter, HFGenerateConfig
 from .sketch import (
     BaseSketch,
@@ -16,20 +14,13 @@ from .sketch import (
     RandomSketch,
     SketchTextGenerationPipeline,
 )
+from .sketch.cache_adapter import CacheAdapter, create_cache_adapter
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class CacheConfig:
-    # Legacy fields retained for compatibility with existing configs.
-    global_size: int = 32
-    local_size: int = 512
-    mid_budget: int = 256
-    span_size: int = 16
-    selection: str = "qkv2"
-    chunk_size: int = 512
-
     # Sketch/KV-compression controls.
     sketch_name: str = "none"
     compression_ratio: float = 0.0
@@ -78,6 +69,7 @@ class ResearchAdapter(HFAdapter):
 
         self._max_context_length = requested_ctx
         self._sketch: Optional[BaseSketch] = self._build_sketch(self._cache_cfg)
+        self._cache_adapter: CacheAdapter = create_cache_adapter(self._model)
         self._pipe = SketchTextGenerationPipeline(model=self._model, tokenizer=self._tokenizer)
 
         logger.info(
@@ -118,8 +110,9 @@ class ResearchAdapter(HFAdapter):
 
     def generate(self, prompts: List[str], gen_cfg: HFGenerateConfig) -> List[str]:
         texts: List[str] = []
+        cache_adapter = getattr(self, "_cache_adapter", None)
         for prompt in prompts:
-            cache = DynamicCache() if self._cache_cfg.log_cache_seq_len else None
+            cache = cache_adapter.initialize_cache(None) if (self._cache_cfg.log_cache_seq_len and cache_adapter) else None
             output = self._pipe(
                 prompt,
                 question="",
@@ -127,17 +120,12 @@ class ResearchAdapter(HFAdapter):
                 max_new_tokens=gen_cfg.max_tokens,
                 max_context_length=self._max_context_length,
                 cache=cache,
+                cache_adapter=cache_adapter,
             )
             texts.append(output["answer"])
 
-            if cache is not None:
-                layer_seq_lengths = [cache.get_seq_length(layer_idx) for layer_idx in range(len(cache))]
-                logger.info(
-                    "Sketch cache sequence length: global=%s, per_layer_min=%s, per_layer_max=%s",
-                    cache.get_seq_length(),
-                    min(layer_seq_lengths) if layer_seq_lengths else 0,
-                    max(layer_seq_lengths) if layer_seq_lengths else 0,
-                )
+            if cache is not None and cache_adapter is not None:
+                self._log_cache_seq_lengths(cache, cache_adapter)
 
         return texts
 
@@ -148,7 +136,8 @@ class ResearchAdapter(HFAdapter):
         answer_prefix: str,
         gen_cfg: HFGenerateConfig,
     ) -> List[str]:
-        cache = DynamicCache() if self._cache_cfg.log_cache_seq_len else None
+        cache_adapter = getattr(self, "_cache_adapter", None)
+        cache = cache_adapter.initialize_cache(None) if (self._cache_cfg.log_cache_seq_len and cache_adapter) else None
         output = self._pipe(
             context,
             questions=questions,
@@ -157,19 +146,31 @@ class ResearchAdapter(HFAdapter):
             max_new_tokens=gen_cfg.max_tokens,
             max_context_length=self._max_context_length,
             cache=cache,
+            cache_adapter=cache_adapter,
         )
         answers = output["answers"]
 
-        if cache is not None:
-            layer_seq_lengths = [cache.get_seq_length(layer_idx) for layer_idx in range(len(cache))]
-            logger.info(
-                "Sketch cache sequence length: global=%s, per_layer_min=%s, per_layer_max=%s",
-                cache.get_seq_length(),
-                min(layer_seq_lengths) if layer_seq_lengths else 0,
-                max(layer_seq_lengths) if layer_seq_lengths else 0,
-            )
+        if cache is not None and cache_adapter is not None:
+            self._log_cache_seq_lengths(cache, cache_adapter)
 
         return answers
+
+    @staticmethod
+    def _log_cache_seq_lengths(cache, cache_adapter: CacheAdapter) -> None:
+        layer_seq_lengths = []
+        for layer_idx in range(len(cache)):
+            try:
+                layer_seq_lengths.append(cache.get_seq_length(layer_idx))
+            except Exception:
+                # Hybrid caches include linear-attention layers without seq-length semantics.
+                continue
+
+        logger.info(
+            "Sketch cache sequence length: global=%s, per_layer_min=%s, per_layer_max=%s",
+            cache_adapter.get_seq_length(cache),
+            min(layer_seq_lengths) if layer_seq_lengths else 0,
+            max(layer_seq_lengths) if layer_seq_lengths else 0,
+        )
 
     @property
     def cache_config(self) -> CacheConfig:
