@@ -8,8 +8,10 @@ pyyaml>=6.0.0
 fire>=0.6.0
 tqdm>=4.66.0
 torch>=2.1.0
-transformers>=4.41.0,<5.0.0
+transformers>=5.0.0
 sentence-transformers
+ninja
+setuptools
 
 # RAG backend
 llama-index-embeddings-huggingface

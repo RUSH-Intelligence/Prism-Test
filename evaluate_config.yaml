@@ -1,79 +1,47 @@
-# Standalone vLLM and RAG eval harness config for Prism-Test
-
+# Prism-Test eval harness config
+#
 # Available benchmarks:
-# aime, aime2024, aime2025, infinite_bench, mock_benchmark,
-# ruler, ruler16k, ruler32k, ruler64k, ruler128k, longbench, longbenchv2,
-# loft, loft_rag, loogle, prism1m, zero_scrolls
-benchmark: loft
-# Optional comma-separated subset list. Leave null to use benchmark defaults.
-# Examples:
-#   "qa_1,qa_2" for ruler32k
-#   "passkey,kv_retrieval" for infinite_bench
-#   "narrativeqa,hotpotqa" for longbench
-#   "0shot" for longbenchv2
-#   "nq_32k,hotpotqa_32k" for loft
-subsets: nq_128k,hotpotqa_128k,musique_128k,qampari_128k,quest_128k
+#   aime, aime2024, aime2025, infinite_bench, mock_benchmark,
+#   ruler, ruler16k, ruler32k, ruler64k, ruler128k,
+#   longbench, longbenchv2, loft, loft_rag, loogle, prism1m, zero_scrolls
+benchmark: ruler64k
+# Optional comma-separated subset list. Leave null for benchmark defaults.
+# Examples: "qa_1,qa_2" for ruler64k | "passkey,kv_retrieval" for infinite_bench
+subsets: qa_1
 
-backend: hf   # vllm, hf, or rag
-# Baseline selector strategy for long-context methods.
-# Current option: reattention_topk
-# Set to null to use backend default behavior.
-baseline: reattention_topk
+# Inference backend: vllm | hf | rag | research
+backend: research
 
-model: meta-llama/Llama-3.1-8B-Instruct   # ignored if backend = rag
+model: google/gemma-3-1b-it
 
 # Runtime
 tensor_parallel_size: 1
-dtype: auto
-max_model_len: 131072
+dtype: bfloat16
+max_model_len: 65536
 gpu_memory_utilization: 0.9
 trust_remote_code: true
 enable_prefix_caching: true
-
-# Long-context compression for research backends (especially backend: hf).
-enable_long_context_compression: false
-compression_sink_tokens: 32
-compression_local_tokens: 2048
-# null means use all remaining budget after sink/local.
-compression_top_k_tokens: null
-# Expand each selected middle token by +/- span//2 before merge.
-compression_span_tokens: 32
-
-# Naive HF ReAttention scorer setting: query window size used for per-layer QK scoring.
-hf_naive_reattn_query_tokens: 128
-# Query chunk size for prefill voting aggregation across multiple queries.
-hf_reattn_query_chunk_tokens: 1024
-# Per head/chunk vote proposals over middle candidates.
-hf_reattn_vote_top_k: 4
-# Streaming selector mode: score candidates in chunks instead of one full forward pass.
-hf_reattn_streaming: false
-hf_reattn_streaming_chunk_tokens: 4096
 
 # Generation
 max_new_tokens: 128
 temperature: 0.0
 top_p: 1.0
-# Optional instruction prepended to each prompt.
-# Keep null for RULER-style benchmarks where prompts are already fully formatted.
 system_prompt: null
 seed: 42
+
+# Evaluation limits
 max_requests: 200
-# Eval controls
-fraction: 1.0
 max_requests_per_subset:
-  qa_1: 100
-  qa_2: 100
-  niah_multikey_2: 100
-  niah_multikey_3: 100
-  vt: 100
-  fwe: 100
+  qa_1: 200
+fraction: 1.0
 query_aware: false
 
 output_dir: ./results
 
-# Extra vLLM LLM(...) kwargs can go here, for example:
-# Should remove if using hf backend
-# llm_kwargs:
-#   enforce_eager: true
-# llm_kwargs:
-#   decode_context_parallel_size: 1
+llm_kwargs:
+  attn_implementation: flash_attention_2
+  cache_config:
+    sketch_name: knorm
+    compression_ratio: 0.6
+    max_context_length: 65536
+    log_cache_seq_len: true

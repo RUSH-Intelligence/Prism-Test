@@ -1,16 +1,27 @@
 from __future__ import annotations
 
+import logging
+import random
+import string
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, List, Optional, Sequence
+from typing import Any, Callable, Generator, List, Optional, Tuple
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+import torch.nn.functional as F
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, PreTrainedModel
 
-from baselines import ReAttentionTopKSelector
-from .long_context import (
-    LongContextCompressionConfig,
-    merge_budgeted_indices,
-)
+try:
+    from transformers import Gemma3ForConditionalGeneration
+except ImportError:
+    Gemma3ForConditionalGeneration = None  # type: ignore[assignment]
+
+try:
+    from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+except ImportError:
+    ALL_ATTENTION_FUNCTIONS = None
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -21,165 +32,273 @@ class HFGenerateConfig:
 
 
 class HFAdapter:
+    """
+    HuggingFace inference backend with explicit prefill and decode phases.
+
+    Prefill:  all prompt tokens are processed in one forward pass, building the KV cache.
+    Decode:   tokens are generated one at a time using the cached KV state.
+
+    Override prefill_attention() and/or decode_attention() in subclasses to plug
+    in custom attention kernels.  Both receive:
+
+        module        – the nn.Module for the current attention layer
+        queries       – [B, H_q,  S_q, D]  RoPE already applied by the model
+        keys          – [B, H_kv, S_kv, D]  RoPE already applied
+        values        – [B, H_kv, S_kv, D]
+        attention_mask– [B, 1,    S_q, S_kv] or None
+        scaling       – float (= 1 / sqrt(head_dim))
+
+    Must return: (attn_output [B, S_q, H_q, D], attn_weights or None)
+    """
+
     def __init__(
         self,
         model: str,
-        baseline: Optional[str] = None,
         dtype: str = "auto",
         trust_remote_code: bool = True,
         seed: int = 42,
         max_model_len: Optional[int] = None,
-        enable_long_context_compression: bool = False,
-        compression_sink_tokens: int = 32,
-        compression_local_tokens: int = 4096,
-        compression_top_k_tokens: Optional[int] = None,
-        compression_span_tokens: int = 32,
-        hf_naive_reattn_query_tokens: int = 128,
-        hf_reattn_query_chunk_tokens: int = 32,
-        hf_reattn_vote_top_k: int = 4,
-        hf_reattn_streaming: bool = False,
-        hf_reattn_streaming_chunk_tokens: int = 4096,
         **model_kwargs: Any,
     ) -> None:
-        del seed
-        self._baseline = baseline
+        del seed, max_model_len  # unused at HF load time
 
-        if self._baseline not in {None, "reattention_topk"}:
-            raise ValueError(
-                f"Unsupported HF baseline: {self._baseline}. "
-                "Expected one of: null, reattention_topk"
-            )
-
-        self._tokenizer = AutoTokenizer.from_pretrained(model, trust_remote_code=trust_remote_code)
+        self._tokenizer = AutoTokenizer.from_pretrained(
+            model, trust_remote_code=trust_remote_code
+        )
         if self._tokenizer.pad_token_id is None:
             self._tokenizer.pad_token_id = self._tokenizer.eos_token_id
 
-        torch_dtype = None
-        if dtype in {"float16", "fp16"}:
-            torch_dtype = torch.float16
-        elif dtype in {"bfloat16", "bf16"}:
-            torch_dtype = torch.bfloat16
-        elif dtype in {"float32", "fp32"}:
-            torch_dtype = torch.float32
-
-        load_kwargs = {
-            "trust_remote_code": trust_remote_code,
-            **model_kwargs,
-        }
+        load_kwargs: dict[str, Any] = {"trust_remote_code": trust_remote_code, **model_kwargs}
+        torch_dtype = _resolve_dtype(dtype)
         if torch_dtype is not None:
-            load_kwargs["torch_dtype"] = torch_dtype
+            load_kwargs["dtype"] = torch_dtype
 
-        self._model = AutoModelForCausalLM.from_pretrained(model, **load_kwargs)
+        self._model = _load_model(model, load_kwargs)
         if torch.cuda.is_available():
             self._model = self._model.to("cuda")
         self._model.eval()
 
-        resolved_max_len = max_model_len
-        if resolved_max_len is None:
-            resolved_max_len = getattr(self._model.config, "max_position_embeddings", None)
+    # -------------------------------------------------------------------------
+    # Override points
+    # -------------------------------------------------------------------------
 
-        self._compression_cfg = LongContextCompressionConfig(
-            enabled=(enable_long_context_compression or self._baseline is not None),
-            max_context_len=resolved_max_len,
-            sink_tokens=compression_sink_tokens,
-            local_tokens=compression_local_tokens,
-            top_k_tokens=compression_top_k_tokens,
-            span_tokens=compression_span_tokens,
-        )
-        self._reattn_topk_selector = ReAttentionTopKSelector(
-            query_tokens=hf_naive_reattn_query_tokens,
-            query_chunk_tokens=hf_reattn_query_chunk_tokens,
-            vote_top_k=hf_reattn_vote_top_k,
-            streaming=hf_reattn_streaming,
-            streaming_chunk_tokens=hf_reattn_streaming_chunk_tokens,
-        )
+    def prefill_attention(
+        self,
+        module: torch.nn.Module,
+        queries: torch.Tensor,
+        keys: torch.Tensor,
+        values: torch.Tensor,
+        attention_mask: Optional[torch.Tensor],
+        scaling: float = 1.0,
+        dropout: float = 0.0,
+        **kwargs: Any,
+    ) -> Tuple[torch.Tensor, None]:
+        return _sdpa(queries, keys, values, attention_mask, scaling, dropout)
 
-    def _build_budget(self, seq_len: int) -> tuple[list[int], list[int], list[int], int]:
-        max_context_len = int(self._compression_cfg.max_context_len or 0)
-        sink_keep = min(max(int(self._compression_cfg.sink_tokens), 0), seq_len, max_context_len)
-        remaining_budget = max_context_len - sink_keep
+    def decode_attention(
+        self,
+        module: torch.nn.Module,
+        queries: torch.Tensor,
+        keys: torch.Tensor,
+        values: torch.Tensor,
+        attention_mask: Optional[torch.Tensor],
+        scaling: float = 1.0,
+        dropout: float = 0.0,
+        **kwargs: Any,
+    ) -> Tuple[torch.Tensor, None]:
+        return _sdpa(queries, keys, values, attention_mask, scaling, dropout)
 
-        local_keep = min(max(int(self._compression_cfg.local_tokens), 0), max(seq_len - sink_keep, 0), remaining_budget)
-        remaining_budget -= local_keep
+    # -------------------------------------------------------------------------
+    # Prefill / decode
+    # -------------------------------------------------------------------------
 
-        sink_indices = list(range(sink_keep))
-        local_start = seq_len - local_keep
-        local_indices = list(range(local_start, seq_len))
-        candidate_indices = list(range(sink_keep, max(local_start, sink_keep)))
+    @contextmanager
+    def _with_attention(self, attention_fn: Callable) -> Generator:
+        if ALL_ATTENTION_FUNCTIONS is None:
+            logger.warning("ALL_ATTENTION_FUNCTIONS unavailable; running default attention.")
+            yield
+            return
 
-        if self._compression_cfg.top_k_tokens is None:
-            top_k_budget = remaining_budget
-        else:
-            top_k_budget = min(max(int(self._compression_cfg.top_k_tokens), 0), remaining_budget)
-        return sink_indices, local_indices, candidate_indices, top_k_budget
+        name = _unique_attention_name()
+        ALL_ATTENTION_FUNCTIONS.register(name, attention_fn)
+        saved: dict[str, str] = {}
+        for mod_name, mod in self._model.named_modules():
+            if hasattr(mod, "config") and hasattr(mod.config, "_attn_implementation"):
+                saved[mod_name] = mod.config._attn_implementation
+                mod.config._attn_implementation = name
+        try:
+            yield
+        finally:
+            for mod_name, mod in self._model.named_modules():
+                if mod_name in saved:
+                    mod.config._attn_implementation = saved[mod_name]
+            ALL_ATTENTION_FUNCTIONS._global_mapping.pop(name, None)
 
-    def _compress_token_ids(self, token_ids: Sequence[int]) -> List[int]:
-        if self._baseline is None:
-            return list(token_ids)
+    def _prefill(self, input_ids: torch.Tensor) -> Tuple[torch.Tensor, Any]:
+        with torch.no_grad():
+            outputs = self._model(input_ids=input_ids, use_cache=True, return_dict=True)
+        return outputs.logits[:, -1, :], outputs.past_key_values
 
-        seq_len = len(token_ids)
-        if (
-            not self._compression_cfg.enabled
-            or self._compression_cfg.max_context_len is None
-            or seq_len <= self._compression_cfg.max_context_len
-        ):
-            return list(token_ids)
+    def _decode(
+        self,
+        last_logits: torch.Tensor,
+        past_key_values: Any,
+        gen_cfg: HFGenerateConfig,
+    ) -> List[int]:
+        generated: List[int] = []
+        next_logits = last_logits
+        eos_token_id = self._tokenizer.eos_token_id
 
-        sink_indices, local_indices, candidate_indices, top_k_budget = self._build_budget(seq_len)
-        if top_k_budget <= 0 or not candidate_indices:
-            kept = sorted(set(sink_indices + local_indices))
-            return [token_ids[idx] for idx in kept]
+        for _ in range(gen_cfg.max_tokens):
+            next_token_id = _sample(next_logits, gen_cfg)
+            generated.append(next_token_id)
+            if next_token_id == eos_token_id:
+                break
+            next_input = torch.tensor(
+                [[next_token_id]], dtype=torch.long, device=self._model.device
+            )
+            with torch.no_grad():
+                outputs = self._model(
+                    input_ids=next_input,
+                    past_key_values=past_key_values,
+                    use_cache=True,
+                    return_dict=True,
+                )
+            next_logits = outputs.logits[:, -1, :]
+            past_key_values = outputs.past_key_values
 
-        input_ids = torch.tensor([token_ids], dtype=torch.long, device=self._model.device)
-        topk_indices = self._reattn_topk_selector.select_indices(
-            model=self._model,
-            input_ids=input_ids,
-            candidate_indices=candidate_indices,
-            top_k=top_k_budget,
-            token_ids=token_ids,
-        )
-
-        from .long_context import CompressionBudget
-
-        budget = CompressionBudget(
-            sink_indices=sink_indices,
-            local_indices=local_indices,
-            candidate_indices=candidate_indices,
-            top_k_budget=top_k_budget,
-        )
-        kept = merge_budgeted_indices(
-            token_count=seq_len,
-            budget=budget,
-            topk_indices=topk_indices,
-            span_tokens=self._compression_cfg.span_tokens,
-        )
-        return [token_ids[idx] for idx in kept]
+        return generated
 
     def generate(self, prompts: List[str], gen_cfg: HFGenerateConfig) -> List[str]:
         texts: List[str] = []
         for prompt in prompts:
             token_ids = self._tokenizer.encode(prompt, add_special_tokens=False)
-            token_ids = self._compress_token_ids(token_ids)
-
             input_ids = torch.tensor([token_ids], dtype=torch.long, device=self._model.device)
-            attention_mask = torch.ones_like(input_ids)
-            do_sample = gen_cfg.temperature > 0.0
-
-            gen_kwargs = {
-                "input_ids": input_ids,
-                "attention_mask": attention_mask,
-                "max_new_tokens": gen_cfg.max_tokens,
-                "do_sample": do_sample,
-                "top_p": gen_cfg.top_p,
-                "pad_token_id": self._tokenizer.pad_token_id,
-                "eos_token_id": self._tokenizer.eos_token_id,
-            }
-            if do_sample:
-                gen_kwargs["temperature"] = max(gen_cfg.temperature, 1e-5)
-
-            with torch.no_grad():
-                outputs = self._model.generate(**gen_kwargs)
-
-            generated_ids = outputs[0, input_ids.shape[1] :]
+            last_logits, past_key_values = self._prefill(input_ids)
+            generated_ids = self._decode(last_logits, past_key_values, gen_cfg)
             texts.append(self._tokenizer.decode(generated_ids, skip_special_tokens=True))
         return texts
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _sdpa(
+    queries: torch.Tensor,
+    keys: torch.Tensor,
+    values: torch.Tensor,
+    attention_mask: Optional[torch.Tensor],
+    scaling: float,
+    dropout: float,
+) -> Tuple[torch.Tensor, None]:
+    """Scaled dot-product attention with GQA support. Returns [B, S_q, H_q, D]."""
+    keys, values = _expand_kv(queries, keys, values)
+    q_len, k_len = queries.shape[-2], keys.shape[-2]
+    is_causal = attention_mask is None and q_len == k_len
+    out = F.scaled_dot_product_attention(
+        queries * scaling, keys, values,
+        attn_mask=attention_mask, dropout_p=dropout, is_causal=is_causal,
+    )
+    return out.transpose(1, 2), None
+
+
+def _expand_kv(
+    queries: torch.Tensor,
+    keys: torch.Tensor,
+    values: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Repeat KV heads to match query heads (GQA/MQA)."""
+    h_q, h_kv = queries.shape[1], keys.shape[1]
+    if h_q == h_kv:
+        return keys, values
+    assert h_q % h_kv == 0
+    rep = h_q // h_kv
+    keys   = keys  [:, :, None, :, :].expand(-1, h_kv, rep, -1, -1).reshape(keys.shape[0],   h_q, keys.shape[2],   keys.shape[3])
+    values = values[:, :, None, :, :].expand(-1, h_kv, rep, -1, -1).reshape(values.shape[0], h_q, values.shape[2], values.shape[3])
+    return keys, values
+
+
+def _resolve_dtype(dtype: str) -> Optional[torch.dtype]:
+    return {
+        "float16": torch.float16, "fp16": torch.float16,
+        "bfloat16": torch.bfloat16, "bf16": torch.bfloat16,
+        "float32": torch.float32, "fp32": torch.float32,
+    }.get(dtype)
+
+
+def _load_model(model_name: str, load_kwargs: dict[str, Any]) -> PreTrainedModel:
+    explicit_impl = load_kwargs.pop("attn_implementation", None)
+    is_gemma3 = "gemma-3" in model_name.lower()
+    use_gemma3_conditional = False
+
+    if is_gemma3 and Gemma3ForConditionalGeneration is not None:
+        try:
+            cfg = AutoConfig.from_pretrained(model_name, trust_remote_code=load_kwargs.get("trust_remote_code", True))
+            architectures = [a.lower() for a in (getattr(cfg, "architectures", None) or [])]
+            model_type = str(getattr(cfg, "model_type", "")).lower()
+            # Only use conditional class when the checkpoint architecture expects it.
+            use_gemma3_conditional = (
+                "gemma3forconditionalgeneration" in architectures or model_type == "gemma3"
+            )
+        except Exception:
+            # If config probing fails, stay on AutoModelForCausalLM for compatibility.
+            use_gemma3_conditional = False
+
+    if use_gemma3_conditional:
+        if explicit_impl is not None:
+            m = Gemma3ForConditionalGeneration.from_pretrained(
+                model_name, attn_implementation=explicit_impl, **load_kwargs
+            )
+            logger.info("Loaded Gemma3 conditional model with attn_implementation=%s", explicit_impl)
+            return m
+
+        for attn_impl in ("flash_attention_2", "sdpa"):
+            try:
+                m = Gemma3ForConditionalGeneration.from_pretrained(
+                    model_name, attn_implementation=attn_impl, **load_kwargs
+                )
+                logger.info("Loaded Gemma3 conditional model with attn_implementation=%s", attn_impl)
+                return m
+            except (ImportError, ValueError, RuntimeError):
+                continue
+
+        return Gemma3ForConditionalGeneration.from_pretrained(model_name, **load_kwargs)
+
+    if explicit_impl is not None:
+        m = AutoModelForCausalLM.from_pretrained(
+            model_name, attn_implementation=explicit_impl, **load_kwargs
+        )
+        logger.info("Loaded model with attn_implementation=%s", explicit_impl)
+        return m
+
+    for attn_impl in ("flash_attention_2", "sdpa"):
+        try:
+            m = AutoModelForCausalLM.from_pretrained(
+                model_name, attn_implementation=attn_impl, **load_kwargs
+            )
+            logger.info("Loaded model with attn_implementation=%s", attn_impl)
+            return m
+        except (ImportError, ValueError, RuntimeError):
+            continue
+    return AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
+
+
+def _unique_attention_name() -> str:
+    suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
+    return f"prism_{suffix}"
+
+
+def _sample(logits: torch.Tensor, gen_cfg: HFGenerateConfig) -> int:
+    if gen_cfg.temperature <= 0.0:
+        return int(logits.argmax(dim=-1).item())
+    scaled = logits / max(gen_cfg.temperature, 1e-5)
+    probs = torch.softmax(scaled, dim=-1)
+    if gen_cfg.top_p < 1.0:
+        sorted_probs, sorted_idx = torch.sort(probs, descending=True, dim=-1)
+        cumsum = torch.cumsum(sorted_probs, dim=-1)
+        mask = (cumsum - sorted_probs) > gen_cfg.top_p
+        sorted_probs = sorted_probs.masked_fill(mask, 0.0)
+        probs = torch.zeros_like(probs).scatter_(-1, sorted_idx, sorted_probs)
+        probs = probs / probs.sum(dim=-1, keepdim=True).clamp(min=1e-12)
+    return int(torch.multinomial(probs, num_samples=1).item())

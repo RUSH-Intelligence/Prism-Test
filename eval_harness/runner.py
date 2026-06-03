@@ -29,11 +29,19 @@ class EvalRunner:
         self._set_seed(config.seed)
 
     def _setup_logging(self) -> None:
-        logger.setLevel(logging.INFO)
-        if not logger.handlers:
+        # Configure the package/root logger so sibling modules (e.g. hf_adapter)
+        # propagate to the same console handler.
+        root = logging.getLogger()
+        root.setLevel(logging.INFO)
+        if not root.handlers:
             handler = logging.StreamHandler()
             handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
-            logger.addHandler(handler)
+            root.addHandler(handler)
+
+        # Keep eval logs at INFO, but suppress noisy per-request HTTP logs.
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+        logging.getLogger("httpcore").setLevel(logging.WARNING)
+        logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
 
     @staticmethod
     def _set_seed(seed: int) -> None:
@@ -118,26 +126,36 @@ class EvalRunner:
     def _setup_adapter(self) -> None:
         if self.config.backend == "rag":
             self.adapter = RAGAdapter()
+        elif self.config.backend == "research":
+            from .research_adapter import ResearchAdapter, CacheConfig
+
+            llm_kw = dict(self.config.llm_kwargs or {})
+            # Research backend depends on consistent ALL_ATTENTION_FUNCTIONS
+            # dispatch; SDPA is the most reliable parity path.
+            llm_kw.setdefault("attn_implementation", "sdpa")
+
+            # Pull cache_config dict out of llm_kwargs and convert to CacheConfig
+            cache_kw = llm_kw.pop("cache_config", {}) or {}
+            cache_cfg = CacheConfig(**cache_kw) if cache_kw else CacheConfig()
+
+            self.adapter = ResearchAdapter(
+                model=self.config.model,
+                dtype=self.config.dtype,
+                max_model_len=self.config.max_model_len,
+                trust_remote_code=self.config.trust_remote_code,
+                seed=self.config.seed,
+                cache_config=cache_cfg,
+                **llm_kw,
+            )
         elif self.config.backend == "hf":
             from .hf_adapter import HFAdapter
 
             self.adapter = HFAdapter(
                 model=self.config.model,
-                baseline=self.config.baseline,
                 dtype=self.config.dtype,
                 max_model_len=self.config.max_model_len,
                 trust_remote_code=self.config.trust_remote_code,
                 seed=self.config.seed,
-                enable_long_context_compression=self.config.enable_long_context_compression,
-                compression_sink_tokens=self.config.compression_sink_tokens,
-                compression_local_tokens=self.config.compression_local_tokens,
-                compression_top_k_tokens=self.config.compression_top_k_tokens,
-                compression_span_tokens=self.config.compression_span_tokens,
-                hf_naive_reattn_query_tokens=self.config.hf_naive_reattn_query_tokens,
-                hf_reattn_query_chunk_tokens=self.config.hf_reattn_query_chunk_tokens,
-                hf_reattn_vote_top_k=self.config.hf_reattn_vote_top_k,
-                hf_reattn_streaming=self.config.hf_reattn_streaming,
-                hf_reattn_streaming_chunk_tokens=self.config.hf_reattn_streaming_chunk_tokens,
                 **(self.config.llm_kwargs or {}),
             )
         else:
@@ -167,6 +185,34 @@ class EvalRunner:
             if isinstance(self.adapter, RAGAdapter):
                 questions = [str(row["question"]) for _, row in group.iterrows()]
                 answers = self.adapter.generate_for_context(context, questions)
+            elif self.config.backend == "research":
+                from .hf_adapter import HFGenerateConfig
+                from .research_adapter import ResearchAdapter
+
+                assert isinstance(self.adapter, ResearchAdapter)
+
+                max_tokens = self.config.max_new_tokens
+                if max_tokens is None:
+                    max_tokens = int(group["max_new_tokens"].iloc[0])
+
+                answer_prefixes = group["answer_prefix"].astype(str).drop_duplicates().tolist()
+                if len(answer_prefixes) != 1:
+                    raise ValueError(
+                        "Inconsistent answer_prefix values detected within the same context group. "
+                        "Research backend expects one shared answer_prefix per context."
+                    )
+
+                gen_cfg = HFGenerateConfig(
+                    max_tokens=max_tokens,
+                    temperature=self.config.temperature,
+                    top_p=self.config.top_p,
+                )
+                answers = self.adapter.generate_for_context(
+                    context=context,
+                    questions=[str(row["question"]) for _, row in group.iterrows()],
+                    answer_prefix=answer_prefixes[0],
+                    gen_cfg=gen_cfg,
+                )
             else:
                 prompts: List[str] = []
                 for _, row in group.iterrows():

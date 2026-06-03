@@ -9,16 +9,12 @@ import yaml
 
 @dataclass
 class EvalConfig:
-    # Standalone benchmark selection.
+    # Benchmark selection.
     benchmark: str = "ruler32k"
     subsets: Optional[str] = None
 
     # Inference backend: "vllm", "hf", or "rag"
     backend: str = "vllm"
-
-    # Baseline selector strategy for long-context experiments.
-    # "reattention_topk" is the current HF baseline implementation.
-    baseline: Optional[str] = None
 
     # Model and runtime.
     model: str = "meta-llama/Llama-3.1-8B-Instruct"
@@ -28,20 +24,6 @@ class EvalConfig:
     gpu_memory_utilization: float = 0.9
     trust_remote_code: bool = True
     enable_prefix_caching: bool = True
-
-    # Long-context compression controls (for research backends).
-    enable_long_context_compression: bool = False
-    compression_sink_tokens: int = 32
-    compression_local_tokens: int = 2048
-    compression_top_k_tokens: Optional[int] = None
-    compression_span_tokens: int = 32
-
-    # HF naive ReAttention scorer controls.
-    hf_naive_reattn_query_tokens: int = 128
-    hf_reattn_query_chunk_tokens: int = 1024
-    hf_reattn_vote_top_k: int = 4
-    hf_reattn_streaming: bool = False
-    hf_reattn_streaming_chunk_tokens: int = 4096
 
     # Generation.
     max_new_tokens: Optional[int] = None
@@ -57,17 +39,12 @@ class EvalConfig:
     query_aware: bool = False
     output_dir: str = "./results"
 
-    # Extra kwargs passthrough.
+    # Extra kwargs passthrough to the backend LLM.
     llm_kwargs: Optional[Dict[str, Any]] = None
 
     def __post_init__(self) -> None:
-        if self.backend not in {"vllm", "hf", "rag"}:
-            raise ValueError(f"backend must be one of vllm|hf|rag, got {self.backend}")
-        valid_baselines = {None, "reattention_topk"}
-        if self.baseline not in valid_baselines:
-            raise ValueError(
-                f"baseline must be one of {sorted(b for b in valid_baselines if b is not None)} or null, got {self.baseline}"
-            )
+        if self.backend not in {"vllm", "hf", "rag", "research"}:
+            raise ValueError(f"backend must be one of vllm|hf|rag|research, got {self.backend}")
         if not (0.0 < self.fraction <= 1.0):
             raise ValueError(f"fraction must be in (0, 1], got {self.fraction}")
         if not (0.0 <= self.temperature):
@@ -77,43 +54,6 @@ class EvalConfig:
         if not (0.0 < self.gpu_memory_utilization <= 1.0):
             raise ValueError(
                 f"gpu_memory_utilization must be in (0, 1], got {self.gpu_memory_utilization}"
-            )
-        if self.compression_sink_tokens < 0:
-            raise ValueError(
-                f"compression_sink_tokens must be >= 0, got {self.compression_sink_tokens}"
-            )
-        if self.compression_local_tokens < 0:
-            raise ValueError(
-                f"compression_local_tokens must be >= 0, got {self.compression_local_tokens}"
-            )
-        if self.compression_top_k_tokens is not None and self.compression_top_k_tokens < 0:
-            raise ValueError(
-                "compression_top_k_tokens must be >= 0 when provided, "
-                f"got {self.compression_top_k_tokens}"
-            )
-        if self.compression_span_tokens < 0:
-            raise ValueError(
-                f"compression_span_tokens must be >= 0, got {self.compression_span_tokens}"
-            )
-        if self.hf_naive_reattn_query_tokens <= 0:
-            raise ValueError(
-                "hf_naive_reattn_query_tokens must be > 0, "
-                f"got {self.hf_naive_reattn_query_tokens}"
-            )
-        if self.hf_reattn_query_chunk_tokens <= 0:
-            raise ValueError(
-                "hf_reattn_query_chunk_tokens must be > 0, "
-                f"got {self.hf_reattn_query_chunk_tokens}"
-            )
-        if self.hf_reattn_vote_top_k <= 0:
-            raise ValueError(
-                "hf_reattn_vote_top_k must be > 0, "
-                f"got {self.hf_reattn_vote_top_k}"
-            )
-        if self.hf_reattn_streaming_chunk_tokens <= 0:
-            raise ValueError(
-                "hf_reattn_streaming_chunk_tokens must be > 0, "
-                f"got {self.hf_reattn_streaming_chunk_tokens}"
             )
         if self.llm_kwargs is None:
             self.llm_kwargs = {}
@@ -142,8 +82,6 @@ class EvalConfig:
             f"t{self.temperature:g}",
             f"p{self.top_p:g}",
         ]
-        if self.baseline:
-            components.append(f"baseline_{self.baseline}")
         if self.subsets:
             subset_tag = self.subsets.replace(",", "-").replace(" ", "")
             components.append(f"subsets_{subset_tag}")

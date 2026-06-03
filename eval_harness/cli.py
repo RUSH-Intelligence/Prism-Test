@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict
+from dataclasses import asdict, fields
 from typing import Any, Dict, Optional
 
 from .config import EvalConfig, load_yaml_config
@@ -11,10 +11,12 @@ from .runner import EvalRunner
 class CliEntryPoint:
     def run(self, config_file: Optional[str] = "./evaluate_config.yaml", **overrides: Any) -> Dict[str, Any]:
         final_cfg = asdict(EvalConfig())
+        valid_keys = {f.name for f in fields(EvalConfig)}
         if config_file:
-            final_cfg.update(load_yaml_config(config_file))
+            file_cfg = {k: v for k, v in load_yaml_config(config_file).items() if k in valid_keys}
+            final_cfg.update(file_cfg)
 
-        final_cfg.update({k: v for k, v in overrides.items() if v is not None})
+        final_cfg.update({k: v for k, v in overrides.items() if v is not None and k in valid_keys})
 
         config = EvalConfig(**final_cfg)
         runner = EvalRunner(config)
@@ -36,7 +38,6 @@ def _build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--benchmark", default=None)
     run_parser.add_argument("--subsets", default=None)
     run_parser.add_argument("--backend", default=None)
-    run_parser.add_argument("--baseline", default=None)
     run_parser.add_argument("--model", default=None)
     run_parser.add_argument("--max_new_tokens", type=int, default=None)
     run_parser.add_argument("--system_prompt", default=None)
@@ -58,7 +59,6 @@ def main() -> None:
         "benchmark": args.benchmark,
         "subsets": args.subsets,
         "backend": args.backend,
-        "baseline": args.baseline,
         "model": args.model,
         "max_new_tokens": args.max_new_tokens,
         "system_prompt": args.system_prompt,
