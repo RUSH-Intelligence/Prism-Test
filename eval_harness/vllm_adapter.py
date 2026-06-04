@@ -48,21 +48,21 @@ class VLLMAdapter:
             top_p=gen_cfg.top_p,
             max_tokens=gen_cfg.max_tokens,
         )
-        
+
         # Tokenize prompts directly to bypass automatic chat template application
         # This follows the pattern from sparse-attention-hub adapter
         prompt_token_ids = []
         for prompt in prompts:
             token_ids = self._tokenizer.encode(prompt)
             prompt_token_ids.append(token_ids)
-        
+
         # Pass token IDs positionally to stay compatible with vLLM API keyword changes.
         outputs = self._llm.generate(
             prompt_token_ids,
             sampling_params=sampling,
             use_tqdm=False,
         )
-        
+
         texts: List[str] = []
         for output in outputs:
             if not output.outputs:
