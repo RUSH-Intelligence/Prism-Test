@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "deny": [
+      "Edit(.env)",
+      "Edit(.env.local)",
+      "Edit(.env.*.local)",
+      "Edit(**/.env)",
+      "Edit(**/.env.local)",
+      "Edit(**/*.pem)",
+      "Edit(**/*.key)",
+      "Edit(**/credentials*)",
+      "Edit(**/secrets.json)",
+      "Edit(**/secrets.yaml)",
+      "Edit(**/secrets.yml)",
+      "Write(.env)",
+      "Write(.env.local)",
+      "Write(.env.*.local)",
+      "Write(**/.env)",
+      "Write(**/.env.local)",
+      "Write(**/*.pem)",
+      "Write(**/*.key)",
+      "Write(**/credentials*)",
+      "Write(**/secrets.json)",
+      "Write(**/secrets.yaml)",
+      "Write(**/secrets.yml)",
+
+      "Bash(git push --force*)",
+      "Bash(git push -f *)",
+      "Bash(git push --force-with-lease*)",
+      "Bash(git push --no-verify*)",
+      "Bash(git commit --no-verify*)",
+      "Bash(git commit -n *)",
+
+      "Bash(rm -rf /*)",
+      "Bash(rm -rf ~/*)",
+      "Bash(rm -rf .git*)",
+      "Bash(rm -rf eval_harness*)",
+      "Bash(rm -rf results*)",
+      "Bash(rm -rf datasets*)",
+
+      "PowerShell(Remove-Item -Recurse -Force .git*)",
+      "PowerShell(Remove-Item -Recurse -Force eval_harness*)",
+      "PowerShell(Remove-Item -Recurse -Force results*)",
+      "PowerShell(Remove-Item -Recurse -Force datasets*)"
+    ],
+    "ask": [
+      "Edit(.github/workflows/**)",
+      "Write(.github/workflows/**)",
+      "Edit(.pre-commit-config.yaml)",
+      "Edit(.secrets.baseline)",
+      "Bash(git push*)",
+      "PowerShell(git push*)"
+    ]
+  }
+}
