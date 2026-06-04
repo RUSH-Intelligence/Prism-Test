@@ -15,8 +15,8 @@ repos:
       - id: check-case-conflict
       - id: detect-private-key
       - id: check-added-large-files
-        # Block files >1MB. Pushes contributors toward HF Hub / Git LFS for weights & big data.
-        args: ['--maxkb=1000']
+        # Block files >5MB. Pushes contributors toward HF Hub / Git LFS for weights & big data.
+        args: ['--maxkb=5000']
 
   # Secret scanning
   - repo: https://github.com/Yelp/detect-secrets
