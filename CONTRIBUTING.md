@@ -38,6 +38,24 @@ gh pr create --fill
 
 Get at least one review before merging.
 
+## CI checks on pull requests
+
+The same pre-commit hooks also run automatically on every PR via GitHub Actions ([.github/workflows/pre-commit.yml](.github/workflows/pre-commit.yml)). You don't need to do anything to trigger this — opening or updating a PR is enough. Results show up as a check at the bottom of the PR and in the **Actions** tab.
+
+This means hooks run **even if you didn't install pre-commit locally**. Installing it locally is still recommended though — catching issues before you push is much faster than waiting for CI.
+
+**If the PR check fails:**
+
+1. Click **Details** next to the failed check to see which hook complained.
+2. Fix it locally the same way you would for a local hook failure (see the section below). The quickest path is usually:
+   ```bash
+   pre-commit run --all-files   # reproduce CI locally; auto-fixes what it can
+   git add -A
+   git commit -m "fix pre-commit issues"
+   git push
+   ```
+3. The push re-triggers CI automatically. No need to close/reopen the PR.
+
 ## What pre-commit checks
 
 | Check | What it catches |
@@ -106,7 +124,7 @@ A PEM-formatted key (`-----BEGIN ... PRIVATE KEY-----`) was found in a staged fi
 git commit --no-verify
 ```
 
-Skips all hooks for one commit. Use only when you're certain everything is safe — it disables secret scanning too. Avoid making it a habit.
+Skips all hooks for one commit. Use only when you're certain everything is safe — it disables secret scanning too. Avoid making it a habit. Note that `--no-verify` only bypasses *local* hooks; the same checks run in CI on your PR, so a real failure will still block the merge.
 
 ## Tests
 
