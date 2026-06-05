@@ -49,7 +49,12 @@ It runs backend inference (`vllm`, `hf`, or `rag`) and computes benchmark metric
 1. Install dependencies in your environment:
 
 ```bash
-pip install -r requirements-eval.txt
+# loose install (co-exists with your own research env):
+pip install .
+
+# or reproducible install (pinned to the lock):
+uv sync           # if you have uv
+pip install -r requirements.txt   # equivalent with plain pip
 ```
 
 2. Configure your benchmark in `evaluate_config.yaml`.
