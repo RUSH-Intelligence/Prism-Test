@@ -40,9 +40,14 @@ Get at least one review before merging.
 
 ## CI checks on pull requests
 
-The same pre-commit hooks also run automatically on every PR via GitHub Actions ([.github/workflows/pre-commit.yml](.github/workflows/pre-commit.yml)). You don't need to do anything to trigger this — opening or updating a PR is enough. Results show up as a check at the bottom of the PR and in the **Actions** tab.
+Two workflows run automatically on every PR via GitHub Actions:
 
-This means hooks run **even if you didn't install pre-commit locally**. Installing it locally is still recommended though — catching issues before you push is much faster than waiting for CI.
+- **pre-commit** ([.github/workflows/pre-commit.yml](.github/workflows/pre-commit.yml)) — the same hooks you run locally.
+- **tests** ([.github/workflows/tests.yml](.github/workflows/tests.yml)) — runs `python -m unittest discover eval_harness/tests` on a CPU-only Linux runner. No GPU required.
+
+You don't need to do anything to trigger these — opening or updating a PR is enough. Results show up as checks at the bottom of the PR and in the **Actions** tab.
+
+This means both checks run **even if you didn't install pre-commit locally or run tests before pushing**. Doing both locally first is still recommended — catching issues before you push is much faster than waiting for CI.
 
 **If the PR check fails:**
 
@@ -135,3 +140,16 @@ python -m unittest discover eval_harness/tests -v
 ```
 
 Tests should not load real models. See `CLAUDE.md` for the testing convention.
+
+### Smoke tests
+
+Two lightweight smoke tests live alongside the unit tests:
+
+- `test_smoke_imports.py` — every core module imports cleanly; the benchmark registry auto-loads. Catches broken renames and circular imports.
+- `test_smoke_end_to_end.py` — full pipeline (config → runner → benchmark → adapter → scoring → output files) runs against `mock_benchmark` with a fake adapter. Catches wiring breaks between components.
+
+Both run in under a second on CPU and are included in the CI tests workflow. To run just the smoke tests:
+
+```bash
+python -m unittest eval_harness.tests.test_smoke_imports eval_harness.tests.test_smoke_end_to_end -v
+```
