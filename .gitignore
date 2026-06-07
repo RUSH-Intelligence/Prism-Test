@@ -54,7 +54,7 @@ tensorboard/
 *.lance/
 lancedb/
 
-# --- Background process logs (see EVAL_HARNESS.md) ---
+# --- Background process logs (see BENCHMARKING.md) ---
 ollama.log
 wake_lock.log
 nohup.out

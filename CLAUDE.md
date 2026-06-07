@@ -6,7 +6,7 @@ The framework evaluates language models on context lengths far beyond their trai
 
 The framework supports standardized evaluation across benchmarks such as RULER, LOFT, LongBench, InfiniteBench, GSM-Infinite, AIME, and custom long-context tasks, with detailed reporting of both quality and systems metrics including accuracy, retrieval performance, latency, throughput, memory usage, KV-cache size, and prefill/decode efficiency.
 
-User-facing docs: see [EVAL_HARNESS.md](EVAL_HARNESS.md) for setup, supported benchmarks, and the RAG backend (Ollama).
+User-facing docs: [README.md](README.md) for setup/overview, [BENCHMARKING.md](BENCHMARKING.md) for the benchmarker's guide (adapter selection, where to plug code in, research backend internals, RAG/Ollama setup).
 
 ## Repo layout
 
@@ -43,7 +43,7 @@ Results land in `results/<benchmark>__<model>__<backend>__.../{predictions.csv,m
 - **`vllm`** — production path. Prefix caching on by default.
 - **`hf`** — small-context / debugging path. `_prefill` and `_decode` are direct model calls; flash-attn-2 loads natively if available (no override hooks installed).
 - **`research`** — `ResearchAdapter` (subclass of `HFAdapter`) for context compression experiments.
-- **`rag`** — OnePassRAG; requires a running Ollama server (see EVAL_HARNESS.md).
+- **`rag`** — OnePassRAG; requires a running Ollama server (see BENCHMARKING.md).
 
 ## ResearchAdapter — architecture
 

@@ -1,6 +1,6 @@
 # Contributing to Prism-Test
 
-This guide is for developers working on the repo. For how to *use* the eval harness, see [EVAL_HARNESS.md](EVAL_HARNESS.md).
+This guide is for developers working on the repo. For how to *use* the eval harness, see [README.md](README.md); for benchmarking workflows and where to plug your own code in, see [BENCHMARKING.md](BENCHMARKING.md).
 
 ## One-time setup
 
