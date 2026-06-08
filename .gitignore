@@ -1,0 +1,89 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Test / lint / type-check caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# --- Eval harness outputs ---
+# Run artifacts: results/<benchmark>__<model>__<backend>__.../{predictions.csv,metrics.json,config.yaml}
+results/
+
+# --- Model weights & ML caches ---
+# Never commit weights — pull from HF Hub instead.
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.ckpt
+*.gguf
+*.onnx
+.cache/
+hf_cache/
+huggingface/
+
+# Experiment trackers
+wandb/
+mlruns/
+runs/
+tensorboard/
+
+# Vector store / RAG artifacts
+*.lance/
+lancedb/
+
+# --- Background process logs (see BENCHMARKING.md) ---
+ollama.log
+wake_lock.log
+nohup.out
+*.log
+
+# --- Secrets / credentials ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets.yaml
+secrets.yml
+credentials.json
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Editors / IDEs ---
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# --- Claude Code ---
+# Project-shared settings (.claude/settings.json) stay tracked.
+# Personal/local overrides do not.
+.claude/settings.local.json
+.claude/.credentials.json

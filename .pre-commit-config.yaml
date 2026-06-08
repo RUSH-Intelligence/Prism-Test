@@ -1,0 +1,28 @@
+# Run on every commit: `pre-commit install` once, then automatic.
+# Manual run on all files:   `pre-commit run --all-files`
+
+repos:
+  # Standard hygiene checks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: detect-private-key
+      - id: check-added-large-files
+        # Block files >5MB. Pushes contributors toward HF Hub / Git LFS for weights & big data.
+        args: ['--maxkb=5000']
+
+  # Secret scanning
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args: ['--baseline', '.secrets.baseline']
+        # Skip scanning binary-ish data files
+        exclude: '^(datasets/|results/|.*\.jsonl$|.*\.csv$)'
