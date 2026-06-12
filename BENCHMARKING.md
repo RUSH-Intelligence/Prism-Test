@@ -134,7 +134,7 @@ Use this when your method is "decide which tokens to keep / drop / rescore *afte
            ...
    ```
 
-2. Drop the file into [eval_harness/sketch/sketches/](eval_harness/sketch/sketches/), export it from the sketch `__init__` modules, and add a name→class branch in `ResearchAdapter._build_sketch` ([eval_harness/research_adapter.py](eval_harness/research_adapter.py)).
+2. Decorate the class with `@register_sketch("my_sketch")` ([eval_harness/sketch/sketches/registry.py](eval_harness/sketch/sketches/registry.py)) and drop the file into [eval_harness/sketch/sketches/](eval_harness/sketch/sketches/) — sketch modules are auto-discovered on first lookup, so adding a sketch never requires editing shared files. `ResearchAdapter._build_sketch` ([eval_harness/research_adapter.py](eval_harness/research_adapter.py)) resolves `sketch_name` through the registry and passes `sketch_kwargs` to the constructor; the adapter-level `compression_ratio` is injected as a default **only when the class declares a `compression_ratio` dataclass field** (sketches that expose it as a property — `think`, `simlayerkv`, `key_rerotation`, `dms` — must be configured via `sketch_kwargs` or programmatically). Composite sketches whose arguments can't be expressed as flat config kwargs (`DecodingSketch`, `PrefillDecodingSketch`) remain named special cases in `_build_sketch` instead of registry entries.
 
 3. Select it in YAML:
 
@@ -143,22 +143,73 @@ Use this when your method is "decide which tokens to keep / drop / rescore *afte
      cache_config:
        sketch_name: my_sketch
        compression_ratio: 0.5
+       sketch_kwargs: { my_param: 123 }   # extra constructor kwargs, forwarded verbatim
        target_size: 2048
        max_context_length: 65536
    ```
 
+   List the live registry at any time:
+
+   ```python
+   from eval_harness.sketch import available_sketches
+   print(available_sketches())
+   ```
+
 Reference implementations to read first: [knorm_sketch.py](eval_harness/sketch/sketches/knorm_sketch.py), [reattention_sketch.py](eval_harness/sketch/sketches/reattention_sketch.py) (scoring base class in [scorer_sketch.py](eval_harness/sketch/sketches/scorer_sketch.py)), [random_sketch.py](eval_harness/sketch/sketches/random_sketch.py), [decoding_sketch.py](eval_harness/sketch/sketches/decoding_sketch.py).
 
-Shipped sketches:
+Shipped sketches (mostly faithful ports of kvpress 0.5.1 presses — each module's class docstring lists its parameters, the upstream quirks replicated on purpose, and its deviations from kvpress; read it before reporting numbers):
 
 | Sketch                   | Trigger             | What it does                                                  |
 | ------------------------ | ------------------- | ------------------------------------------------------------- |
 | `none`                   | —                   | Pass-through; full KV cache.                                  |
-| `knorm`                  | Prefill             | Keep tokens with smallest ‖K‖ (largest-norm keys evicted).    |
-| `reattention`            | Prefill             | Re-score with QK relevance over middle tokens.                |
-| `random`                 | Prefill             | Random baseline.                                              |
-| `decoding_knorm`         | Decode (periodic)   | Compress mid-decode every `compression_interval` steps.       |
-| `prefill_decoding_knorm` | Prefill + decode    | Compress at prefill end and during decode.                    |
+| `knorm` (alias `knorm_sketch`) | Prefill       | Keep tokens with smallest ‖K‖ (largest-norm keys evicted).    |
+| `reattention` (alias `reattention_sketch`) | Prefill | Re-score with QK relevance over middle tokens.    |
+| `random` (alias `random_sketch`) | Prefill     | Random baseline (uniform random scores).                      |
+| `streaming_llm`          | Prefill             | Keep `n_sink` sink tokens + most recent; prune the middle. Kept keys stay at their original RoPE phases (no rerotation wrapper, as in kvpress). |
+| `keydiff`                | Prefill             | Evict keys most cosine-similar to the per-head mean key direction (keeps distinctive keys). |
+| `lagkv`                  | Prefill             | Lag-relative scoring: each partition is range-normalized by the next partition's min/max; std-softmax scores. |
+| `cur`                    | Prefill             | CurDKV: approximate leverage scores of keys (k2) and values (v2), combined per `leverage_type`. |
+| `leverage`               | Prefill             | Approximate statistical leverage scores of pre-RoPE keys via Gaussian sketch + Cholesky (Compactor component). |
+| `non_causal_attention`   | Prefill             | Compactor's non-causal chunked-attention column-sum scorer (component). |
+| `compactor`              | Prefill             | Full Compactor: z-normalized blend of leverage scores + non-causal attention sums over the sink-protected interior. |
+| `ridge`                  | Prefill             | Value-aware query-ridge scoring (research-fork `RidgePress`, not upstream kvpress); sink + local window always kept. |
+| `random_sketch_press`    | Prefill             | Research-fork `RandomSketchPress`; upstream dead-code bug replicated faithfully, so it behaves identically to `ridge` (pinned by tests). |
+| `expected_attention`     | Prefill             | Predicts future attention from pre-RoPE query mean/covariance rotated to averaged future positions; optional ‖V‖ rescale. |
+| `expected_attention_stats` † | Prefill         | `expected_attention` with pre-computed per-layer calibration query statistics (HF hub repo or local `stats_folder`). |
+| `snapkv`                 | Prefill             | Window attention of the last `window_size` tokens scores the rest (recomputed pre-RoPE queries re-rotated to absolute positions). |
+| `pyramidkv` ‡            | Prefill             | SnapKV scoring with linearly decreasing per-layer budgets (more cache for lower layers); `uniform_budget=True` degenerates to uniform SnapKV. |
+| `tova`                   | Prefill             | Last-token attention row (averaged across query heads) scores previous tokens. |
+| `observed_attention` \*  | Prefill             | Mean attention weight each KV pair actually received during prefill (H2O-related). |
+| `qfilter` †              | Prefill             | Dot products against learned per-model Q-filters (hub collection `nthngdy/q-filters-…`). |
+| `kvzap` †                | Prefill             | Lightweight surrogate model (linear/MLP from `nvidia/KVzap-…`) predicts importance from hidden states; top-k variant only (= kvpress `kvzap_mlp_head`). |
+| `finch`                  | Prefill             | Delimiter-driven SnapKV-style window scoring with per-row normalization; requires `context + delimiter + question` input and a `update_model_and_tokenizer` call before entering the context. |
+| `think`                  | Prefill             | Channel-wise **key** compression: zeroes the lowest-scoring key channels in place (shapes unchanged — no memory savings, by design). |
+| `simlayerkv` ‡           | Prefill             | Detects "lazy" layers via last-token attention concentration; lazy layers keep only sink + recent, others keep everything. |
+| `criticalkv`             | Prefill (wrapper)   | Two-stage selection around an inner scorer: stage 1 by raw scores, stage 2 rescaled by ‖W_o·V‖₁. |
+| `adakv` ◊                | Prefill (masking)   | Head-adaptive top-k across all heads with a per-head `alpha_safeguard` floor. |
+| `critical_adakv` ◊       | Prefill (masking)   | CriticalKV's output-projection rescaling + AdaKV's head-wise budgets. |
+| `dms` ◊                  | Prefill (+ decode if `decoding=True`) (masking) | Dynamic Memory Sparsification: evicts below a score `threshold` (adaptive ratio); sliding window protected. |
+| `duo_attention` ◊ †      | Prefill (masking)   | Splits KV heads into retrieval heads (full cache) vs streaming heads (sink + recent) using pre-computed per-head patterns. |
+| `kvzip` ◊                | Post-prefill scoring passes (masking) | Scores KV pairs by the cross-attention they receive when the model is prompted to *reconstruct* the context (costs ~2–3× prefill). |
+| `fastkvzip` ◊ †          | Prefill (masking)   | Per-layer trained gate networks predict KVzip scores from hidden states alone (`Jang-Hyun/Fast-KVzip` gates; released e.g. for Qwen3). |
+| `block`                  | Prefill (wrapper)   | KeyDiff-paper block processing: streaming top-k over fixed-size blocks with an inner scorer; programmatic construction only (nested sketch arg). |
+| `chunk`                  | Prefill (wrapper)   | Applies an inner scorer independently per fixed-size chunk (FINCH-style uniform selection across the context). |
+| `chunkkv`                | Prefill (wrapper)   | Keeps/drops whole chunks by mean head-summed inner score (inner defaults to `knorm`, so it is YAML-constructible). |
+| `composed`               | Prefill (wrapper)   | Chains multiple sketches sequentially; members may be registry names / `(name, kwargs)` pairs, so it is reachable from flat YAML. |
+| `key_rerotation`         | Prefill (wrapper)   | Re-rotates kept keys to contiguous positions `0..n_kept-1` after an inner scorer prunes. Caveat: this pipeline does not rebase question/decode position ids, leaving a positional gap (warning logged). |
+| `per_layer_compression` ‡ | Prefill (wrapper)  | Applies per-layer `compression_ratios` through an inner scorer (registry name + `press_kwargs` accepted). |
+| `decoding_knorm`         | Decode (periodic)   | Compress mid-decode every `compression_interval` steps. Not in the registry — named special case in `_build_sketch`. |
+| `prefill_decoding_knorm` | Prefill + decode    | Compress at prefill end and during decode. Not in the registry — named special case in `_build_sketch`. |
+
+\* **`observed_attention` requires `attn_implementation: eager`** — only the eager forward returns attention probabilities to the hook; under the default sdpa, `attentions` is `None` and the sketch asserts. Run it with `prefill_method: none`.
+
+† **External assets with injection hooks.** `qfilter`, `kvzap`, `duo_attention`, `expected_attention_stats`, and `fastkvzip` load pre-trained/pre-computed artifacts from the HF hub in `post_init_from_model` (published only for specific models). Each exposes a constructor injection hook for offline compute nodes and tests: `q_filters` (tensor), `model_name_override` (repo-id derivation for local snapshot dirs), `attention_pattern` / `pattern_dir`, `stats_folder`, and `gates` respectively.
+
+◊ **Masking-based presses keep the cache full-length — no memory savings, faithful attention semantics.** `adakv`, `critical_adakv`, `dms`, `duo_attention`, `kvzip`, and `fastkvzip` never physically prune: they record evicted `(batch, head, seq)` indices on `module.masked_key_indices`, and the globally installed attention patch ([eval_harness/sketch/attention_patch.py](eval_harness/sketch/attention_patch.py), applied over `ALL_ATTENTION_FUNCTIONS` at `import eval_harness.sketch`) overwrites those key slots with fake keys such that `exp(⟨q, k_fake⟩) == 0` on every `q_len < k_len` forward, resetting on the next full prefill. Consequences: these are quality-only baselines (logged cache lengths stay at full context length); they require a **non-eager** attention implementation (the runner default sdpa is fine; eager bypasses `ALL_ATTENTION_FUNCTIONS`); and they are incompatible with prefill methods that replace `self_attn.forward` wholesale (`dca`, `reattention_exact`) — the mask would be silently ignored. (`think` also yields no memory savings, via zeroed channels rather than masking.)
+
+‡ **Ragged-cache methods need `flash_attention_2`.** `pyramidkv`, `simlayerkv` (with `lazy_threshold < 1.0`), and `per_layer_compression` (with unequal ratios) retain different lengths per layer; under the pinned transformers, sdpa/eager build one decode mask sized from layer 0, so these sketches' `post_init_from_model` raises unless the model runs flash-attention-2 (or the uniform/no-op escape hatch is used).
+
+Composition caveat: prefill-method hooks fire **before** sketch hooks, and most position-sensitive scorers (snapkv, tova, finch, compactor, qfilter, expected_attention / expected_attention_stats, simlayerkv, think, …) assume vanilla absolute-position RoPE-rotated cached keys — do not combine them with `prefill_method: dca` (cyclic key positions) or cache-pruning hooks; the safe, validated combination is `prefill_method: none` unless a sketch's docstring says otherwise.
 
 ### Layer 2 — a custom attention kernel
 
@@ -229,7 +280,7 @@ The runner feeds all questions for one context together. After the shared prefil
 
 #### Wiring config
 
-`runner._setup_adapter` pulls the `cache_config` dict out of `EvalConfig.llm_kwargs`, converts it to `CacheConfig`, and passes it to `ResearchAdapter`. Relevant fields: `prefill_method` (str, e.g. `"dca"`, `"reattention"`, `"none"`) + `prefill_method_kwargs` (dict), plus the sketch fields (`sketch_name`, `compression_ratio`, …). `ResearchAdapter._build_prefill_method` resolves the name via `prefill_methods.get_prefill_method`. ReAttention's `recall_type` defaults to `'qk'` (options: `qk` | `qkv` | `qkv2`) — this is a method kwarg, **not** an adapter-level selection mode.
+`runner._setup_adapter` pulls the `cache_config` dict out of `EvalConfig.llm_kwargs`, converts it to `CacheConfig`, and passes it to `ResearchAdapter`. Relevant fields: `prefill_method` (str, e.g. `"dca"`, `"reattention"`, `"none"`) + `prefill_method_kwargs` (dict), plus the sketch fields (`sketch_name`, resolved through the `@register_sketch` registry; `sketch_kwargs`, forwarded verbatim to the sketch constructor; `compression_ratio`, injected as a default only when the sketch class declares that dataclass field; …). `ResearchAdapter._build_prefill_method` resolves the name via `prefill_methods.get_prefill_method`. ReAttention's `recall_type` defaults to `'qk'` (options: `qk` | `qkv` | `qkv2`) — this is a method kwarg, **not** an adapter-level selection mode.
 
 ---
 
@@ -337,4 +388,8 @@ pkill -f wake_lock   # only if you started the wake lock
 | RAG: connection refused to Ollama                                    | Start the server first: `~/.ollama/bin/ollama serve`. Verify with `curl http://localhost:11434/api/tags`. |
 | RAG: requests time out after long idle                               | GPU may have entered low-power state — start the wake-lock command shown above.                          |
 | Research backend gives different numbers vs HF on the same prompt    | Confirm `attn_implementation: sdpa` — it is the path the prefill-method/sketch baselines were validated against; FA2 introduces numeric drift vs the SDPA-validated reference. |
+| `observed_attention` asserts / `attentions` is `None`                | It needs eager attention probabilities: set `llm_kwargs: {attn_implementation: eager}` and `prefill_method: none`. |
+| Masking sketch (`adakv`/`dms`/`duo_attention`/`kvzip`/`fastkvzip`/`critical_adakv`) shows full-length cache / no memory savings | Expected — compression is virtual via `masked_key_indices` + the attention patch; these are quality-only baselines. If quality also looks like no compression at all, check you're not on eager attention or a `self_attn.forward`-replacing prefill method (`dca`, `reattention_exact`), both of which bypass the mask. |
+| `ValueError` from `post_init_from_model` about flash attention       | `pyramidkv` / `simlayerkv` / `per_layer_compression` produce a cross-layer ragged cache that only decodes safely under `flash_attention_2`; switch implementation or use the sketch's uniform fallback. |
+| Hub download fails on a compute node (qfilter/kvzap/duo_attention/expected_attention_stats/fastkvzip) | These sketches fetch external assets; pre-fetch and use the injection hook (`q_filters`, `model_name_override`, `attention_pattern`/`pattern_dir`, `stats_folder`, `gates`). |
 | Tests download model weights unexpectedly                            | A test forgot `object.__new__` — file a bug.                                                             |

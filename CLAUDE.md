@@ -19,7 +19,7 @@ eval_harness/
   hf_adapter.py          # HF backend — clean prefill/decode split, native flash attention
   research_adapter.py    # HF subclass: wires prefill_methods (context extension) + sketches (KV compression) into SketchTextGenerationPipeline
   prefill_methods/       # Layer-0 context-extrapolation methods (base.py, registry.py, reattention.py, reattention_exact.py, dca.py)
-  sketch/                # KV-compression sketches + SketchTextGenerationPipeline (pipeline.py)
+  sketch/                # SketchTextGenerationPipeline (pipeline.py), cache_adapter.py, attention_patch.py (global ALL_ATTENTION_FUNCTIONS patch for masking-based sketches), sketches/ (registry.py: @register_sketch auto-discovery; ~36 KV-compression baselines, mostly kvpress 0.5.1 ports)
   kernels/               # Triton einsum-topk + bitonic-merge (ReAttention) + flash-attn-with-LSE (DCA)
   rag_adapter.py, rag/   # OnePassRAG (LanceDB + llm-embedder + Ollama llama3.1)
   benchmarks/            # one module per benchmark; registry.py exposes get_benchmark()
@@ -117,10 +117,54 @@ active and recomputes cyclic query positions per step (`dca._dca_decode_attentio
 
 `runner._setup_adapter` builds a `CacheConfig` from `EvalConfig.llm_kwargs`. Relevant fields:
 `prefill_method` (str, e.g. `"dca"`, `"reattention"`, `"none"`) + `prefill_method_kwargs` (dict),
-and the sketch fields (`sketch_name`, `compression_ratio`, …). `ResearchAdapter._build_prefill_method`
-resolves the name via `prefill_methods.get_prefill_method`. ReAttention's `recall_type` defaults
-to `'qk'` (options: `qk` | `qkv` | `qkv2`) — this is a method kwarg, **not** an adapter-level
-selection mode.
+and the sketch fields (`sketch_name` + `sketch_kwargs`, `compression_ratio`, …).
+`ResearchAdapter._build_prefill_method` resolves the name via `prefill_methods.get_prefill_method`.
+ReAttention's `recall_type` defaults to `'qk'` (options: `qk` | `qkv` | `qkv2`) — this is a method
+kwarg, **not** an adapter-level selection mode.
+
+### Sketches (KV compression) — registry & roster
+
+Sketches live in `eval_harness/sketch/sketches/`, decorate their class with
+`@register_sketch("name")` (`sketches/registry.py`), and are auto-discovered on first lookup —
+adding one never edits shared files. `ResearchAdapter._build_sketch` resolves
+`CacheConfig.sketch_name` through the registry, forwards `CacheConfig.sketch_kwargs` to the
+constructor, and injects the adapter-level `compression_ratio` as a default **only when the class
+declares a `compression_ratio` dataclass field** (property-based ones — `think`, `simlayerkv`,
+`key_rerotation`, `dms` — take it via `sketch_kwargs`/the wrapped sketch). `DecodingSketch` /
+`PrefillDecodingSketch` (`decoding_knorm`, `prefill_decoding_knorm`) stay as named special cases
+in `_build_sketch` because their nested-sketch args aren't flat kwargs. Live list:
+`from eval_harness.sketch import available_sketches`.
+
+The roster (kv_baselines branch) is mostly faithful kvpress 0.5.1 ports — each class docstring
+documents params, replicated upstream quirks, and deviations: scorers `knorm`, `random`,
+`reattention`, `streaming_llm`, `keydiff`, `lagkv`, `cur`, `leverage`, `non_causal_attention`,
+`compactor`, `ridge`, `random_sketch_press` (research-fork; dead-code bug replicated ⇒ ≡ `ridge`),
+`expected_attention`, `expected_attention_stats`, `snapkv`, `pyramidkv`, `tova`,
+`observed_attention`, `qfilter`, `kvzap`, `finch`, `think` (key-channel zeroing), `simlayerkv`;
+masking-based `adakv`, `critical_adakv`, `dms`, `duo_attention`, `kvzip`, `fastkvzip`; wrappers
+`criticalkv`, `block`, `chunk`, `chunkkv`, `composed`, `key_rerotation`, `per_layer_compression`.
+
+Constraints to keep in mind when wiring runs or reviewing changes:
+
+- **`observed_attention` needs `attn_implementation: eager`** (only eager returns attention
+  probabilities to the hook; sdpa passes `attentions=None` and the sketch asserts).
+- **External assets + injection hooks**: `qfilter` (`q_filters`), `kvzap`
+  (`model_name_override`), `duo_attention` (`attention_pattern`/`pattern_dir`),
+  `expected_attention_stats` (`stats_folder`), `fastkvzip` (`gates`) download model-specific
+  artifacts from the HF hub in `post_init_from_model`; use the injection hook on offline nodes
+  and in tests.
+- **Masking-based presses keep the cache full-length** — no memory savings, faithful attention
+  semantics: they record pruned indices on `module.masked_key_indices`, consumed by
+  `sketch/attention_patch.py` (patches `ALL_ATTENTION_FUNCTIONS` at `import eval_harness.sketch`;
+  fake keys with `exp(⟨q,k⟩)=0` on every `q_len < k_len` forward, reset at next full prefill).
+  They require non-eager attention (sdpa default OK) and are incompatible with
+  `self_attn.forward`-replacing prefill methods (`dca`, `reattention_exact`).
+- **Ragged-cache sketches need flash_attention_2**: `pyramidkv`, `simlayerkv`
+  (`lazy_threshold < 1`), `per_layer_compression` (unequal ratios) — `post_init_from_model`
+  raises otherwise (sdpa/eager share one decode mask sized from layer 0).
+- Most position-sensitive scorers assume vanilla absolute-position rotated keys: do **not**
+  combine with `prefill_method: dca` (cyclic positions); validated combo is
+  `prefill_method: none` unless the docstring says otherwise.
 
 ## Conventions
 
@@ -128,4 +172,5 @@ selection mode.
 - Position IDs everywhere are *absolute* (token's position in the full sequence), not chunk-relative.
 - New benchmarks: drop into `eval_harness/benchmarks/`, subclass `base.Benchmark`, register in `registry.py`.
 - New prefill methods: drop into `eval_harness/prefill_methods/`, subclass `PrefillMethod`, decorate with `@register_prefill_method`. Override `prefill_forward_hook` for a post-attention prune (ReAttention-style) or override `__call__` to replace `self_attn.forward` (DCA-style). Custom kernels live in `eval_harness/kernels/`.
+- New sketches: drop into `eval_harness/sketch/sketches/`, subclass `BaseSketch` (or `ScorerSketch` for score-and-topk methods), decorate with `@register_sketch` — auto-discovered, selected via `cache_config.sketch_name` + `sketch_kwargs`. Ports of kvpress presses replicate upstream quirks on purpose and document deviations in the class docstring; keep that contract when editing.
 - The HF `DynamicCache` on the research path stores **RoPE-rotated** K/V. `KnormSketch` norm-scoring is still valid (RoPE is orthogonal, norms preserved), but any consumer that assumes contiguous absolute positions must account for DCA's cyclic-rotated keys.
