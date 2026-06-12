@@ -264,10 +264,14 @@ class DuoAttentionSketch(BaseSketch):
             config = json.loads((pattern_dir / "config.json").read_text())
             head_scores = np.loadtxt(pattern_dir / "full_attention_heads.tsv", dtype=float, delimiter="\t")
         else:
-            import requests  # type: ignore[import-untyped]
-
             name = model.config.name_or_path
             assert name in PATTERNS_DICT, f"Checkpoint {name} not in {list(PATTERNS_DICT.keys())}"
+
+            # Imported only on the download path: `requests` is not a dependency of the
+            # minimal test environment, and the unknown-checkpoint assert must fire
+            # without it.
+            import requests  # type: ignore[import-untyped]
+
             url = f"{_BASE_URL}/{PATTERNS_DICT[name]}/"
             config = requests.get(url + "config.json").json()
             text = requests.get(url + "full_attention_heads.tsv").text
