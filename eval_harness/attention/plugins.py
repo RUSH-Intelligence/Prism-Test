@@ -1,3 +1,12 @@
+"""Attention plugin registry for HF ALL_ATTENTION_FUNCTIONS-style dispatch.
+
+NOTE: this package is an intentionally UNWIRED seam — nothing in production
+imports it (only its own test, ``eval_harness/tests/test_attention_plugins.py``).
+It is kept pending the keep-or-grow decision recorded in Progress.md item 6
+("Attention-plugin seam"): either grow it into the Tier-1 RoPE/attention
+interceptor or drop it.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

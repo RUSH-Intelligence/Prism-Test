@@ -13,7 +13,7 @@ class EvalConfig:
     benchmark: str = "ruler32k"
     subsets: Optional[str] = None
 
-    # Inference backend: "vllm", "hf", or "rag"
+    # Inference backend: "vllm", "hf", "rag", or "research"
     backend: str = "vllm"
 
     # Model and runtime.

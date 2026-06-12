@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict, fields
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from .config import EvalConfig, load_yaml_config
@@ -65,6 +66,12 @@ def main() -> None:
         "max_requests": args.max_requests,
         "fraction": args.fraction,
     }
+
+    # Fail fast with a clean one-liner instead of a traceback (message mirrors
+    # load_yaml_config's). Only the config path is pre-validated here so other
+    # FileNotFoundErrors (e.g. a missing dataset) still surface as tracebacks.
+    if args.config_file and not Path(args.config_file).is_file():
+        raise SystemExit(f"Config file not found: {Path(args.config_file).resolve()}")
 
     result = CliEntryPoint().run(config_file=args.config_file, **overrides)
     print(result)

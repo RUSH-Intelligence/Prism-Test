@@ -75,9 +75,10 @@ Context-extension / compression behavior is supplied by `eval_harness/prefill_me
 `eval_harness/sketch/sketches/`, installed by the pipeline as **nested context managers**
 (`prefill_method(model)` outer, `sketch(model)` inner) so forward hooks fire method-then-sketch:
 
-1. **Post-attention prune hook** (`PrefillMethod.prefill_forward_hook`, `base.py:97`): fires
+1. **Post-attention prune hook** (`PrefillMethod.prefill_forward_hook`, `base.py`): fires
    *after* each full-attention layer during prefill, may return `(keys, values)` to replace the
-   cache contents. No-ops on decode (`base.py:_is_decoding_step`). **ReAttention** uses this:
+   cache contents. No-ops on decode (via `BaseSketch._is_decoding_step`,
+   `sketch/sketches/base_sketch.py`). **ReAttention** uses this:
    it un-rotates cached K to score raw Q·K, selects `[global | top-k middle | local]`, and
    prunes the cache. Prefill-only. Because HF's normal decode shares ONE causal mask/position
    grid across layers (sized from layer 0), per-layer selection must not leave a *ragged*
@@ -86,7 +87,7 @@ Context-extension / compression behavior is supplied by `eval_harness/prefill_me
    layers recency-padded, longer layers shrunk by the frequency-clip rule). Set
    `uniform_retained=False` only for single-layer models / custom decode paths.
 2. **Full `self_attn.forward` replacement** (monkeypatch): for methods that must change *how*
-   attention scores positions. **DCA** uses this (`DCAMethod.__call__`, `dca.py:142`), staying active across
+   attention scores positions. **DCA** uses this (`DCAMethod.__call__`, `dca.py`), staying active across
    **both prefill and decode** — it stores keys rotated at cyclic position `pos % chunk_len`
    and runs the 3-component intra/successive/inter decomposition merged by online-softmax
    (`kernels/dca_flash.py`). **ReAttention-exact** (`reattention_exact.py`, registered
