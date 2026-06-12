@@ -6,6 +6,12 @@ from eval_harness.sketch.sketches.knorm_sketch import KnormSketch
 from eval_harness.sketch.sketches.prefill_decoding_sketch import PrefillDecodingSketch
 from eval_harness.sketch.sketches.reattention_sketch import ReAttentionSketch
 from eval_harness.sketch.sketches.random_sketch import RandomSketch
+from eval_harness.sketch.sketches.registry import (
+    available_sketches,
+    get_sketch,
+    get_sketch_class,
+    register_sketch,
+)
 from eval_harness.sketch.sketches.scorer_sketch import ScorerSketch
 
 patch_attention_functions()
@@ -19,4 +25,8 @@ __all__ = [
     "DecodingSketch",
     "PrefillDecodingSketch",
     "SketchTextGenerationPipeline",
+    "available_sketches",
+    "get_sketch",
+    "get_sketch_class",
+    "register_sketch",
 ]

@@ -4,9 +4,11 @@ import math
 import torch
 from torch import nn
 
+from eval_harness.sketch.sketches.registry import register_sketch
 from eval_harness.sketch.sketches.scorer_sketch import ScorerSketch
 
 
+@register_sketch("reattention", aliases=["reattention_sketch"])
 @dataclass
 class ReAttentionSketch(ScorerSketch):
     """Score keys by query-key affinity and keep top-K positions.

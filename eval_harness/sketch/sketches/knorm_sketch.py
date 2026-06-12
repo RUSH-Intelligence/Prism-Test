@@ -3,9 +3,11 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 
+from eval_harness.sketch.sketches.registry import register_sketch
 from eval_harness.sketch.sketches.scorer_sketch import ScorerSketch
 
 
+@register_sketch("knorm", aliases=["knorm_sketch"])
 @dataclass
 class KnormSketch(ScorerSketch):
     def score(
