@@ -24,7 +24,9 @@ class DecodingSketch(BaseSketch):
     hidden_states_buffer_size: int = 256
 
     def __post_init__(self):
-        assert isinstance(self.base_sketch, (ScorerSketch, AdaKVSketch)), "DecodingSketch requires a ScorerSketch as input"
+        assert isinstance(
+            self.base_sketch, (ScorerSketch, AdaKVSketch)
+        ), "DecodingSketch requires a ScorerSketch or AdaKVSketch as input"
         self.hidden_states_buffer = defaultdict(list)
         self.layer_step_counts = defaultdict(int)
 

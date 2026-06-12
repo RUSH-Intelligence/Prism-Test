@@ -29,11 +29,14 @@ def register_sketch(
 ):
     """Decorator to register a sketch class.
 
+    ``aliases`` exists for legacy names that predate the registry (e.g.
+    ``knorm_sketch``); new sketches register a single canonical name.
+
     Usage::
 
-        @register_sketch("snapkv", aliases=["snapkv_sketch"])
+        @register_sketch("knorm", aliases=["knorm_sketch"])
         @dataclass
-        class SnapKVSketch(ScorerSketch):
+        class KnormSketch(ScorerSketch):
             ...
     """
 

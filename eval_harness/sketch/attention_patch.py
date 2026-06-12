@@ -14,6 +14,13 @@ def search_hyperplane(X, max_iter: int = 1000):
 
 def attention_patch(func):
     def wrapper(module, query, key, value, attention_mask, dropout, **kwargs):
+        # masked_key_indices reset ONLY at the next full prefill, on purpose:
+        # across the pipeline's multi-question loop, restore_after_question
+        # crops the cache back to the post-prefill prefix the indices were
+        # computed on, so they stay valid for every question of the same
+        # context. Decode-time *evicting* wrappers around a masking sketch
+        # would shift positions and break this invariant; that combination
+        # fails loudly here (out-of-range index), it cannot corrupt silently.
         if query.shape[2] == key.shape[2]:
             module.masked_key_indices = None
         elif getattr(module, "masked_key_indices", None) is not None:

@@ -18,9 +18,10 @@ class StreamingLLMSketch(ScorerSketch):
 
     Based on StreamingLLM (https://arxiv.org/abs/2309.17453).
     Direct port of kvpress 0.5.1 ``StreamingLLMPress`` (presses/streaming_llm_press.py).
-    As in kvpress, fully matching the paper would additionally require a
-    key-rerotation wrapper (kvpress ``KeyRerotationPress``, not ported); kept keys
-    deliberately stay at their original RoPE phases.
+    As in kvpress, fully matching the paper would additionally require the
+    key-rerotation wrapper (ported as the ``key_rerotation`` sketch, mirroring
+    kvpress ``KeyRerotationPress``), which is not composed here by default;
+    kept keys deliberately stay at their original RoPE phases.
 
     Parameters
     ----------
