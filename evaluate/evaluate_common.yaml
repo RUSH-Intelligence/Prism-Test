@@ -1,0 +1,129 @@
+# ============================================================================
+# Common research-backend template — prefill baseline + KV compression
+# ============================================================================
+# The full research-backend surface in one file: pick ANY prefill
+# (context-extension) baseline AND any KV-compression sketch.  Active
+# defaults: ReAttention hook port + knorm 50% pruning on a 128k-native model.
+#
+#   python -m eval_harness.cli run --config_file ./evaluate/evaluate_common.yaml
+#
+# ---------------------------------------------------------------------------
+# COMPATIBILITY MATRIX (prefill_method x sketch_name) — not every combination
+# is sound; the pipeline installs prefill_method (outer) then sketch (inner),
+# so post-attention hooks fire method-first:
+#
+#   prefill_method      | sketch allowed?
+#   --------------------+------------------------------------------------------
+#   none                | any            (pure KV-compression run — see
+#                       |                 evaluate_kv.yaml)
+#   reattention (hook)  | any            (both are cache-pruning hooks on the
+#                       |                 normal rotated-KV cache; method prunes
+#                       |                 to [global|mid|local], sketch prunes
+#                       |                 further)
+#   dca                 | none ONLY      (DCA caches keys RoPE-rotated at cyclic
+#                       |                 positions and slices the cache by
+#                       |                 index ranges at decode; any pruning
+#                       |                 sketch silently misaligns the chunks)
+#   reattention_exact   | none ONLY      (requires an unpruned raw-KV cache;
+#                       |                 a rewriting sketch trips its
+#                       |                 RuntimeError guard)
+#
+# For the verified single-method paper baselines use the dedicated files:
+# evaluate_reattention.yaml (reattention_exact) and evaluate_dca.yaml.
+# ---------------------------------------------------------------------------
+
+# Available benchmarks:
+#   aime, aime2024, aime2025, gsm_infinite_hard_128k, gsm_infinite_medium_128k,
+#   gsm_infinite_symbolic_128k, infinite_bench, mock_benchmark,
+#   ruler, ruler16k, ruler32k, ruler64k, ruler128k,
+#   longbench, longbenchv2, loft, loft_rag, loogle, prism1m, zero_scrolls
+benchmark: ruler16k
+# Comma-separated subset list; null = all benchmark defaults.
+subsets: niah_single_1,niah_single_3,niah_multikey_3
+
+# Inference backend: vllm | hf | rag | research
+# (prefill methods and sketches BOTH need research)
+backend: research
+
+# Gated HF repo: accept the Meta license on the Hub and authenticate
+# (HF_TOKEN / `huggingface-cli login`) before running.  128k-native default
+# so ruler16k stays positionally in-window; switch to meta-llama/Meta-Llama-3-8B
+# (8k native) when the prefill method itself is the context-extension under
+# test (as in the dedicated baseline files).
+model: meta-llama/Llama-3.1-8B-Instruct
+
+# Runtime
+tensor_parallel_size: 1        # vLLM-only; ignored by the research backend (single-GPU .to("cuda"))
+dtype: bfloat16                # keep bf16/fp16: the einsum_topk Triton kernel requires it
+max_model_len: 18000           # pipeline truncation cap for ruler16k (used because
+                               # cache_config.max_context_length below is null).
+                               # Raise for longer benchmarks (e.g. 66000 for ruler64k).
+gpu_memory_utilization: 0.9    # vLLM-only; ignored by the research backend
+trust_remote_code: true
+enable_prefix_caching: true    # vLLM-only; ignored by the research backend
+
+# Generation
+max_new_tokens: 128
+temperature: 0.0               # greedy
+top_p: 1.0
+system_prompt: null
+seed: 42
+
+# Evaluation limits (max_requests applies PER SUBSET — runner.py:79)
+max_requests: 200
+fraction: 1.0
+query_aware: false
+
+# Combo-specific subdir: the auto-named run dir encodes benchmark/model/
+# backend but NOT the method/sketch, so this file and evaluate_kv.yaml (same
+# model/benchmark) would otherwise write to the same directory.
+output_dir: ./results/common
+
+llm_kwargs:
+  # runner._setup_adapter (runner.py:141) defaults this to sdpa anyway; sdpa
+  # is the research backend's validated parity path.
+  attn_implementation: sdpa
+
+  # This dict becomes research_adapter.CacheConfig (runner.py:144-145).
+  cache_config:
+    # --- KV-compression sketch ---------------------------------------------
+    # none | knorm | reattention | random | decoding_knorm | prefill_decoding_knorm
+    # (see evaluate_kv.yaml for per-sketch descriptions; respect the
+    # compatibility matrix above when a prefill method is active)
+    sketch_name: knorm
+    compression_ratio: 0.5          # fraction of the cache PRUNED, in [0, 1)
+    compression_interval: 512       # decoding-sketches only
+    target_size: 2048               # decoding-sketches only
+    hidden_states_buffer_size: 256  # decoding-sketches only
+    max_context_length: null        # null -> fall back to max_model_len above
+    log_cache_seq_len: true         # log per-layer cache lengths (shows the
+                                    # combined method+sketch pruning)
+
+    # --- Prefill method (context extension) --------------------------------
+    # none | reattention | reattention_exact | dca (aliases: dual_chunk_attention,
+    # chunkllama).  Active default: the ReAttention HOOK port — exact full
+    # prefill attention, then post-attention pruning of the decode-facing
+    # cache to [global | top-k middle | local].  It composes with sketches
+    # (see matrix); contrast with reattention_exact, which bounds the
+    # attention scope during prefill itself (paper baseline, sketch-free).
+    prefill_method: reattention
+    prefill_method_kwargs:
+      global_size: 32           # sink tokens always retained
+      local_size: 4096          # local window always retained
+      mid_size: 4               # top-k middle keys per (head, query)
+      span_size: 32             # span expansion around selected middles
+      recall_type: qk           # qk | qkv | qkv2 (k | v are reattention_exact-only)
+      recall_clip: 127          # cap on span seeds: retained middle <= clip*span;
+                                # 32 + 127*32 + 4096 = 8192 retained positions
+      use_triton_kernel: auto   # auto | force | "off" (QUOTE "off"!).  The hook
+                                # port's kernel needs 128-aligned local windows —
+                                # leave auto here (dense fallback is fine at 16k);
+                                # at 64k use align_local_to_128: true + force
+                                # (dense fp32 scores OOM otherwise)
+      align_local_to_128: false # true mimics the reference's unconditional
+                                # 128-alignment and enables the Triton kernel
+      uniform_retained: true    # REQUIRED for multi-layer models: equalizes
+                                # per-layer retention so HF decode's shared
+                                # causal mask sees a non-ragged cache
+      uniform_budget: null      # null -> first hooked layer's selection size
+      reposition: false         # experimental end-anchored re-rotation; keep off

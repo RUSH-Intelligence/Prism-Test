@@ -1,0 +1,65 @@
+# ============================================================================
+# Clean HuggingFace backend — vanilla model, no compression, no prefill method
+# ============================================================================
+# Runs the model through HFAdapter (eval_harness/hf_adapter.py): one full
+# prefill forward pass building the KV cache, then per-token greedy decode.
+# No sketch hooks, no prefill-method monkeypatch — this is the unmodified-model
+# reference that the research-backend methods are compared against.
+#
+#   python -m eval_harness.cli run --config_file ./evaluate/evaluate_hf.yaml
+#
+# NOTE: the hf backend applies NO truncation cap (HFAdapter ignores
+# max_model_len at load time) and NO chat template (runner formats prompts as
+# context+question+answer_prefix).  The default model below handles 128k
+# natively, so ruler16k is in-window.  To measure the *collapse* reference of
+# the 8k base model the prefill baselines extend (evaluate_reattention.yaml /
+# evaluate_dca.yaml use meta-llama/Meta-Llama-3-8B), set that model here —
+# expect degenerate output beyond 8192, which is the point of that run.
+
+# Available benchmarks:
+#   aime, aime2024, aime2025, gsm_infinite_hard_128k, gsm_infinite_medium_128k,
+#   gsm_infinite_symbolic_128k, infinite_bench, mock_benchmark,
+#   ruler, ruler16k, ruler32k, ruler64k, ruler128k,
+#   longbench, longbenchv2, loft, loft_rag, loogle, prism1m, zero_scrolls
+benchmark: ruler16k
+# Comma-separated subset list; null = all benchmark defaults.  Default: the
+# same three anchors as the baseline configs, for direct comparison.
+subsets: niah_single_1,niah_single_3,niah_multikey_3
+
+# Inference backend: vllm | hf | rag | research
+backend: hf
+
+# Gated HF repo: accept the Meta license on the Hub and authenticate
+# (HF_TOKEN / `huggingface-cli login`) before running.
+model: meta-llama/Llama-3.1-8B-Instruct
+
+# Runtime
+tensor_parallel_size: 1        # vLLM-only; ignored by the hf backend
+dtype: bfloat16
+max_model_len: 18000           # IGNORED by the hf backend (HFAdapter deletes it);
+                               # kept for easy backend switching
+gpu_memory_utilization: 0.9    # vLLM-only; ignored by the hf backend
+trust_remote_code: true
+enable_prefix_caching: true    # vLLM-only; ignored by the hf backend
+
+# Generation
+max_new_tokens: 128
+temperature: 0.0               # greedy
+top_p: 1.0
+system_prompt: null
+seed: 42
+
+# Evaluation limits (max_requests applies PER SUBSET — runner.py:79)
+max_requests: 200
+fraction: 1.0
+query_aware: false
+
+output_dir: ./results
+
+# llm_kwargs are passed straight to AutoModelForCausalLM.from_pretrained
+# (hf_adapter._load_model).  attn_implementation is optional: when omitted,
+# the loader tries flash_attention_2 first, then sdpa, then transformers'
+# default if both raise (hf_adapter.py:287-296) — i.e. native flash
+# attention when available.
+llm_kwargs: {}
+#  attn_implementation: flash_attention_2   # uncomment to pin a specific impl

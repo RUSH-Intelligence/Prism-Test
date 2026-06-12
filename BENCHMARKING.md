@@ -45,7 +45,7 @@ If your experiment isn't a variation on one of these, double-check that this har
 | ----------- | ----------------------------------------------------- | --------------------------------------------------------- | ------------------------------------------------------ |
 | `vllm`      | Production-quality numbers; large-batch eval.         | Best throughput; prefix caching across same-context Qs.   | No attention-internals access.                         |
 | `hf`        | Small-context debugging; profiling.                   | Clean `_prefill`/`_decode` split; native FA2 if present.  | Slow; no prefix caching.                               |
-| `research`  | Sparse attention, KV sketches, custom kernels.        | Raw pre-RoPE Q/K at the attention hook; chunked prefill.  | Requires `attn_implementation: sdpa`.                  |
+| `research`  | Context extension, KV sketches, custom kernels.       | Rotated K/V `DynamicCache`; single full-context prefill pass. | Defaults to `attn_implementation: sdpa` (the validated parity path). |
 | `rag`       | Retrieval baselines.                                  | OnePassRAG (LanceDB + llm-embedder + Ollama llama3.1).    | Different architecture — not apples-to-apples.         |
 
 Rules of thumb:
@@ -59,17 +59,21 @@ Rules of thumb:
 
 ## Configure a run
 
-The full config lives in [evaluate_config.yaml](evaluate_config.yaml). Run with:
+Ready-made configs live in [evaluate/](evaluate/): `evaluate_vllm.yaml` /
+`evaluate_hf.yaml` (clean no-method baselines), `evaluate_kv.yaml`
+(KV-compression sketch only), `evaluate_dca.yaml` / `evaluate_reattention.yaml`
+(verified paper baselines), and `evaluate_common.yaml` (the full research
+surface, including the prefill_method × sketch compatibility matrix). Run with:
 
 ```bash
-python -m eval_harness.cli run --config_file ./evaluate_config.yaml
+python -m eval_harness.cli run --config_file ./evaluate/evaluate_common.yaml
 ```
 
 Or override any field on the CLI:
 
 ```bash
 python -m eval_harness.cli run \
-  --config_file ./evaluate_config.yaml \
+  --config_file ./evaluate/evaluate_common.yaml \
   --benchmark ruler64k \
   --subsets qa_1,qa_2 \
   --backend research \
@@ -88,11 +92,11 @@ Before publishing a comparison, confirm each of the following is **intentional**
 | `temperature` / `top_p`    | Default `0.0` (greedy). Change only when explicitly reporting a sampling experiment.            |
 | `seed`                     | Default `42`; rows are random-subsampled when `fraction < 1.0`. Same seed → same rows.          |
 | `enable_prefix_caching`    | vLLM only. On by default. Turn off only when measuring cold-prefill cost.                       |
-| `attn_implementation`      | `sdpa` for `research` (required for `ALL_ATTENTION_FUNCTIONS` dispatch); `flash_attention_2` for `hf`. vLLM ignores it. |
+| `attn_implementation`      | `sdpa` for `research` (the parity path the prefill-method hooks are validated against); `flash_attention_2` for `hf`. vLLM ignores it. |
 | `max_model_len`            | Override the model's positional cap when running past its training window.                      |
 | `query_aware`              | If `True`, the question is concatenated into the context — needed for some query-aware methods. Note it in your write-up. |
 | `max_requests` / `max_requests_per_subset` | Subsampling caps. Same value across compared runs or numbers don't line up.    |
-| `llm_kwargs.cache_config`  | Sketch name, compression ratio, target size, chunk size. Pin all four when comparing sketches.  |
+| `llm_kwargs.cache_config`  | Sketch name, compression ratio, target size, and `prefill_method` (+ its kwargs). Pin all of these when comparing runs.  |
 
 ### Output format
 
@@ -113,6 +117,8 @@ The raw `context` column is **not** persisted (it can be hundreds of thousands o
 
 There are three layers, from least to most invasive. **Use the smallest one that fits your work.** Going deeper than necessary means more code to maintain and more places your method can drift from the reference path.
 
+(A fourth option — Layer 0, a new context-extension *prefill method* — is covered in [Research backend architecture](#research-backend-architecture): subclass `PrefillMethod`, register with `@register_prefill_method`.)
+
 ### Layer 1 — a KV-cache compression sketch
 
 Use this when your method is "decide which tokens to keep / drop / rescore *after* the keys and values exist." Sketches run as a `forward_hook` on each attention layer at the end of prefill.
@@ -128,7 +134,7 @@ Use this when your method is "decide which tokens to keep / drop / rescore *afte
            ...
    ```
 
-2. Drop the file into [eval_harness/sketch/sketches/](eval_harness/sketch/sketches/) and wire it into the sketch selector in [eval_harness/sketch/](eval_harness/sketch/).
+2. Drop the file into [eval_harness/sketch/sketches/](eval_harness/sketch/sketches/), export it from the sketch `__init__` modules, and add a name→class branch in `ResearchAdapter._build_sketch` ([eval_harness/research_adapter.py](eval_harness/research_adapter.py)).
 
 3. Select it in YAML:
 
@@ -141,14 +147,14 @@ Use this when your method is "decide which tokens to keep / drop / rescore *afte
        max_context_length: 65536
    ```
 
-Reference implementations to read first: [knorm_sketch.py](eval_harness/sketch/sketches/knorm_sketch.py), [scorer_sketch.py](eval_harness/sketch/sketches/scorer_sketch.py) (reattention), [random_sketch.py](eval_harness/sketch/sketches/random_sketch.py), [decoding_sketch.py](eval_harness/sketch/sketches/decoding_sketch.py).
+Reference implementations to read first: [knorm_sketch.py](eval_harness/sketch/sketches/knorm_sketch.py), [reattention_sketch.py](eval_harness/sketch/sketches/reattention_sketch.py) (scoring base class in [scorer_sketch.py](eval_harness/sketch/sketches/scorer_sketch.py)), [random_sketch.py](eval_harness/sketch/sketches/random_sketch.py), [decoding_sketch.py](eval_harness/sketch/sketches/decoding_sketch.py).
 
 Shipped sketches:
 
 | Sketch                   | Trigger             | What it does                                                  |
 | ------------------------ | ------------------- | ------------------------------------------------------------- |
 | `none`                   | —                   | Pass-through; full KV cache.                                  |
-| `knorm`                  | Prefill             | Keep tokens with largest ‖K‖.                                 |
+| `knorm`                  | Prefill             | Keep tokens with smallest ‖K‖ (largest-norm keys evicted).    |
 | `reattention`            | Prefill             | Re-score with QK relevance over middle tokens.                |
 | `random`                 | Prefill             | Random baseline.                                              |
 | `decoding_knorm`         | Decode (periodic)   | Compress mid-decode every `compression_interval` steps.       |
@@ -156,35 +162,33 @@ Shipped sketches:
 
 ### Layer 2 — a custom attention kernel
 
-Use this when you need a different *kernel* (Triton, a FlashAttention variant, custom CUDA) but the same selection + RoPE pipeline that the research backend provides.
+Use this when you need a different *kernel* (Triton, a FlashAttention variant, custom CUDA) underneath a prefill method's scoring or attention path.
 
-Subclass [`ResearchAdapter`](eval_harness/research_adapter.py) and override one or both of:
+There is no `_prefill_attn_impl` / `_decode_attn_impl` seam on the adapter. Kernels are called directly from the prefill method that owns them. The two shipped seams to read and model your own on:
 
-- `_prefill_attn_impl(query, key, value, attention_mask, ...)`
-- `_decode_attn_impl(query, key, value, ...)`
+- [`einsum_topk_func`](eval_harness/kernels/einsum_topk.py) — ReAttention's Triton kernel for fused QK scoring + top-k token selection over the cached keys.
+- [`flash_attn_with_lse`](eval_harness/kernels/dca_flash.py) — DCA's FlashAttention variant returning the log-sum-exp, used to merge the intra/successive/inter attention components with online softmax.
 
-**Do not** override `prefill_attention` / `decode_attention` themselves. Those are the *integration boundary* — they handle selection and RoPE; your algorithm lives below them.
+A new kernel lives in [eval_harness/kernels/](eval_harness/kernels/) and is invoked from your prefill method's hook (`prefill_forward_hook`) or `self_attn.forward` replacement (see [Layer 3](#layer-3--modify-the-research-adapter-itself) and [Research backend architecture](#research-backend-architecture)).
 
-Invariants you must respect (see [Research backend architecture](#research-backend-architecture) for details):
+Invariant you must respect:
 
-- Position IDs are **absolute** (token's index in the full sequence), never chunk-relative.
-- Raw K/V is accumulated in HF's `DynamicCache` — no separate cache storage needed.
-- `T_prev = keys.shape[-2] - queries.shape[-2]` is the absolute start of the current chunk.
+- Position IDs are **absolute** (token's index in the full sequence), never chunk-relative — except where a method deliberately re-rotates keys at cyclic positions (DCA stores keys at `pos % chunk_len`).
 
 ### Layer 3 — modify the research adapter itself
 
-Use this when none of the above fits — e.g., you want a different selection strategy, a different chunking scheme, or to replace the identity-RoPE intercept.
+Use this when none of the above fits — e.g., you want a new context-extension mechanism, or to change how the pipeline installs the prefill method and sketch.
 
 Files you'll touch:
 
-- [eval_harness/research_adapter.py](eval_harness/research_adapter.py) — adapter, identity-RoPE interceptor, attention hooks, sparse selector wiring.
-- [eval_harness/sketch/attention_patch.py](eval_harness/sketch/attention_patch.py) — `ALL_ATTENTION_FUNCTIONS` patching.
-- [eval_harness/sketch/cache_adapter.py](eval_harness/sketch/cache_adapter.py) — `DynamicCache` semantics with raw K/V.
+- [eval_harness/research_adapter.py](eval_harness/research_adapter.py) — the thin `HFAdapter` subclass that builds the `sketch` and `prefill_method` from `CacheConfig` and runs them through the pipeline.
+- [eval_harness/sketch/pipeline.py](eval_harness/sketch/pipeline.py) — `SketchTextGenerationPipeline`; single full-context prefill (`_forward`) and per-token decode (`generate_answer`), and the nested install of `prefill_method` (outer) and `sketch` (inner).
+- [eval_harness/sketch/cache_adapter.py](eval_harness/sketch/cache_adapter.py) — `DynamicCache` semantics (rotated K/V) and the length-based multi-question checkpoint/restore.
 
 Tests that must keep passing:
 
 - [eval_harness/tests/test_research_adapter.py](eval_harness/tests/test_research_adapter.py)
-- [eval_harness/tests/test_identity_rope_equivalence.py](eval_harness/tests/test_identity_rope_equivalence.py)
+- [eval_harness/tests/test_prefill_methods.py](eval_harness/tests/test_prefill_methods.py)
 - [eval_harness/tests/test_cache_adapter.py](eval_harness/tests/test_cache_adapter.py)
 
 If you find yourself working here, document *why* in your branch — Layer 3 changes affect the meaning of every other experiment run on the research backend.
@@ -193,44 +197,39 @@ If you find yourself working here, document *why* in your branch — Layer 3 cha
 
 ## Research backend architecture
 
-You only need this section if you're working at Layer 2 or 3. The research backend exists because attention-compression research needs two things stock HF doesn't give you:
+You only need this section if you're working at Layer 0, 2, or 3. `ResearchAdapter` ([eval_harness/research_adapter.py](eval_harness/research_adapter.py)) is a thin `HFAdapter` subclass. It does **not** install an identity-RoPE swap or an attention-function override; it builds a `sketch` (KV compression) and a `prefill_method` (context extension) from `CacheConfig` and runs everything through `SketchTextGenerationPipeline` ([eval_harness/sketch/pipeline.py](eval_harness/sketch/pipeline.py)).
 
-1. **Raw, pre-RoPE Q/K at the attention boundary** — so the kernel can choose tokens, then apply RoPE with original absolute positions.
-2. **A `DynamicCache` that stores unrotated K/V** — so re-selection on later chunks doesn't have to un-rotate stale entries.
+#### Single full-context prefill pass
 
-Two cooperating intercepts make this work:
+Prefill is **one** full-context forward through the model's *normal* path: `pipeline._forward` calls `self.model.model(input_ids=context_ids, past_key_values=cache)`. The model's own layers apply RoPE, so HF's `DynamicCache` accumulates **RoPE-rotated** K/V (not raw). There is no chunk loop and no `cache_config.chunk_size`. Methods that need position-agnostic keys recover them themselves (ReAttention un-rotates cached K on the fly; DCA replaces the attention forward and re-rotates at cyclic positions).
 
-#### 1. Identity-RoPE interceptor
+Decode runs per-token in `pipeline.generate_answer` via `self.model(...)`.
 
-`ResearchRotaryEmbedding` replaces every `rotary_emb` submodule (detected by an `inv_freq` buffer) with a module whose `forward()` returns `(cos=1, sin=0)`. The model's own `apply_rotary_pos_emb` then becomes a no-op, so Q/K arrive at the attention hook **unrotated**. The interceptor also stashes the `position_ids` it was called with, so the hook can recover absolute positions.
+#### Layer 0 — prefill method (context extrapolation)
 
-#### 2. Attention hook
+A *prefill method* is how the research backend extends context beyond the model's trained window. Methods live in [eval_harness/prefill_methods/](eval_harness/prefill_methods/):
 
-`prefill_attention` and `decode_attention` are registered into `transformers.modeling_utils.ALL_ATTENTION_FUNCTIONS` via `_with_attention`. Inside the hook:
+- [base.py](eval_harness/prefill_methods/base.py) — `PrefillMethod` base class; the two override seams are `prefill_forward_hook` (post-attention prune) and `__call__` (replace `self_attn.forward`).
+- [reattention.py](eval_harness/prefill_methods/reattention.py) — ReAttention.
+- [dca.py](eval_harness/prefill_methods/dca.py) — DCA (Dual Chunk Attention).
 
-1. Apply real RoPE manually (`rope.compute(...)`) using the stashed absolute positions.
-2. Run `_prefill_attn_impl` or `_decode_attn_impl` — these are the override points for custom kernels.
+The pipeline installs them as **nested context managers** — `prefill_method(model)` is the outer manager and `sketch(model)` is the inner one — so forward hooks fire **method-then-sketch**. The two mechanisms:
 
-Because identity RoPE is a no-op, HF's `DynamicCache` accumulates **raw** K/V — there's no separate cache storage to manage.
+1. **ReAttention — post-attention prune hook** (`PrefillMethod.prefill_forward_hook`). The hook fires *after* each full-attention layer **during prefill only** (it no-ops on decode). ReAttention un-rotates the cached K to score raw Q·K, selects `[global | top-k middle | local]` tokens, and prunes the cache contents. No decode-time selection. Per-layer top-k naturally retains a different count per layer, but HF's normal decode shares one causal mask/position grid across layers — so `uniform_retained` (default on) equalizes every layer to the same retained length (`uniform_budget` if set, else the first layer's selection size: shorter layers are padded with the most-recent unselected middle tokens, longer layers shrunk by the reference's frequency-clip rule). This is a Prism integration adaptation — the original ReAttention replaces each layer's attention forward and tolerates the ragged cache; `uniform_retained=False` restores per-layer selection but only decodes safely on single-layer models.
 
-#### Chunked sparse prefill
+2. **DCA — full `self_attn.forward` replacement** (monkeypatch). For methods that must change *how* attention positions tokens. DCA stays active across **both prefill and decode**: it stores keys rotated at cyclic position `pos % chunk_len` and runs the intra/successive/inter decomposition merged by online softmax (decode recomputes cyclic query positions per step).
 
-`ResearchAdapter._prefill` loops over `cache_config.chunk_size`-sized chunks, calling the model with `past_key_values` and explicit absolute `position_ids` each iteration. Inside the hook:
+3. **ReAttention-exact — full `self_attn.forward` replacement** ([reattention_exact.py](eval_harness/prefill_methods/reattention_exact.py), registered `reattention_exact`). Reproduces the *original* ReAttention computation, where mechanism 1's `reattention` only reproduces its retention policy: the `DynamicCache` stores **raw (pre-RoPE) K/V for the whole context and is never pruned**; prefill runs in `prefill_chunk_size` query chunks inside the replaced forward; each chunk (and, with the default `recall_option: whole`, each decode step) recalls a `[global | top-k middle | local]` view **before** attention, so the attention scope stays bounded during prefill itself; RoPE is applied after selection at original absolute positions (`pe_original=True`). Replicates the reference's unconditional 128-alignment quirk, the wrapper's chunk schedule (`chunk_schedule: reference` — engineered first chunk, last token as a `qlen==1` generate step; applied per forward call since this pipeline splits context/question), and the kernel gate (`einsum_topk` for multi-token chunks with `mid_size ∈ {1,4}`); `recall_option: full_attn` reduces it to the no-method baseline exactly (tested). Trade-off vs mechanism 1: real prefill-scope sparsity and decode-time re-selection, but **no KV-memory savings** (full cache retained, like the reference).
 
-- **First chunk / small context / `selection='full'`:** dense path. Apply RoPE to full Q/K, run dense causal SDPA.
-- **Subsequent chunks:** sparse path:
-  - `SparseSelector.select()` picks **global-sink + top-k-middle + local-window** tokens from history; the current chunk's K/V is kept verbatim.
-  - Apply RoPE to Q (chunk positions), selected hist-K (original positions), and curr-K (chunk positions) — each with its true position ID.
-  - Combine as `[selected_history | current_chunk]`.
-  - Mask is zeros for history columns and upper-triangular `-inf` for current-chunk columns.
+> ⚠️ Tier-1 "frequency-only" methods (NTK / YaRN / Linear-PI) are **not yet functional**: `PrefillMethod.compute_inv_freq` exists but **nothing calls it** — the pipeline only invokes `prefill_forward_hook`, `compute_question_position_ids`, and `on_prefill_start` / `on_prefill_end`. Implementing them needs a RoPE-level interceptor the framework currently lacks.
 
-#### Sparse decode
+#### Multi-question checkpoint/restore
 
-`decode_attention` calls `SparseSelector.select` on the full raw K/V cache, applies RoPE with each token's **original absolute position**, then runs `_decode_attn_impl`.
+The runner feeds all questions for one context together. After the shared prefill, [eval_harness/sketch/cache_adapter.py](eval_harness/sketch/cache_adapter.py) records each layer's cache **sequence length** (`clone_or_checkpoint_for_multi_question`) and, after each question's decode, truncates `layer.keys` / `layer.values` back to that recorded length (`restore_after_question`) so the next question starts from the clean post-prefill cache.
 
 #### Wiring config
 
-`runner._setup_adapter` pulls the `cache_config` dict out of `EvalConfig.llm_kwargs`, converts it to `CacheConfig`, and passes it to `ResearchAdapter`. Selection modes (where applicable): `'qkv2'` (default, QK·‖V‖₂), `'qk'`, `'full'`.
+`runner._setup_adapter` pulls the `cache_config` dict out of `EvalConfig.llm_kwargs`, converts it to `CacheConfig`, and passes it to `ResearchAdapter`. Relevant fields: `prefill_method` (str, e.g. `"dca"`, `"reattention"`, `"none"`) + `prefill_method_kwargs` (dict), plus the sketch fields (`sketch_name`, `compression_ratio`, …). `ResearchAdapter._build_prefill_method` resolves the name via `prefill_methods.get_prefill_method`. ReAttention's `recall_type` defaults to `'qk'` (options: `qk` | `qkv` | `qkv2`) — this is a method kwarg, **not** an adapter-level selection mode.
 
 ---
 
@@ -305,7 +304,7 @@ subsets: qasper
 backend: rag
 ```
 
-Then run normally with `python -m eval_harness.cli run --config_file ./evaluate_config.yaml`.
+Then run normally with `python -m eval_harness.cli run --config_file <your_config>.yaml` — none of the shipped [evaluate/](evaluate/) configs uses `backend: rag`; copy `evaluate/evaluate_vllm.yaml` and set `backend: rag` plus the YAML keys above.
 
 #### 4. Tear down when done
 
@@ -320,7 +319,7 @@ pkill -f wake_lock   # only if you started the wake lock
 
 - **Determinism.** `seed` (default `42`) is applied to `random`, `numpy`, `torch`, and CUDA. Greedy decoding (`temperature=0.0`) is the default.
 - **Per-context grouping.** The runner does `df.groupby("context", sort=False)` and the adapter receives all questions for a single context at once. Prefix caching (vLLM) or shared prefill (HF / research) makes this dramatically faster than per-row prompting.
-- **Absolute position IDs everywhere.** Every position ID in the codebase is the token's index in the *full* sequence, never the index inside a chunk. New kernels must respect this or sparse attention silently breaks.
+- **Absolute position IDs by default.** Position IDs are the token's index in the *full* sequence, unless a prefill method deliberately re-rotates keys at cyclic positions (DCA stores keys at `pos % chunk_len`). New methods that introduce their own positioning scheme must document it.
 - **No model loading in tests.** Use `object.__new__(Adapter)` plus fake `nn.Module` doubles. Never download weights from a test. See [eval_harness/tests/](eval_harness/tests/) for the pattern.
 - **Config persistence.** The fully-resolved `EvalConfig` is written to `config.yaml` next to every results directory.
 - **Run directories never overwrite.** Collisions append `/1`, `/2`, ... suffixes.
@@ -337,5 +336,5 @@ pkill -f wake_lock   # only if you started the wake lock
 | vLLM ignores `attn_implementation`                                   | vLLM has its own attention; `attn_implementation` only applies to `hf` and `research` backends.          |
 | RAG: connection refused to Ollama                                    | Start the server first: `~/.ollama/bin/ollama serve`. Verify with `curl http://localhost:11434/api/tags`. |
 | RAG: requests time out after long idle                               | GPU may have entered low-power state — start the wake-lock command shown above.                          |
-| Research backend gives different numbers vs HF on the same prompt    | Confirm `attn_implementation: sdpa` is set; SDPA is the parity path. FA2 won't exercise the hook.        |
+| Research backend gives different numbers vs HF on the same prompt    | Confirm `attn_implementation: sdpa` — it is the path the prefill-method/sketch baselines were validated against; FA2 introduces numeric drift vs the SDPA-validated reference. |
 | Tests download model weights unexpectedly                            | A test forgot `object.__new__` — file a bug.                                                             |

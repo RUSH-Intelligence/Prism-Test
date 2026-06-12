@@ -1,0 +1,116 @@
+# ============================================================================
+# DCA (Dual Chunk Attention / ChunkLlama) baseline — STANDALONE
+# (no KV-compression sketch, no other method)
+# ============================================================================
+# Runs the faithful ChunkLlama port (`prefill_method: dca`) by itself, with
+# the reference defaults for an 8K-pretrained Llama-3:
+#   chunk_size = pretraining_length * 3/4 = 6144
+#   local_window = pretraining_length / 8 = 1024
+#   chunk_len  = chunk_size - local_window = 5120
+# (= `replace_with_chunkllama(pretraining_length=8192)`, no positional
+# interpolation — matching the paper's reported results.)
+#
+#   python -m eval_harness.cli run --config_file ./evaluate/evaluate_dca.yaml
+#
+# Benchmark/generation settings deliberately mirror evaluate_reattention.yaml
+# so the two baselines are directly comparable (same subsets, same per-subset
+# request cap, same dtype/seed/decoding).
+#
+# DCA keeps the FULL KV cache (stored RoPE-rotated at cyclic positions
+# pos % chunk_len) — it extends context by re-positioning attention, not by
+# pruning, so there is no KV-memory saving and nothing for a sketch to do.
+
+# Available benchmarks:
+#   aime, aime2024, aime2025, gsm_infinite_hard_128k, gsm_infinite_medium_128k,
+#   gsm_infinite_symbolic_128k, infinite_bench, mock_benchmark,
+#   ruler, ruler16k, ruler32k, ruler64k, ruler128k,
+#   longbench, longbenchv2, loft, loft_rag, loogle, prism1m, zero_scrolls
+benchmark: ruler16k
+# Comma-separated subset list; null = all benchmark defaults.  Default here:
+# the same three anchors used to validate the ReAttention baseline, for a
+# direct method-vs-method comparison.
+subsets: niah_single_1,niah_single_3,niah_multikey_3
+
+# Inference backend: vllm | hf | rag | research  (prefill methods need research)
+backend: research
+
+# Gated HF repo: accept the Meta license on the Hub and authenticate
+# (HF_TOKEN / `huggingface-cli login`) before running.  This is the BASE
+# model (no chat template): pipeline.preprocess uses bos_token + raw context,
+# which is the intended RULER base-model formatting.
+model: meta-llama/Meta-Llama-3-8B
+
+# Runtime
+tensor_parallel_size: 1        # vLLM-only; ignored by the research backend (single-GPU .to("cuda"))
+dtype: bfloat16                # same dtype as the ReAttention baseline run (controlled
+                               # comparison).  The ChunkLlama reference scripts also load
+                               # torch.bfloat16 (run_chunkllama_100k.py:19), so this already
+                               # matches the upstream repo exactly.
+max_model_len: 18000           # pipeline truncation cap for ruler16k (research_adapter.py:64 —
+                               # used because cache_config.max_context_length below is null).
+                               # Raise for longer benchmarks (e.g. 66000 for ruler64k).
+gpu_memory_utilization: 0.9    # vLLM-only; ignored by the research backend
+trust_remote_code: true
+enable_prefix_caching: true    # vLLM-only; ignored by the research backend
+
+# Generation
+max_new_tokens: 128
+temperature: 0.0               # greedy
+top_p: 1.0
+system_prompt: null
+seed: 42
+
+# Evaluation limits (max_requests applies PER SUBSET — runner.py:79)
+max_requests: 200
+fraction: 1.0
+query_aware: false
+
+# Method-specific subdir: the auto-named run dir encodes benchmark/model/
+# backend but NOT the prefill method, so distinct baselines sharing a model
+# would otherwise write to the same directory.
+output_dir: ./results/dca
+
+llm_kwargs:
+  # runner._setup_adapter (runner.py:141) defaults this to sdpa anyway, and it
+  # cannot affect outputs here: DCA REPLACES every full-attention layer's
+  # self_attn.forward and discards the HF-provided position_embeddings/
+  # attention_mask (dca.py:213 — it computes its own RoPE and masking), so the
+  # model-level impl never reaches the attention math.
+  attn_implementation: flash_attention_2
+
+  # This dict becomes research_adapter.CacheConfig (runner.py:144-145).
+  cache_config:
+    # --- KV-compression sketch: OFF (this file is the pure baseline) --------
+    sketch_name: none               # "none" = no sketch hooks installed
+    compression_ratio: 0.0          # unused while sketch_name is none
+    max_context_length: null        # null -> fall back to max_model_len above
+    log_cache_seq_len: false        # true logs cache lengths (full context here — never pruned)
+
+    # --- Prefill method (context extension) --------------------------------
+    # Dual Chunk Attention: full self_attn.forward replacement, active across
+    # BOTH prefill and decode.  Decomposes attention into intra-chunk /
+    # successive / inter-chunk components, each with its own query RoPE
+    # positions, so no relative distance ever exceeds the pretraining window.
+    # Keys are cached RoPE-rotated at cyclic positions (pos % chunk_len);
+    # component outputs are LSE-merged (kernels/dca_flash.py) for prefill
+    # chunks and 1-token decode steps; multi-token question blocks use an
+    # exact single-softmax decode branch instead (dca.py:394).
+    prefill_method: dca        # aliases: dual_chunk_attention, chunkllama
+    prefill_method_kwargs:
+      chunk_size: 6144         # reference default: pretraining_length * 3/4
+      local_window: 1024       # reference default: pretraining_length / 8;
+                               # chunk_len = chunk_size - local_window = 5120
+      pretraining_length: 8192 # Llama-3-8B native window.  Only used for the
+                               # mscale logit scaler (active once the sequence
+                               # exceeds it — i.e. active at 16k)
+      scaling_factor: 1.0      # positional-interpolation factor (positions divided
+                               # by it).  1.0 = PI off, matching the paper's
+                               # reported results
+      mscale_coeff: 0.05       # get_mscale coefficient (0.05 in
+                               # chunkllama_attn_replace, 0.1 in flash_decoding)
+      use_flash_attn: auto     # auto | force | "off" (QUOTE "off": bare off is a
+                               # YAML 1.1 boolean).  auto = flash-attn on CUDA,
+                               # pure-torch elsewhere.  Both backends compute exact
+                               # attention (unlike the ReAttention Triton kernel,
+                               # this is a numerics choice, not a semantics one);
+                               # use force to fail fast if flash-attn is missing.

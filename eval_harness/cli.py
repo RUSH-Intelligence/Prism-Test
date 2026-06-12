@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict, fields
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from .config import EvalConfig, load_yaml_config
@@ -9,7 +10,7 @@ from .runner import EvalRunner
 
 
 class CliEntryPoint:
-    def run(self, config_file: Optional[str] = "./evaluate_config.yaml", **overrides: Any) -> Dict[str, Any]:
+    def run(self, config_file: Optional[str] = "./evaluate/evaluate_common.yaml", **overrides: Any) -> Dict[str, Any]:
         final_cfg = asdict(EvalConfig())
         valid_keys = {f.name for f in fields(EvalConfig)}
         if config_file:
@@ -34,7 +35,7 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command")
 
     run_parser = subparsers.add_parser("run", help="Run one benchmark evaluation")
-    run_parser.add_argument("--config_file", default="./evaluate_config.yaml")
+    run_parser.add_argument("--config_file", default="./evaluate/evaluate_common.yaml")
     run_parser.add_argument("--benchmark", default=None)
     run_parser.add_argument("--subsets", default=None)
     run_parser.add_argument("--backend", default=None)
@@ -65,6 +66,12 @@ def main() -> None:
         "max_requests": args.max_requests,
         "fraction": args.fraction,
     }
+
+    # Fail fast with a clean one-liner instead of a traceback (message mirrors
+    # load_yaml_config's). Only the config path is pre-validated here so other
+    # FileNotFoundErrors (e.g. a missing dataset) still surface as tracebacks.
+    if args.config_file and not Path(args.config_file).is_file():
+        raise SystemExit(f"Config file not found: {Path(args.config_file).resolve()}")
 
     result = CliEntryPoint().run(config_file=args.config_file, **overrides)
     print(result)

@@ -1,0 +1,90 @@
+# ============================================================================
+# KV-compression baseline — research backend, sketch ONLY (no prefill method)
+# ============================================================================
+# Runs the model through ResearchAdapter with a KV-compression sketch
+# installed as a post-attention forward hook, and NO context-extension
+# prefill method.  Default: knorm (KVPress-style key-norm scoring) pruning
+# 50% of the prefill KV cache.
+#
+#   python -m eval_harness.cli run --config_file ./evaluate/evaluate_kv.yaml
+#
+# The default model is 128k-native so ruler16k positions are in-window —
+# the run isolates the effect of CACHE COMPRESSION, not context extension.
+# (On the 8k base model the compression signal would be confounded by
+# positional OOD; use the prefill-baseline configs for that axis.)
+
+# Available benchmarks:
+#   aime, aime2024, aime2025, gsm_infinite_hard_128k, gsm_infinite_medium_128k,
+#   gsm_infinite_symbolic_128k, infinite_bench, mock_benchmark,
+#   ruler, ruler16k, ruler32k, ruler64k, ruler128k,
+#   longbench, longbenchv2, loft, loft_rag, loogle, prism1m, zero_scrolls
+benchmark: ruler16k
+# Comma-separated subset list; null = all benchmark defaults.  Default: the
+# same three anchors as the baseline configs, for direct comparison.
+subsets: niah_single_1,niah_single_3,niah_multikey_3
+
+# Inference backend: vllm | hf | rag | research  (sketches need research)
+backend: research
+
+# Gated HF repo: accept the Meta license on the Hub and authenticate
+# (HF_TOKEN / `huggingface-cli login`) before running.
+model: meta-llama/Llama-3.1-8B-Instruct
+
+# Runtime
+tensor_parallel_size: 1        # vLLM-only; ignored by the research backend (single-GPU .to("cuda"))
+dtype: bfloat16
+max_model_len: 18000           # pipeline truncation cap (used because
+                               # cache_config.max_context_length below is null)
+gpu_memory_utilization: 0.9    # vLLM-only; ignored by the research backend
+trust_remote_code: true
+enable_prefix_caching: true    # vLLM-only; ignored by the research backend
+
+# Generation
+max_new_tokens: 128
+temperature: 0.0               # greedy
+top_p: 1.0
+system_prompt: null
+seed: 42
+
+# Evaluation limits (max_requests applies PER SUBSET — runner.py:79)
+max_requests: 200
+fraction: 1.0
+query_aware: false
+
+# Sketch-specific subdir: the auto-named run dir encodes benchmark/model/
+# backend but NOT the sketch, so this file and evaluate_common.yaml (same
+# model/benchmark) would otherwise write to the same directory.
+output_dir: ./results/kv
+
+llm_kwargs:
+  # runner._setup_adapter (runner.py:141) defaults this to sdpa anyway; sdpa
+  # is the research backend's validated parity path.
+  attn_implementation: sdpa
+
+  # This dict becomes research_adapter.CacheConfig (runner.py:144-145).
+  cache_config:
+    # --- KV-compression sketch ---------------------------------------------
+    # Available sketches (research_adapter._build_sketch):
+    #   none                   — compression off (no sketch hooks installed)
+    #   knorm                  — prune lowest-scoring keys by key-norm
+    #                            (score = -||k||; large-norm keys evicted),
+    #                            once per layer during PREFILL
+    #   reattention            — ReAttention-style retention as a sketch
+    #   random                 — random eviction (control)
+    #   decoding_knorm         — knorm applied periodically during DECODE
+    #                            (uses compression_interval/target_size/
+    #                            hidden_states_buffer_size below)
+    #   prefill_decoding_knorm — knorm at prefill + periodic knorm at decode
+    sketch_name: knorm
+    compression_ratio: 0.5          # fraction of the cache PRUNED (must be in
+                                    # [0, 1); kept = 1 - ratio).  0.0 = no-op.
+    compression_interval: 512       # decoding-sketches only: compress every N steps
+    target_size: 2048               # decoding-sketches only: cache size target
+    hidden_states_buffer_size: 256  # decoding-sketches only: scoring buffer
+    max_context_length: null        # null -> fall back to max_model_len above
+    log_cache_seq_len: true         # log per-layer cache lengths so the
+                                    # compression is visible in the run log
+
+    # --- Prefill method: OFF (this file isolates KV compression) -----------
+    prefill_method: none
+    prefill_method_kwargs: {}

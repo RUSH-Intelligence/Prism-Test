@@ -6,7 +6,7 @@ Prism-Test is a unified, reproducible harness for benchmarking large language mo
 
 It supports four interchangeable inference backends — `vllm`, `hf`, `research`, and `rag` — and ships with detailed quality + systems metrics (accuracy, retrieval recall, latency, throughput, memory, KV-cache size, prefill/decode efficiency).
 
-> **If you're here to run benchmarks, design compression experiments, or plug in your own attention code, read [BENCHMARKING.md](BENCHMARKING.md).** This README covers what's in the repo and how to get a first run working; BENCHMARKING goes into adapter selection, where to plug your code in at three layers of depth, the research-backend architecture, and how to add a new benchmark.
+> **If you're here to run benchmarks, design compression experiments, or plug in your own attention code, read [BENCHMARKING.md](BENCHMARKING.md).** This README covers what's in the repo and how to get a first run working; BENCHMARKING goes into adapter selection, where to plug your code in at several layers of depth, the research-backend architecture, and how to add a new benchmark.
 
 ---
 
@@ -31,7 +31,7 @@ Most evaluation harnesses are built around **short-context throughput**. Long-co
 
 1. **Inputs that exceed `max_position_embeddings`** — the model has never seen 128K, 250K, or 1M tokens during training.
 2. **Per-context grouping** — many long-context benchmarks ask several questions about the same massive document; the harness must amortize the prefill across questions.
-3. **Attention/KV-cache surgery** — research methods need raw, pre-RoPE Q/K, custom attention dispatch, and control over which tokens remain in the cache.
+3. **Attention/KV-cache surgery** — research methods recover/restructure positional info and choose which tokens stay in the cache.
 4. **Apples-to-apples comparison** — same prompt, same scorer, swappable backends.
 
 Prism-Test gives you all four with a single config file.
@@ -42,7 +42,7 @@ Prism-Test gives you all four with a single config file.
 
 - **Four backends, one runner.** `vllm` for production throughput, `hf` for clean prefill/decode debugging, `research` for compression experiments, `rag` for retrieval baselines.
 - **Per-context batching.** The runner groups by shared context so a 1M-token document is prefilled once and reused across all of its questions.
-- **Custom attention via `ALL_ATTENTION_FUNCTIONS`.** The `research` backend swaps the model's RoPE with an identity-RoPE module, so the attention hook receives raw Q/K with absolute position IDs intact — the foundation for sparse selection.
+- **Pluggable context-extension methods.** The `research` backend installs post-attention prune hooks (ReAttention) and replaces `self_attn.forward` (DCA); there is no identity-RoPE swap, so HF's `DynamicCache` stores RoPE-rotated K/V. Methods that need position-agnostic K recover it on the fly — ReAttention un-rotates the cached K, DCA re-rotates keys at cyclic positions — which is the foundation for sparse selection and context extension.
 - **Pluggable sketches.** `knorm`, `reattention`, `random`, and decoding-time variants compress the KV cache during prefill or decode.
 - **A standalone benchmark registry.** Drop a file into [eval_harness/benchmarks/](eval_harness/benchmarks/), decorate with `@register_benchmark`, and it's runnable from the CLI.
 - **Deterministic runs.** Seeded RNG, `temperature=0.0` by default, configs persisted alongside outputs.
@@ -60,7 +60,9 @@ Prism-Test/
 │   ├── runner.py               # dataset → adapter → groupby(context) → score
 │   ├── vllm_adapter.py         # vLLM backend
 │   ├── hf_adapter.py           # HuggingFace backend (clean prefill/decode)
-│   ├── research_adapter.py     # HF subclass: identity-RoPE + sparse prefill
+│   ├── research_adapter.py     # HF subclass: wires prefill_methods (context extension) + sketches (KV compression) into SketchTextGenerationPipeline
+│   ├── prefill_methods/        # context-extension methods: base.py, registry.py, reattention.py, reattention_exact.py, dca.py
+│   ├── kernels/                # Triton einsum-topk + bitonic merge (ReAttention), flash-attn-with-LSE (DCA)
 │   ├── rag_adapter.py          # OnePassRAG backend wrapper
 │   ├── rag/                    # LanceDB + llm-embedder + Ollama
 │   ├── sketch/                 # KV-cache compression sketches
@@ -87,7 +89,7 @@ Prism-Test/
 │   ├── 250K/{Easy,Medium}/
 │   └── 1M/{Easy,Medium}/
 ├── results/                    # per-run output directories
-├── evaluate_config.yaml        # default config
+├── evaluate/                   # ready-made run configs: evaluate_{vllm,hf,kv,dca,reattention,common}.yaml
 ├── run_eval.py                 # thin wrapper over CliEntryPoint
 ├── pyproject.toml              # project metadata + loose dep constraints
 ├── uv.lock                     # uv-native pinned lock (reproducible installs)
@@ -174,7 +176,7 @@ pip install flash-attn --no-build-isolation
 
 ### 1. Pick a model and a benchmark
 
-Edit [evaluate_config.yaml](evaluate_config.yaml):
+Pick a starter config from [evaluate/](evaluate/) (e.g. [evaluate/evaluate_vllm.yaml](evaluate/evaluate_vllm.yaml)) and edit:
 
 ```yaml
 benchmark: ruler16k
@@ -199,14 +201,14 @@ output_dir: ./results
 ### 2. Run
 
 ```bash
-python -m eval_harness.cli run --config_file ./evaluate_config.yaml
+python -m eval_harness.cli run --config_file ./evaluate/evaluate_vllm.yaml
 ```
 
 Or override any field on the CLI:
 
 ```bash
 python -m eval_harness.cli run \
-  --config_file ./evaluate_config.yaml \
+  --config_file ./evaluate/evaluate_vllm.yaml \
   --benchmark longbench \
   --subsets narrativeqa,hotpotqa \
   --backend vllm \
@@ -234,7 +236,7 @@ For **picking the right backend, controlling experimental conditions, plugging i
 | ----------- | ----------------------------------------------------- | --------------------------------------------------------- |
 | `vllm`      | Production-quality numbers; large-batch eval.         | Best throughput; prefix caching across same-context Qs.   |
 | `hf`        | Small-context debugging; profiling.                   | Clean `_prefill`/`_decode` split; native FA2 if present.  |
-| `research`  | Sparse attention, KV sketches, custom kernels.        | Raw pre-RoPE Q/K at the attention hook; chunked prefill.  |
+| `research`  | Sparse attention, KV sketches, custom kernels.        | Post-attention prune hooks (ReAttention) + full `self_attn.forward` replacement (DCA) for context extension + KV eviction; single full-context prefill pass; cache stores rotated K/V. |
 | `rag`       | Retrieval baselines.                                  | OnePassRAG (LanceDB + llm-embedder + Ollama llama3.1).    |
 
 Backend selection criteria, tradeoffs, and the research-backend architecture live in [BENCHMARKING.md](BENCHMARKING.md#pick-a-backend).
@@ -286,8 +288,9 @@ Tests bypass model loading via `object.__new__(Adapter)` plus fake `nn.Module` d
 Highlights:
 
 - [test_hf_adapter.py](eval_harness/tests/test_hf_adapter.py) — prefill/decode boundaries, position ID accounting
-- [test_research_adapter.py](eval_harness/tests/test_research_adapter.py) — identity-RoPE interceptor, chunked sparse prefill
-- [test_cache_adapter.py](eval_harness/tests/test_cache_adapter.py) — `DynamicCache` semantics with raw K/V
+- [test_research_adapter.py](eval_harness/tests/test_research_adapter.py) — sketch selection, pipeline wiring, generation through `SketchTextGenerationPipeline`
+- [test_prefill_methods.py](eval_harness/tests/test_prefill_methods.py) — `prefill_method` wiring into the research adapter and post-attention `prefill_forward_hook` ordering (ReAttention prune, DCA `self_attn.forward` replacement)
+- [test_cache_adapter.py](eval_harness/tests/test_cache_adapter.py) — `DynamicCache` checkpoint/restore semantics over rotated K/V
 - `test_benchmarks_*.py` — registry, RULER, LongBench, Prism-1M loaders
 
 ---

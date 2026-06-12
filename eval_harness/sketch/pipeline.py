@@ -7,6 +7,7 @@ from transformers import AutoModelForCausalLM, Cache, Pipeline
 from transformers.pipelines import PIPELINE_REGISTRY
 from transformers.pipelines.base import GenericTensor
 
+from eval_harness.prefill_methods.base import PrefillMethod
 from eval_harness.sketch.cache_adapter import CacheAdapter, create_cache_adapter
 from eval_harness.sketch.sketches.base_sketch import BaseSketch
 from eval_harness.sketch.sketches.decoding_sketch import DecodingSketch
@@ -22,6 +23,7 @@ class SketchTextGenerationPipeline(Pipeline):
         questions: Optional[list[str]] = None,
         answer_prefix: Optional[str] = None,
         sketch: Optional[BaseSketch] = None,
+        prefill_method: Optional[PrefillMethod] = None,
         max_new_tokens: int = 50,
         max_context_length: Optional[int] = None,
         enable_thinking: bool = False,
@@ -43,6 +45,7 @@ class SketchTextGenerationPipeline(Pipeline):
         }
         forward_kwargs = {
             "sketch": sketch,
+            "prefill_method": prefill_method,
             "max_new_tokens": max_new_tokens,
             "cache": cache,
             "cache_adapter": cache_adapter,
@@ -91,6 +94,7 @@ class SketchTextGenerationPipeline(Pipeline):
         input_tensors: dict[str, GenericTensor],
         max_new_tokens: int = 50,
         sketch: Optional[BaseSketch] = None,
+        prefill_method: Optional[PrefillMethod] = None,
         cache: Optional[Cache] = None,
         cache_adapter: Optional[CacheAdapter] = None,
     ):
@@ -103,42 +107,86 @@ class SketchTextGenerationPipeline(Pipeline):
         cache_adapter = cache_adapter or create_cache_adapter(self.model)
         cache = cache_adapter.initialize_cache(cache)
 
+        # Determine whether to use a non-trivial prefill method.
+        use_prefill_method = (
+            prefill_method is not None
+            and type(prefill_method) is not PrefillMethod  # not the base no-op
+        )
+
         perform_prefill_compression = sketch is not None and not isinstance(sketch, DecodingSketch)
-        with sketch(self.model) if perform_prefill_compression else contextlib.nullcontext():
-            self.model.model(
-                input_ids=context_ids,
-                past_key_values=cache,
-            )
-            cache_adapter.maybe_slice_prefill(cache)
 
-            logger.debug(f"Context Length: {context_length}")
-            logger.debug(f"Compressed Context Length: {cache_adapter.get_seq_length(cache)}")
+        # Hook ordering: prefill_method hooks install FIRST (outermost context
+        # manager), then sketch hooks install SECOND.  Since forward hooks fire
+        # in registration order, method hooks run before sketch hooks.
+        #
+        #   model forward → method hook (select/restructure) → sketch hook (compress)
+        method_ctx = prefill_method(self.model) if use_prefill_method else contextlib.nullcontext()
+        sketch_ctx = sketch(self.model) if perform_prefill_compression else contextlib.nullcontext()
 
-        perform_decoding_compression = sketch is not None and isinstance(sketch, (DecodingSketch, PrefillDecodingSketch))
-        with sketch(self.model) if perform_decoding_compression else contextlib.nullcontext():
-            answers = []
-            for question_ids in input_tensors["questions_ids"]:
-                checkpoint = cache_adapter.clone_or_checkpoint_for_multi_question(cache)
-                answer = self.generate_answer(
-                    question_ids=question_ids.to(self.model.device),
-                    cache=cache,
-                    context_length=context_length,
-                    max_new_tokens=max_new_tokens,
+        # The prefill-method context stays open across BOTH prefill and decode.
+        # Methods that intercept the attention computation (e.g. DCA, which
+        # replaces self_attn.forward) must remain active during decode; methods
+        # that only prune on prefill (e.g. ReAttention) no-op on decode steps.
+        with method_ctx:
+            if use_prefill_method:
+                prefill_method.on_prefill_start(context_length)
+            with sketch_ctx:
+                self.model.model(
+                    input_ids=context_ids,
+                    past_key_values=cache,
                 )
-                cache_adapter.restore_after_question(cache, checkpoint)
-                answers.append(answer)
+                cache_adapter.maybe_slice_prefill(cache)
+
+                logger.debug(f"Context Length: {context_length}")
+                logger.debug(f"Compressed Context Length: {cache_adapter.get_seq_length(cache)}")
+            if use_prefill_method:
+                prefill_method.on_prefill_end()
+
+            perform_decoding_compression = sketch is not None and isinstance(sketch, (DecodingSketch, PrefillDecodingSketch))
+            with sketch(self.model) if perform_decoding_compression else contextlib.nullcontext():
+                answers = []
+                for question_ids in input_tensors["questions_ids"]:
+                    checkpoint = cache_adapter.clone_or_checkpoint_for_multi_question(cache)
+
+                    # Allow prefill method to override question position IDs.
+                    if use_prefill_method:
+                        question_position_ids = prefill_method.compute_question_position_ids(
+                            context_length, question_ids.shape[1], self.model.device,
+                        )
+                    else:
+                        question_position_ids = None
+
+                    answer = self.generate_answer(
+                        question_ids=question_ids.to(self.model.device),
+                        cache=cache,
+                        context_length=context_length,
+                        max_new_tokens=max_new_tokens,
+                        question_position_ids=question_position_ids,
+                    )
+                    cache_adapter.restore_after_question(cache, checkpoint)
+                    answers.append(answer)
         return answers
 
-    def generate_answer(self, question_ids: torch.Tensor, cache: Cache, context_length: int, max_new_tokens: int) -> str:
-        position_ids = torch.arange(
-            context_length, context_length + question_ids.shape[1], device=self.model.device
-        ).unsqueeze(0)
+    def generate_answer(
+        self,
+        question_ids: torch.Tensor,
+        cache: Cache,
+        context_length: int,
+        max_new_tokens: int,
+        question_position_ids: Optional[torch.Tensor] = None,
+    ) -> str:
+        if question_position_ids is not None:
+            position_ids = question_position_ids
+        else:
+            position_ids = torch.arange(
+                context_length, context_length + question_ids.shape[1], device=self.model.device
+            ).unsqueeze(0)
 
         outputs = self.model(
             input_ids=question_ids.to(self.model.device),
             past_key_values=cache,
             position_ids=position_ids,
-            num_logits_to_keep=1,
+            logits_to_keep=1,
         )
 
         position_ids = position_ids[:, -1:] + 1

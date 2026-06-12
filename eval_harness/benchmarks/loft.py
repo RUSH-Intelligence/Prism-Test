@@ -9,7 +9,6 @@ from typing import Dict, List
 
 import numpy as np
 import pandas as pd
-import scipy.optimize
 
 from .base import Benchmark, BenchmarkInfo
 from .registry import register_benchmark
@@ -110,6 +109,8 @@ def _compute_multi_value_subspan_em(gold_answers: List[str], pred_answers: List[
         return 0.0
     if not pred_answers:
         return 0.0
+
+    import scipy.optimize  # lazy: keeps module import (registry autoload) scipy-free
 
     scores = np.zeros([len(gold_answers), len(pred_answers)])
     for gold_index, gold_item in enumerate(gold_answers):
