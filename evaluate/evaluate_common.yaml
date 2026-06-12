@@ -112,7 +112,7 @@ llm_kwargs:
       local_size: 4096          # local window always retained
       mid_size: 4               # top-k middle keys per (head, query)
       span_size: 32             # span expansion around selected middles
-      recall_type: qk           # qk | qkv | qkv2 | k | v
+      recall_type: qk           # qk | qkv | qkv2 (k | v are reattention_exact-only)
       recall_clip: 127          # cap on span seeds: retained middle <= clip*span;
                                 # 32 + 127*32 + 4096 = 8192 retained positions
       use_triton_kernel: auto   # auto | force | "off" (QUOTE "off"!).  The hook

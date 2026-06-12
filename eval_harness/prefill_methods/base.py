@@ -56,13 +56,11 @@ class PrefillMethod:
     **Tier 2** (attention restructuring): override ``prefill_forward_hook()``
     to take full control of what happens after each attention layer fires
     during prefill.  This is how ReAttention and DCA are implemented.
+
+    There is no separate post-construction setup step: per-model state
+    (``inv_freq``, head dims, saved forwards, …) is initialized inside
+    ``__call__`` when the context manager is entered on a model.
     """
-
-    def setup(self, model: Any) -> None:
-        """Called once after construction with the full model.
-
-        Use this to cache ``inv_freq``, ``head_dim``, ``num_heads``, etc.
-        """
 
     # ------------------------------------------------------------------
     # Tier 1: RoPE frequency override

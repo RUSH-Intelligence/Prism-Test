@@ -125,9 +125,6 @@ class DCAMethod(PrefillMethod):
         mode = (self.use_flash_attn or "auto").lower()
         return {"off": "torch", "auto": "auto", "force": "force"}.get(mode, "auto")
 
-    def setup(self, model: Any) -> None:
-        self._inv_freq = get_inv_freq(model)
-
     @property
     def supports_chunked_prefill(self) -> bool:
         return True

@@ -276,9 +276,6 @@ class ReAttentionMethod(PrefillMethod):
     # Lifecycle: capture inv_freq as a fallback RoPE source
     # ------------------------------------------------------------------
 
-    def setup(self, model) -> None:
-        self._inv_freq = get_inv_freq(model)
-
     def on_prefill_start(self, total_context_length: int) -> None:
         # Each prefill pass establishes its own uniform middle target (the
         # explicit budget, or the first hooked layer's selection size).
@@ -669,8 +666,8 @@ class ReAttentionMethod(PrefillMethod):
         if self._inv_freq is None:
             raise ValueError(
                 "ReAttention reposition=True requires inv_freq to re-rotate the "
-                "retained keys, but self._inv_freq is None (setup/__call__ "
-                "should have populated it from the model's rotary embedding).",
+                "retained keys, but self._inv_freq is None (__call__ should "
+                "have populated it from the model's rotary embedding).",
             )
 
         device = keys.device
