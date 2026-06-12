@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any, List, Optional
 
 from .hf_adapter import HFAdapter, HFGenerateConfig
+from .prefill_methods import PrefillMethod, get_prefill_method
 from .sketch import (
     BaseSketch,
     DecodingSketch,
@@ -29,6 +30,10 @@ class CacheConfig:
     hidden_states_buffer_size: int = 256
     max_context_length: Optional[int] = None
     log_cache_seq_len: bool = False
+
+    # Prefill attention method (context extrapolation).
+    prefill_method: str = "none"
+    prefill_method_kwargs: Optional[dict] = None
 
 
 class ResearchAdapter(HFAdapter):
@@ -69,15 +74,24 @@ class ResearchAdapter(HFAdapter):
 
         self._max_context_length = requested_ctx
         self._sketch: Optional[BaseSketch] = self._build_sketch(self._cache_cfg)
+        self._prefill_method: PrefillMethod = self._build_prefill_method(self._cache_cfg)
         self._cache_adapter: CacheAdapter = create_cache_adapter(self._model)
         self._pipe = SketchTextGenerationPipeline(model=self._model, tokenizer=self._tokenizer)
 
         logger.info(
-            "ResearchAdapter initialized: sketch=%s compression_ratio=%.3f max_context_length=%s",
+            "ResearchAdapter initialized: sketch=%s compression_ratio=%.3f "
+            "prefill_method=%s max_context_length=%s",
             self._cache_cfg.sketch_name,
             self._cache_cfg.compression_ratio,
+            self._cache_cfg.prefill_method,
             self._max_context_length,
         )
+
+    @staticmethod
+    def _build_prefill_method(cfg: CacheConfig) -> PrefillMethod:
+        name = (cfg.prefill_method or "none").strip().lower()
+        kw = dict(cfg.prefill_method_kwargs or {})
+        return get_prefill_method(name, **kw)
 
     def _build_sketch(self, cfg: CacheConfig) -> Optional[BaseSketch]:
         name = (cfg.sketch_name or "none").strip().lower()
@@ -117,6 +131,7 @@ class ResearchAdapter(HFAdapter):
                 prompt,
                 question="",
                 sketch=self._sketch,
+                prefill_method=self._prefill_method,
                 max_new_tokens=gen_cfg.max_tokens,
                 max_context_length=self._max_context_length,
                 cache=cache,
@@ -143,6 +158,7 @@ class ResearchAdapter(HFAdapter):
             questions=questions,
             answer_prefix=answer_prefix,
             sketch=self._sketch,
+            prefill_method=self._prefill_method,
             max_new_tokens=gen_cfg.max_tokens,
             max_context_length=self._max_context_length,
             cache=cache,
@@ -180,4 +196,5 @@ class ResearchAdapter(HFAdapter):
     def cache_config(self, cfg: CacheConfig) -> None:
         self._cache_cfg = cfg
         self._sketch = self._build_sketch(cfg)
+        self._prefill_method = self._build_prefill_method(cfg)
         self._max_context_length = cfg.max_context_length or self._max_context_length

@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from eval_harness.hf_adapter import HFGenerateConfig
+from eval_harness.prefill_methods.base import PrefillMethod
 from eval_harness.research_adapter import CacheConfig, ResearchAdapter
 
 
@@ -41,6 +42,7 @@ class TestResearchAdapterContract(unittest.TestCase):
         adapter = object.__new__(ResearchAdapter)
         adapter._cache_cfg = CacheConfig()
         adapter._sketch = None
+        adapter._prefill_method = PrefillMethod()
         adapter._max_context_length = 2048
         adapter._pipe = _FakePipe()
         adapter._cache_adapter = _FakeCacheAdapter()

@@ -111,7 +111,9 @@ class EvalConfig:
 def load_yaml_config(path: str | Path) -> Dict[str, Any]:
     cfg = Path(path)
     if not cfg.exists():
-        return {}
+        # A silent miss would run the pure-default EvalConfig (vllm/ruler32k),
+        # i.e. a completely different eval than the one requested.
+        raise FileNotFoundError(f"Config file not found: {cfg.resolve()}")
     with cfg.open("r", encoding="utf-8") as handle:
         data = yaml.safe_load(handle)
     return data or {}

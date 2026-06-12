@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from eval_harness.hf_adapter import HFGenerateConfig
+from eval_harness.prefill_methods.base import PrefillMethod
 from eval_harness.research_adapter import CacheConfig, ResearchAdapter
 from eval_harness.sketch import (
     DecodingSketch,
@@ -88,6 +89,7 @@ class TestResearchAdapterGenerate(unittest.TestCase):
         adapter._cache_cfg = CacheConfig(log_cache_seq_len=False)
         adapter._max_context_length = 4096
         adapter._sketch = None
+        adapter._prefill_method = PrefillMethod()
         adapter._pipe = _FakePipe()
         adapter._cache_adapter = _FakeCacheAdapter()
 

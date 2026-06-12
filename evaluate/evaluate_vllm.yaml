@@ -1,0 +1,67 @@
+# ============================================================================
+# Clean vLLM backend — vanilla model, no compression, no prefill method
+# ============================================================================
+# Runs the model through VLLMAdapter (eval_harness/vllm_adapter.py): the
+# production inference path (paged attention, prefix caching).  No sketch
+# hooks, no prefill-method monkeypatch — the unmodified-model reference at
+# production speed.
+#
+#   python -m eval_harness.cli run --config_file ./evaluate/evaluate_vllm.yaml
+#
+# NOTE: prompts are tokenized directly and passed as token IDs (the adapter
+# deliberately bypasses chat templates), matching the base-model RULER
+# formatting used everywhere else in this folder.
+#
+# CAUTION: vLLM REFUSES max_model_len beyond the model's native
+# max_position_embeddings (startup ValueError).  The default model below is
+# 128k-native so 18000 is fine; the 8k base model used by the prefill
+# baselines (meta-llama/Meta-Llama-3-8B) would need max_model_len <= 8192
+# (and a benchmark that fits) — the OOD collapse reference is easier to run
+# on the hf backend (evaluate_hf.yaml), which imposes no cap.
+
+# Available benchmarks:
+#   aime, aime2024, aime2025, gsm_infinite_hard_128k, gsm_infinite_medium_128k,
+#   gsm_infinite_symbolic_128k, infinite_bench, mock_benchmark,
+#   ruler, ruler16k, ruler32k, ruler64k, ruler128k,
+#   longbench, longbenchv2, loft, loft_rag, loogle, prism1m, zero_scrolls
+benchmark: ruler16k
+# Comma-separated subset list; null = all benchmark defaults.  Default: the
+# same three anchors as the baseline configs, for direct comparison.
+subsets: niah_single_1,niah_single_3,niah_multikey_3
+
+# Inference backend: vllm | hf | rag | research
+backend: vllm
+
+# Gated HF repo: accept the Meta license on the Hub and authenticate
+# (HF_TOKEN / `huggingface-cli login`) before running.
+model: meta-llama/Llama-3.1-8B-Instruct
+
+# Runtime
+tensor_parallel_size: 1        # GPUs for tensor parallelism
+dtype: bfloat16
+max_model_len: 18000           # vLLM context cap; must cover the benchmark's
+                               # longest prompt + max_new_tokens and must not
+                               # exceed the model's native window (see CAUTION)
+gpu_memory_utilization: 0.9    # fraction of GPU memory vLLM may reserve
+trust_remote_code: true
+enable_prefix_caching: true    # reuses KV across prompts sharing a prefix —
+                               # safe & recommended (RULER groups questions per context)
+
+# Generation
+max_new_tokens: 128
+temperature: 0.0               # greedy
+top_p: 1.0
+system_prompt: null
+seed: 42
+
+# Evaluation limits (max_requests applies PER SUBSET — runner.py:79)
+max_requests: 200
+fraction: 1.0
+query_aware: false
+
+output_dir: ./results
+
+# llm_kwargs are passed straight to vllm.LLM(...) as extra keyword arguments
+# (vllm_adapter.py:40 kwargs.update).  Examples: kv_cache_dtype,
+# enforce_eager, max_num_seqs.
+llm_kwargs: {}
