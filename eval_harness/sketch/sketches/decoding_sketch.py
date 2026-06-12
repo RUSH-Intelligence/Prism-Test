@@ -8,6 +8,7 @@ import torch.nn as nn
 from transformers import PreTrainedModel
 from transformers.cache_utils import QuantizedCache
 
+from eval_harness.sketch.sketches.adakv_sketch import AdaKVSketch
 from eval_harness.sketch.sketches.base_sketch import BaseSketch
 from eval_harness.sketch.sketches.scorer_sketch import ScorerSketch
 from eval_harness.sketch.utils import extract_keys_and_values
@@ -17,13 +18,13 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class DecodingSketch(BaseSketch):
-    base_sketch: ScorerSketch
+    base_sketch: ScorerSketch | AdaKVSketch
     compression_interval: int = 512
     target_size: int = 2048
     hidden_states_buffer_size: int = 256
 
     def __post_init__(self):
-        assert isinstance(self.base_sketch, ScorerSketch), "DecodingSketch requires a ScorerSketch as input"
+        assert isinstance(self.base_sketch, (ScorerSketch, AdaKVSketch)), "DecodingSketch requires a ScorerSketch as input"
         self.hidden_states_buffer = defaultdict(list)
         self.layer_step_counts = defaultdict(int)
 
