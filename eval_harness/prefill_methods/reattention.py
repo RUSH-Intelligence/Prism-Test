@@ -110,7 +110,7 @@ selection, which is only safe on single-layer models or custom decode paths.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, Set, Tuple
 
 import torch
@@ -121,6 +121,7 @@ from .base import (
     apply_rotary_pos_emb,
     build_cos_sin,
     get_inv_freq,
+    get_rotary_emb,
     undo_rotary_pos_emb,
 )
 from .registry import register_prefill_method
@@ -267,10 +268,14 @@ class ReAttentionMethod(PrefillMethod):
     uniform_budget: Optional[int] = None
 
     # Populated lazily when the context manager installs hooks.
-    _inv_freq: Optional[torch.Tensor] = None
+    _inv_freq: Optional[torch.Tensor] = field(default=None, init=False, repr=False)
+    # RoPE amplitude scale baked into the model's (cos, sin) (HF:
+    # ``cos = emb.cos() * attention_scaling``); 1.0 when the rotary module is
+    # absent or unscaled.  Used to normalize the kwargs un-rotation path.
+    _attention_scaling: float = field(default=1.0, init=False, repr=False)
     # Per-prefill uniform middle target; reset by ``on_prefill_start`` and
     # established by ``uniform_budget`` or the first hooked layer's selection.
-    _uniform_mid_target: Optional[int] = None
+    _uniform_mid_target: Optional[int] = field(default=None, init=False, repr=False)
 
     # ------------------------------------------------------------------
     # Lifecycle: capture inv_freq as a fallback RoPE source
@@ -283,11 +288,23 @@ class ReAttentionMethod(PrefillMethod):
 
     def __call__(self, model):  # type: ignore[override]
         # Capture the model's RoPE frequencies so we can un-rotate cached K
-        # even when ``position_embeddings`` is absent from the hook kwargs.
+        # even when ``position_embeddings`` is absent from the hook kwargs,
+        # plus the amplitude scale HF bakes into the model's (cos, sin)
+        # (``cos = emb.cos() * attention_scaling``) so the kwargs un-rotation
+        # path can normalize to the same ``s·k_raw`` convention as the
+        # unscaled inv_freq fallback (see ``_unrotate_keys``).
         try:
             self._inv_freq = get_inv_freq(model)
         except Exception:
             self._inv_freq = None
+        try:
+            rotary = get_rotary_emb(model)
+            self._attention_scaling = (
+                float(getattr(rotary, "attention_scaling", 1.0))
+                if rotary is not None else 1.0
+            )
+        except Exception:
+            self._attention_scaling = 1.0
         return super().__call__(model)
 
     # ------------------------------------------------------------------
@@ -730,6 +747,13 @@ class ReAttentionMethod(PrefillMethod):
         (these are what rotated the keys in this forward pass).  Falls back to
         rebuilding them from ``inv_freq`` over positions ``0..S-1``, and as a
         last resort returns the rotated keys unchanged.
+
+        Amplitude convention: both RoPE paths return ``s·k_raw``, where ``s``
+        is the rotary embedding's ``attention_scaling`` already carried by the
+        cached keys — i.e. raw keys with the model's amplitude retained.  The
+        uniform scalar never changes top-k recall scoring, and ``_finalize``
+        re-rotates with *unscaled* trig, so repositioned keys come out
+        model-consistent at ``s·R(new)·k_raw``.
         """
         B, H_kv, S, D = keys.shape
         cos = sin = None
@@ -743,6 +767,15 @@ class ReAttentionMethod(PrefillMethod):
                 if cos.dim() == 3:  # [B, S, D] -> [B, 1, S, D]
                     cos = cos.unsqueeze(1)
                     sin = sin.unsqueeze(1)
+                # The model's (cos, sin) carry attention_scaling, and the
+                # cached keys carry one factor of it themselves, so the
+                # ``undo_rotary_pos_emb`` transpose-inverse on the scaled trig
+                # would yield ``s²·k_raw``.  Divide the trig by the scale to
+                # land on ``s·k_raw``, matching the unscaled inv_freq
+                # fallback.  Guarded so s=1 models stay bitwise-identical.
+                if self._attention_scaling != 1.0:
+                    cos = cos / self._attention_scaling
+                    sin = sin / self._attention_scaling
 
         if cos is None and self._inv_freq is not None:
             pos = torch.arange(S, device=keys.device)
@@ -791,12 +824,19 @@ class ReAttentionMethod(PrefillMethod):
     ) -> torch.Tensor:
         """Weight raw keys by value norms for the qkv / qkv2 recall variants."""
         rt = self.recall_type
-        if rt in ("qk", "qk_pe"):
+        if rt == "qk":
             return raw_k
-        if rt in ("qkv", "qkv_pe"):
+        if rt == "qkv":
             return raw_k * values.norm(p=1, dim=-1, keepdim=True)
-        if rt in ("qkv2", "qkv2_pe"):
+        if rt == "qkv2":
             return raw_k * values.norm(p=2, dim=-1, keepdim=True)
+        if rt in ("qk_pe", "qkv_pe", "qkv2_pe"):
+            raise ValueError(
+                f"Unsupported recall_type '{rt}' for the hook port: the "
+                "'_pe' variants score against position-encoded (rotated) "
+                "keys, but this port un-rotates the cache unconditionally "
+                "('_pe' variants are not implemented).",
+            )
         raise ValueError(
             f"Unsupported recall_type '{rt}'. Use one of: qk, qkv, qkv2.",
         )

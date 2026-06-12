@@ -507,6 +507,34 @@ class TestReAttentionMethod(unittest.TestCase):
         )
         self.assertTrue(torch.equal(new_keys, keys[:, :, ref_idx, :]))
 
+    def test_rejects_pe_recall_variants(self):
+        """The '_pe' variants score against position-encoded (rotated) keys,
+        which this hook port cannot honor (it un-rotates the cache
+        unconditionally) — they must raise instead of silently degrading to
+        the base variants."""
+        torch.manual_seed(13)
+        B, H_kv, S, D = 1, 2, 16, 8
+        num_heads = 4
+        module = _FakeAttnModule(
+            hidden_dim=num_heads * D, num_heads=num_heads, head_dim=D,
+            num_kv_heads=H_kv, seed=13,
+        )
+        keys = torch.randn(B, H_kv, S, D)
+        values = torch.randn(B, H_kv, S, D)
+        hidden = torch.randn(B, S, num_heads * D)
+        cos, sin = _identity_pos_emb(B, S, D)
+
+        for rt in ("qk_pe", "qkv_pe", "qkv2_pe"):
+            method = self._make_method(
+                global_size=4, local_size=4, mid_size=2, span_size=0,
+                recall_type=rt,
+            )
+            with self.assertRaisesRegex(ValueError, "_pe"):
+                method.prefill_forward_hook(
+                    module, hidden, keys, values,
+                    {"position_embeddings": (cos, sin)},
+                )
+
     def test_recall_clip_caps_selection(self):
         """recall_clip bounds the unique middle set before span expansion."""
         torch.manual_seed(1)
@@ -928,6 +956,108 @@ class TestReAttentionReposition(unittest.TestCase):
         torch.testing.assert_close(
             recovered, raw_k[:, :, expected_idx, :], atol=1e-4, rtol=1e-4,
         )
+
+    def test_reposition_scaled_rope_kwargs_path_single_scale_factor(self):
+        """Scaled-RoPE models (HF bakes attention_scaling s into cos/sin, so
+        the cache holds s·R(pos)·k_raw): repositioning via the kwargs
+        un-rotation path must yield s·R(new)·k_raw — exactly ONE factor of s,
+        not the s² double-scaling defect."""
+        from eval_harness.prefill_methods.base import (
+            apply_rotary_pos_emb,
+            build_cos_sin,
+        )
+
+        torch.manual_seed(71)
+        scale = 1.31
+        B, H_kv, S, D = 1, 2, 96, 8
+        num_heads = 4
+        module = _FakeAttnModule(
+            hidden_dim=num_heads * D, num_heads=num_heads, head_dim=D,
+            num_kv_heads=H_kv, seed=37,
+        )
+        raw_k = torch.randn(B, H_kv, S, D)
+        values = torch.randn(B, H_kv, S, D)
+        hidden = torch.randn(B, S, num_heads * D)
+        cos, sin, inv_freq = _rope_pos_emb(torch.arange(S).unsqueeze(0), D)
+        # Model-style cache: keys rotated with the SCALED trig → s·R(pos)·k_raw.
+        scaled_cos, scaled_sin = cos * scale, sin * scale
+        rotated = apply_rotary_pos_emb(
+            raw_k, scaled_cos.unsqueeze(1), scaled_sin.unsqueeze(1),
+        )
+        kwargs = {"position_embeddings": (scaled_cos, scaled_sin)}
+
+        params = dict(global_size=4, local_size=8, mid_size=4, span_size=2,
+                      recall_clip=6)
+        method = self._make_method(reposition=True, **params)
+        method._inv_freq = inv_freq        # what __call__ would have stashed
+        method._attention_scaling = scale  # ditto
+
+        on_keys, _ = method.prefill_forward_hook(
+            module, hidden, rotated.clone(), values.clone(), kwargs,
+        )
+
+        # Expected: kept indices re-derived via the reference helper (the
+        # uniform s on scores never changes top-k), re-rotated to the NEW
+        # compacted positions carrying exactly ONE factor of s.
+        raw_q = module.q_proj(hidden).view(B, S, num_heads, D).transpose(1, 2)
+        ref_idx = _reattention_reference(
+            raw_q, raw_k, values, recall_type="qk", **params,
+        )
+        R = on_keys.shape[2]
+        self.assertEqual(R, ref_idx.numel())
+        A = method._reposition_anchor()
+        new_pos = torch.arange(A - R, A).unsqueeze(0)
+        n_cos, n_sin = build_cos_sin(new_pos, inv_freq, torch.device("cpu"), torch.float32)
+        expected = scale * apply_rotary_pos_emb(raw_k[:, :, ref_idx, :], n_cos, n_sin)
+        torch.testing.assert_close(on_keys, expected, atol=1e-4, rtol=1e-4)
+
+    def test_reposition_scaled_rope_fallback_path_agrees(self):
+        """Same scaled-RoPE setup but NO position_embeddings kwarg, so
+        un-rotation falls back to the unscaled inv_freq trig: the result must
+        be the identical s·R(new)·k_raw — the two un-rotation paths agree on
+        the amplitude convention."""
+        from eval_harness.prefill_methods.base import (
+            apply_rotary_pos_emb,
+            build_cos_sin,
+        )
+
+        torch.manual_seed(71)
+        scale = 1.31
+        B, H_kv, S, D = 1, 2, 96, 8
+        num_heads = 4
+        module = _FakeAttnModule(
+            hidden_dim=num_heads * D, num_heads=num_heads, head_dim=D,
+            num_kv_heads=H_kv, seed=37,
+        )
+        raw_k = torch.randn(B, H_kv, S, D)
+        values = torch.randn(B, H_kv, S, D)
+        hidden = torch.randn(B, S, num_heads * D)
+        cos, sin, inv_freq = _rope_pos_emb(torch.arange(S).unsqueeze(0), D)
+        rotated = apply_rotary_pos_emb(
+            raw_k, (cos * scale).unsqueeze(1), (sin * scale).unsqueeze(1),
+        )
+
+        params = dict(global_size=4, local_size=8, mid_size=4, span_size=2,
+                      recall_clip=6)
+        method = self._make_method(reposition=True, **params)
+        method._inv_freq = inv_freq
+        method._attention_scaling = scale
+
+        on_keys, _ = method.prefill_forward_hook(
+            module, hidden, rotated.clone(), values.clone(), {},
+        )
+
+        raw_q = module.q_proj(hidden).view(B, S, num_heads, D).transpose(1, 2)
+        ref_idx = _reattention_reference(
+            raw_q, raw_k, values, recall_type="qk", **params,
+        )
+        R = on_keys.shape[2]
+        self.assertEqual(R, ref_idx.numel())
+        A = method._reposition_anchor()
+        new_pos = torch.arange(A - R, A).unsqueeze(0)
+        n_cos, n_sin = build_cos_sin(new_pos, inv_freq, torch.device("cpu"), torch.float32)
+        expected = scale * apply_rotary_pos_emb(raw_k[:, :, ref_idx, :], n_cos, n_sin)
+        torch.testing.assert_close(on_keys, expected, atol=1e-4, rtol=1e-4)
 
 
 # ======================================================================

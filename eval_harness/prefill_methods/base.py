@@ -342,6 +342,10 @@ def undo_rotary_pos_emb(
 
     Since RoPE is an orthogonal rotation, the inverse is the transpose,
     which is equivalent to negating the sin component.
+
+    This is an exact inverse only for *unit-magnitude* ``(cos, sin)``: trig
+    carrying an amplitude scale ``s`` (e.g. HF's baked-in
+    ``attention_scaling``) yields ``s²·x`` instead of ``x``.
     """
     return (x * cos) + (_rotate_half(x) * (-sin))
 
