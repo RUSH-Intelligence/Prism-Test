@@ -117,7 +117,7 @@ class DuoAttentionSketch(KVCompressor):
 
     Compression is virtual: ``compress`` returns keys/values unchanged and only sets
     ``module.masked_key_indices``; the globally patched attention functions
-    (``eval_harness/sketch/attention_patch.py``) overwrite the masked cache entries with
+    (``eval_harness/kv_compression/attention_patch.py``) overwrite the masked cache entries with
     fake keys at decode time such that ``exp(<q, k>) == 0``. The physical ``DynamicCache``
     stays full-length and rectangular at every layer (no memory savings;
     ``compression_ratio_`` is reporting-only).
@@ -166,7 +166,7 @@ class DuoAttentionSketch(KVCompressor):
       duck-typed form applies the norms as intended for Qwen3/Gemma3-style models.
     - ``compression_ratio`` is a read-only property (not a dataclass field), so
       ``ResearchAdapter._build_sketch`` does not inject the adapter-level ratio; configure
-      via ``sketch_kwargs: {head_compression_ratio: ...}``.
+      via ``kv_compressor_kwargs: {head_compression_ratio: ...}``.
 
     Upstream quirks kept verbatim (do not "fix")
     --------------------------------------------

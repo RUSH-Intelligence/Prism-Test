@@ -2,7 +2,7 @@
 
 DuoAttention performs no physical pruning: compression is virtual via
 ``module.masked_key_indices`` consumed by the globally patched attention
-functions (``eval_harness/sketch/attention_patch.py``). This sketch is the
+functions (``eval_harness/kv_compression/attention_patch.py``). This sketch is the
 first consumer of that machinery in Prism-Test, so the wrapper itself is
 tested here too (kvpress math re-implemented inline as reference oracles,
 plus a CPU equivalence oracle on a tiny config-built Llama — no hub access).

@@ -36,7 +36,7 @@ class KeyRerotationSketch(KVCompressor):
     ``s * R(old_pos) * k_raw`` and block rotations compose, so the output is
     ``s * R(new_pos) * k_raw`` — exactly one factor of the rope ``attention_scaling``
     survives, matching the key the model would have produced natively at ``new_pos``
-    (no s^2 undo/redo defect; see ``prefill_methods/base.py::undo_rotary_pos_emb``).
+    (no s^2 undo/redo defect; see ``attention_methods/_method_base.py::undo_rotary_pos_emb``).
 
     Parameters
     ----------

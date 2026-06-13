@@ -94,7 +94,7 @@ class SimLayerKVSketch(KVCompressor):
       established Prism pattern; numerics are unchanged.
     - ``compression_ratio`` stays a read-only property (not a dataclass field),
       so ``ResearchAdapter._build_sketch`` does not inject the adapter-level
-      ratio; configure via ``sketch_kwargs``.
+      ratio; configure via ``kv_compressor_kwargs``.
     - Do not combine with the DCA prefill method: DCA stores keys rotated at
       cyclic positions, which breaks the absolute-position window attention.
 

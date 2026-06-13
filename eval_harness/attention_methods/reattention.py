@@ -37,7 +37,7 @@ Adaptation to Prism-Test
 -------------------------
 In Prism-Test's research backend the KV cache stores keys that are **already
 RoPE-rotated** (there is no identity-RoPE interceptor — see
-``prefill_methods/base.py``).  To recover the position-agnostic scores exactly,
+``attention_methods/_method_base.py``).  To recover the position-agnostic scores exactly,
 this method:
 
 * **Un-rotates** the cached keys with the very ``(cos, sin)`` used to rotate

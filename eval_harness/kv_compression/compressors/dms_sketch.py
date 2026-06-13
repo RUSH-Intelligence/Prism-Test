@@ -37,7 +37,7 @@ class DMSSketch(KVCompressor):
 
     Eviction is virtual: the cache is never physically shrunk. Evicted (batch, head,
     token) indices are recorded on ``module.masked_key_indices`` and the globally
-    patched attention interface (``eval_harness/sketch/attention_patch.py``, applied
+    patched attention interface (``eval_harness/kv_compression/attention_patch.py``, applied
     at ``import eval_harness.kv_compression``) overwrites those cache rows with fake keys k
     such that exp(<q, k>) == 0 for every query of subsequent forwards. The same patch
     resets ``masked_key_indices`` on every full prefill forward (q_len == k_len), so
@@ -65,7 +65,7 @@ class DMSSketch(KVCompressor):
     Deviations from kvpress
     -----------------------
     - ``press`` additionally accepts a sketch-registry name (kvpress requires a
-      ScorerPress instance); this keeps DMS constructible from flat ``sketch_kwargs``
+      ScorerPress instance); this keeps DMS constructible from flat ``kv_compressor_kwargs``
       config.
     - ``threshold`` is validated at construction (kvpress defaults to None and only
       fails with a TypeError once the score buffer first exceeds the window).

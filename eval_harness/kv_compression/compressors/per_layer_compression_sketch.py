@@ -56,7 +56,7 @@ class PerLayerCompressionSketch(KVCompressor):
       ``try/finally``; kvpress restores it unguarded, so an exception inside the
       inner hook would leave the inner press mutated.
     - ``press`` may be given as a registry name (with optional ``press_kwargs``)
-      so the wrapper is constructible from flat YAML ``sketch_kwargs``; kvpress
+      so the wrapper is constructible from flat YAML ``kv_compressor_kwargs``; kvpress
       only accepts an instance.
     - ``post_init_from_model`` (no kvpress analog) delegates to the inner sketch
       (in-tree composite convention, cf. ``DecodingSketch``), validates
@@ -75,7 +75,7 @@ class PerLayerCompressionSketch(KVCompressor):
     - ``ResearchAdapter._build_sketch`` does not inject the adapter-level
       ``cfg.compression_ratio`` (``compression_ratio`` here is a read-only
       property, not a dataclass field); all configuration flows through
-      ``sketch_kwargs``.
+      ``kv_compressor_kwargs``.
 
     Upstream quirks kept verbatim
     -----------------------------

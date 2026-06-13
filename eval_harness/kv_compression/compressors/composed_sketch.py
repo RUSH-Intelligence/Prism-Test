@@ -66,7 +66,7 @@ class ComposedSketch(KVCompressor):
     - Members may be given as registry names or ``(name, kwargs)`` pairs in
       addition to sketch instances; they are resolved through the sketch
       registry in ``__post_init__``. This makes the wrapper reachable from
-      flat YAML config (``sketch_kwargs={"presses": [["knorm",
+      flat YAML config (``kv_compressor_kwargs={"presses": [["knorm",
       {"compression_ratio": 0.5}], ...]}``) without adapter plumbing; kvpress
       only accepts instances.
 

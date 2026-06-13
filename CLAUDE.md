@@ -106,10 +106,13 @@ Context-extension / compression behavior is supplied by `eval_harness/attention_
    attention exact and prunes the decode-facing cache; this one bounds the attention scope
    during prefill itself, like the paper.
 
-> ⚠️ Tier-1 frequency-only methods (NTK/YaRN/Linear-PI) are **not yet functional**:
-> `PrefillMethod.compute_inv_freq` exists but **nothing calls it** (the pipeline only invokes
-> `prefill_forward_hook`, `compute_question_position_ids`, `on_prefill_start/end`). Implementing
-> them needs a RoPE-level interceptor that the framework currently lacks.
+> **Door 1 (positional) is functional.** The pipeline installs `positional_method(model)` as
+> the outermost context manager (`research_pipeline.py`), which wraps the shared `rotary_emb`
+> so its forward emits modified `(cos, sin)`. `PositionalMethod.compute_inv_freq` (frequency
+> scaling — NTK/YaRN) and `remap_position_ids` (position remap — Linear-PI) are both invoked
+> per rotary call (`positional_methods/base.py`); `mscale` applies YaRN's logit temperature.
+> An attention method that computes its own RoPE (DCA) bypasses `rotary_emb` and therefore
+> overrides this door for its layers.
 
 ### Decode
 

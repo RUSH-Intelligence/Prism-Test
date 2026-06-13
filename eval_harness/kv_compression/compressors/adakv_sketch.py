@@ -25,7 +25,7 @@ class AdaKVSketch(KVCompressor):
     The cache is never physically pruned: ``compress`` returns keys/values
     unchanged at full length and records ``module.masked_key_indices`` =
     ``(batch_indices, head_indices, seq_indices)`` of the pruned entries. The
-    globally installed attention patch (``eval_harness/sketch/attention_patch.py``,
+    globally installed attention patch (``eval_harness/kv_compression/attention_patch.py``,
     applied at ``eval_harness.kv_compression`` import over ``ALL_ATTENTION_FUNCTIONS``)
     overwrites those key slots with fake keys such that ``exp(<q, k_fake>) == 0``
     on every ``q_len < k_len`` forward (question pass and each decode step), and

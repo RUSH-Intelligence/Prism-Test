@@ -79,7 +79,7 @@ class KVzipSketch(KVCompressor):
     context length after every layer of every pass. Finally ``compress_post``
     selects the bottom-scored pairs (globally across layers by default) and
     records them in ``module.masked_key_indices`` — *fake* compression consumed
-    by ``eval_harness/sketch/attention_patch.py`` (fake keys with
+    by ``eval_harness/kv_compression/attention_patch.py`` (fake keys with
     ``exp(<q, k>) = 0`` substituted on every ``q_len < k_len`` forward, reset on
     the next full prefill). The cache is never physically shrunk: zero memory
     savings (quality-only baseline), and logged cache lengths stay at the full

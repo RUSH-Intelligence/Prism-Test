@@ -129,7 +129,7 @@ class CriticalAdaKVSketch(KVCompressor):
     Like ``AdaKVSketch``, the cache is never physically pruned: ``compress``
     returns keys/values unchanged and records ``module.masked_key_indices``,
     enforced by the globally installed attention patch
-    (``eval_harness/sketch/attention_patch.py``) on every ``q_len < k_len``
+    (``eval_harness/kv_compression/attention_patch.py``) on every ``q_len < k_len``
     forward — zero memory savings, non-eager attention required, and
     incompatible with prefill methods that replace ``self_attn.forward``
     wholesale (``dca``, ``reattention_exact``).

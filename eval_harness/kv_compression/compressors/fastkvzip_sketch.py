@@ -150,7 +150,7 @@ class FastKVzipSketch(KVCompressor):
     compression is deferred until the sketch context exits (right after prefill,
     before the question/decode passes) and is realized as *fake compression*:
     the bottom-scored KV pairs are recorded in ``module.masked_key_indices``,
-    consumed by ``eval_harness/sketch/attention_patch.py`` (active for all
+    consumed by ``eval_harness/kv_compression/attention_patch.py`` (active for all
     non-eager attention implementations), which substitutes fake keys such that
     ``exp(<q, k>) = 0`` at question/decode time. The cache stays physically
     full-length and rectangular, so the global cross-layer budget
