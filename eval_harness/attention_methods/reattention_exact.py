@@ -1,6 +1,6 @@
 """ReAttention *exact* baseline — full-workflow port of the OpenMOSS reference.
 
-Unlike :class:`~eval_harness.prefill_methods.reattention.ReAttentionMethod`
+Unlike :class:`~eval_harness.attention_methods.reattention.ReAttentionMethod`
 (a post-attention cache-prune hook that leaves the prefill computation
 untouched), this method reproduces the original ReAttention **computation**:
 
@@ -108,10 +108,11 @@ from typing import Any, Generator, Optional, Set, Tuple
 import torch
 from torch import nn
 
-from .base import apply_rotary_pos_emb, build_cos_sin, get_inv_freq
+from ._method_base import apply_rotary_pos_emb, build_cos_sin, get_inv_freq
+from .base import _is_gemma3
 from .dca import DCAMethod, _repeat_kv
 from .reattention import ReAttentionMethod
-from .registry import register_prefill_method
+from ._method_registry import register_prefill_method
 
 from eval_harness.kernels.dca_flash import flash_attn_with_lse
 
@@ -213,7 +214,7 @@ class ReAttentionExactMethod(ReAttentionMethod):
             yield
             return
 
-        is_gemma3 = DCAMethod._is_gemma3(model)
+        is_gemma3 = _is_gemma3(model)
         language_model = (
             model.model.language_model
             if hasattr(model.model, "language_model")

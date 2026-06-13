@@ -366,7 +366,7 @@ class TestGQA(unittest.TestCase):
 
 class TestRoPEParity(unittest.TestCase):
     def test_inline_rotation_matches_repo_helper(self):
-        from eval_harness.prefill_methods.base import apply_rotary_pos_emb, build_cos_sin
+        from eval_harness.attention_methods._method_base import apply_rotary_pos_emb, build_cos_sin
 
         torch.manual_seed(6)
         B, H, S, d = 1, 2, 12, 4
@@ -380,7 +380,7 @@ class TestRoPEParity(unittest.TestCase):
         torch.testing.assert_close(manual, helper, atol=1e-6, rtol=1e-6)
 
     def test_score_on_rotated_cache_matches_full_transcription(self):
-        from eval_harness.prefill_methods.base import apply_rotary_pos_emb, build_cos_sin
+        from eval_harness.attention_methods._method_base import apply_rotary_pos_emb, build_cos_sin
 
         torch.manual_seed(7)
         B, H, S, d = 1, 2, 12, 4

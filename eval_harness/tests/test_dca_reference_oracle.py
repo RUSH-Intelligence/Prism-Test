@@ -25,7 +25,7 @@ import torch
 from torch import nn
 
 from eval_harness.kernels.dca_flash import attention_with_lse
-from eval_harness.prefill_methods.dca import DCAMethod
+from eval_harness.attention_methods.dca import DCAMethod
 
 torch.manual_seed(0)
 

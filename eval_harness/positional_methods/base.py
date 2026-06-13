@@ -98,7 +98,7 @@ class PositionalMethod:
 
     @contextmanager
     def __call__(self, model: Any) -> Generator:
-        from eval_harness.prefill_methods.base import get_rotary_emb
+        from eval_harness.attention_methods._method_base import get_rotary_emb
 
         rotary = get_rotary_emb(model)
         if rotary is None:

@@ -20,7 +20,7 @@ from .kv_compression import (
 )
 from .kv_compression.cache_adapter import CacheAdapter, create_cache_adapter
 from .positional_methods import PositionalMethod, get_positional_method
-from .prefill_methods import get_prefill_method
+from .attention_methods._method_registry import get_prefill_method
 from .research_pipeline import SketchTextGenerationPipeline
 
 logger = logging.getLogger(__name__)
@@ -139,9 +139,10 @@ class ResearchAdapter(HFAdapter):
     def _build_attention_method(cfg: ResearchConfig):
         """Resolve the attention method (door 2).
 
-        Tries the new ``attention_methods`` registry first (DCA), then falls
-        back to the legacy ``prefill_methods`` registry (reattention_exact, the
-        ReAttention-prune method) — both install via the pipeline's method slot.
+        Tries the native ``AttentionMethod`` registry first (DCA), then falls
+        back to the legacy method registry (the faithful ReAttention prune and
+        reattention_exact, which subclass ``PrefillMethod`` — both now live in
+        ``attention_methods/`` and install via the pipeline's method slot).
         ``attention_phase`` is applied to native :class:`AttentionMethod`
         instances.
         """
@@ -153,7 +154,7 @@ class ResearchAdapter(HFAdapter):
             method = get_attention_method(name, **kw)
             method.phase = AttentionPhase.coerce(cfg.attention_phase)
             return method
-        # Legacy faithful methods still living in prefill_methods/.
+        # Faithful reattention methods (legacy PrefillMethod subclasses).
         return get_prefill_method(name, **kw)
 
     def _build_kv_compressor(self, cfg: ResearchConfig) -> Optional[KVCompressor]:

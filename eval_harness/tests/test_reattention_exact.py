@@ -30,13 +30,13 @@ import unittest
 import torch
 from torch import nn
 
-from eval_harness.prefill_methods.base import (
+from eval_harness.attention_methods._method_base import (
     PrefillMethod,
     apply_rotary_pos_emb,
     build_cos_sin,
 )
-from eval_harness.prefill_methods.reattention_exact import ReAttentionExactMethod
-from eval_harness.prefill_methods.registry import (
+from eval_harness.attention_methods.reattention_exact import ReAttentionExactMethod
+from eval_harness.attention_methods._method_registry import (
     ensure_methods_loaded,
     get_prefill_method,
 )
@@ -1135,7 +1135,7 @@ class TestExactOversizeViewWarning(unittest.TestCase):
     produced positionally-OOD prefill on beyond-native contexts (the
     2026-06-11 0%-RULER incident); the method must warn loudly, once."""
 
-    _LOGGER = "eval_harness.prefill_methods.reattention_exact"
+    _LOGGER = "eval_harness.attention_methods.reattention_exact"
 
     def _drive(self, max_trained_pos):
         method = _make_method(pe_original=False, recall_clip=-1)

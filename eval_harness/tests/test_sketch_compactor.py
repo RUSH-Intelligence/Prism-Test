@@ -74,7 +74,7 @@ def _identity_pos_emb(B, S, D):
 
 
 def _rope_pos_emb(positions, D, base=10000.0):
-    from eval_harness.prefill_methods.base import build_cos_sin
+    from eval_harness.attention_methods._method_base import build_cos_sin
 
     half = D // 2
     inv_freq = 1.0 / (base ** (torch.arange(0, half, dtype=torch.float32) / half))

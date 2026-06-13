@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from eval_harness.hf_adapter import HFGenerateConfig
-from eval_harness.prefill_methods.base import PrefillMethod
+from eval_harness.attention_methods._method_base import PrefillMethod
 from eval_harness.research_adapter import ResearchConfig, ResearchAdapter
 from eval_harness.kv_compression import (
     DecodingSketch,

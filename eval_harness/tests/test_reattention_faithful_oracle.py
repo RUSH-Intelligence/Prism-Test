@@ -69,8 +69,8 @@ import unittest
 
 import torch
 
-from eval_harness.prefill_methods.base import apply_rotary_pos_emb
-from eval_harness.prefill_methods.reattention import ReAttentionMethod
+from eval_harness.attention_methods._method_base import apply_rotary_pos_emb
+from eval_harness.attention_methods.reattention import ReAttentionMethod
 from eval_harness.tests.test_prefill_methods import _FakeAttnModule, _rope_pos_emb
 
 

@@ -9,7 +9,7 @@ import importlib
 import pkgutil
 from typing import Any, Dict, List, Optional, Type
 
-from .base import PrefillMethod
+from ._method_base import PrefillMethod
 
 _PREFILL_METHOD_REGISTRY: Dict[str, Type[PrefillMethod]] = {}
 _METHODS_LOADED = False
@@ -45,13 +45,15 @@ def ensure_methods_loaded() -> None:
     if _METHODS_LOADED:
         return
 
-    package_name = __package__ or "eval_harness.prefill_methods"
+    package_name = __package__ or "eval_harness.attention_methods"
     package = importlib.import_module(package_name)
     for module_info in pkgutil.iter_modules(package.__path__):
         if module_info.ispkg or module_info.name in {
             "__init__",
             "base",
             "registry",
+            "_method_base",
+            "_method_registry",
         }:
             continue
         importlib.import_module(f"{package_name}.{module_info.name}")

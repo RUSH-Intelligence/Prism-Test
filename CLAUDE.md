@@ -20,8 +20,7 @@ eval_harness/
   research_adapter.py    # HF subclass: builds the THREE DOORS from ResearchConfig and runs them through SketchTextGenerationPipeline (research_pipeline.py)
   research_pipeline.py   # SketchTextGenerationPipeline: chunked prefill + decode, installs the three door context managers (positional → attention → kv) nested
   positional_methods/    # DOOR 1 (RoPE freq/position): base.py (PositionalMethod), registry.py, yarn.py, ntk.py, linear_pi.py
-  attention_methods/     # DOOR 2 (attention math): base.py (AttentionMethod + AttentionPhase), registry.py, dca.py
-  prefill_methods/       # LEGACY method-slot methods still reachable via attention_method: base.py (RoPE helpers + PrefillMethod), reattention.py (faithful prune), reattention_exact.py, dca.py (superseded by attention_methods/dca.py)
+  attention_methods/     # DOOR 2 (attention math): base.py (AttentionMethod + AttentionPhase), registry.py, dca.py; plus the faithful ReAttention methods (reattention.py prune, reattention_exact.py) as legacy PrefillMethod subclasses on the same method slot — _method_base.py (RoPE helpers + PrefillMethod) + _method_registry.py (register_prefill_method)
   kv_compression/        # DOOR 3 (KV compression): base.py (KVCompressor/ScorerKVCompressor + CompressionSchedule/Operation), registry.py (@register_kv_compressor), cache_adapter.py, utils.py, attention_patch.py, compressors/ (~36 KV baselines, mostly kvpress 0.5.1 ports)
   mlp_methods/           # DOOR 4 (reserved seam only — MoE/activation-sparsity; not implemented)
   kernels/               # Triton einsum-topk + bitonic-merge (ReAttention) + flash-attn-with-LSE (DCA)

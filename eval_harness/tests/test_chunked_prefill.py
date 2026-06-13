@@ -17,7 +17,7 @@ import unittest
 import torch
 from transformers import DynamicCache, LlamaConfig, LlamaForCausalLM
 
-from eval_harness.prefill_methods.base import PrefillMethod
+from eval_harness.attention_methods._method_base import PrefillMethod
 from eval_harness.kv_compression.cache_adapter import create_cache_adapter
 from eval_harness.research_pipeline import SketchTextGenerationPipeline
 

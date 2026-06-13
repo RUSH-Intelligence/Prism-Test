@@ -1,4 +1,4 @@
-"""Tests for eval_harness.prefill_methods package.
+"""Tests for eval_harness.attention_methods package.
 
 All tests are GPU-free — they use small synthetic tensors and the
 ``object.__new__`` pattern to bypass model loading.
@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 import torch
 from torch import nn
 
-from eval_harness.prefill_methods.base import (
+from eval_harness.attention_methods._method_base import (
     PrefillMethod,
     _rotate_half,
     apply_rotary_pos_emb,
@@ -24,7 +24,7 @@ from eval_harness.prefill_methods.base import (
     get_rotary_emb,
     undo_rotary_pos_emb,
 )
-from eval_harness.prefill_methods.registry import (
+from eval_harness.attention_methods._method_registry import (
     _PREFILL_METHOD_REGISTRY,
     available_prefill_methods,
     ensure_methods_loaded,
@@ -43,7 +43,9 @@ class TestRegistry(unittest.TestCase):
         ensure_methods_loaded()
         names = available_prefill_methods()
         self.assertIn("reattention", names)
-        self.assertIn("dca", names)
+        # dca moved to the new attention_methods registry (door 2); the legacy
+        # prefill registry only keeps the faithful reattention methods.
+        self.assertNotIn("dca", names)
 
     def test_get_default_returns_base(self):
         for alias in ("none", "default", "standard"):
@@ -56,7 +58,7 @@ class TestRegistry(unittest.TestCase):
         method = get_prefill_method(
             "reattention", global_size=16, local_size=128, mid_size=2,
         )
-        from eval_harness.prefill_methods.reattention import ReAttentionMethod
+        from eval_harness.attention_methods.reattention import ReAttentionMethod
 
         self.assertIsInstance(method, ReAttentionMethod)
         self.assertEqual(method.global_size, 16)
@@ -67,23 +69,24 @@ class TestRegistry(unittest.TestCase):
         ensure_methods_loaded()
         for alias in ("re_attention", "reatt"):
             method = get_prefill_method(alias)
-            from eval_harness.prefill_methods.reattention import ReAttentionMethod
+            from eval_harness.attention_methods.reattention import ReAttentionMethod
 
             self.assertIsInstance(method, ReAttentionMethod)
 
     def test_get_dca(self):
-        ensure_methods_loaded()
-        method = get_prefill_method("dca", chunk_size=4096)
-        from eval_harness.prefill_methods.dca import DCAMethod
+        # DCA is now a door-2 attention method (attention_methods registry).
+        from eval_harness.attention_methods import get_attention_method
+        from eval_harness.attention_methods.dca import DCAMethod
 
+        method = get_attention_method("dca", chunk_size=4096)
         self.assertIsInstance(method, DCAMethod)
         self.assertEqual(method.chunk_size, 4096)
 
     def test_get_dca_alias(self):
-        ensure_methods_loaded()
-        method = get_prefill_method("dual_chunk_attention")
-        from eval_harness.prefill_methods.dca import DCAMethod
+        from eval_harness.attention_methods import get_attention_method
+        from eval_harness.attention_methods.dca import DCAMethod
 
+        method = get_attention_method("dual_chunk_attention")
         self.assertIsInstance(method, DCAMethod)
 
     def test_unknown_method_raises(self):
@@ -267,7 +270,7 @@ def _identity_pos_emb(B, S, D):
 
 def _rope_pos_emb(positions, D, base=10000.0):
     """Build real (cos, sin) of shape [B, S, D] for the given positions."""
-    from eval_harness.prefill_methods.base import build_cos_sin
+    from eval_harness.attention_methods._method_base import build_cos_sin
 
     half = D // 2
     inv_freq = 1.0 / (base ** (torch.arange(0, half, dtype=torch.float32) / half))
@@ -331,7 +334,7 @@ def _reattention_reference(
 
 class TestReAttentionMethod(unittest.TestCase):
     def _make_method(self, **kwargs):
-        from eval_harness.prefill_methods.reattention import ReAttentionMethod
+        from eval_harness.attention_methods.reattention import ReAttentionMethod
 
         defaults = dict(global_size=4, local_size=4, mid_size=4, span_size=2)
         defaults.update(kwargs)
@@ -591,7 +594,7 @@ class TestReAttentionMethod(unittest.TestCase):
         """The same raw keys, rotated to *different* absolute positions, must
         yield the *same* selection — because the hook un-rotates before
         scoring.  This is the defining property of ReAttention."""
-        from eval_harness.prefill_methods.base import apply_rotary_pos_emb
+        from eval_harness.attention_methods._method_base import apply_rotary_pos_emb
 
         B, H_kv, S, D = 1, 1, 32, 8
         num_heads = 1
@@ -648,7 +651,7 @@ class TestReAttentionMethod(unittest.TestCase):
     def test_deterministic_across_repeated_runs(self):
         """Identical inputs (real RoPE) produce byte-identical output every
         time — required for reproducible prefill benchmarking."""
-        from eval_harness.prefill_methods.base import apply_rotary_pos_emb
+        from eval_harness.attention_methods._method_base import apply_rotary_pos_emb
 
         torch.manual_seed(123)
         B, H_kv, S, D = 1, 2, 56, 8
@@ -680,7 +683,7 @@ class TestReAttentionMethod(unittest.TestCase):
     def test_unrotation_recovers_raw_keys(self):
         """The hook's internal un-rotation matches the analytic raw keys to
         high precision (validates the position-agnostic recovery)."""
-        from eval_harness.prefill_methods.base import apply_rotary_pos_emb
+        from eval_harness.attention_methods._method_base import apply_rotary_pos_emb
 
         B, H_kv, S, D = 1, 2, 24, 8
         raw_k = torch.randn(B, H_kv, S, D)
@@ -695,7 +698,7 @@ class TestReAttentionMethod(unittest.TestCase):
 
     def test_unrotation_falls_back_to_inv_freq(self):
         """Without position_embeddings, un-rotation uses the cached inv_freq."""
-        from eval_harness.prefill_methods.base import apply_rotary_pos_emb
+        from eval_harness.attention_methods._method_base import apply_rotary_pos_emb
 
         B, H_kv, S, D = 1, 1, 20, 8
         raw_k = torch.randn(B, H_kv, S, D)
@@ -718,7 +721,7 @@ class TestReAttentionReposition(unittest.TestCase):
     the retained KV cache."""
 
     def _make_method(self, **kwargs):
-        from eval_harness.prefill_methods.reattention import ReAttentionMethod
+        from eval_harness.attention_methods.reattention import ReAttentionMethod
 
         defaults = dict(global_size=4, local_size=4, mid_size=4, span_size=2)
         defaults.update(kwargs)
@@ -727,7 +730,7 @@ class TestReAttentionReposition(unittest.TestCase):
     def test_reposition_off_is_byte_identical(self):
         """reposition=False must be byte-identical to the existing default
         selection-only path (regression guard)."""
-        from eval_harness.prefill_methods.base import apply_rotary_pos_emb
+        from eval_harness.attention_methods._method_base import apply_rotary_pos_emb
 
         torch.manual_seed(31)
         B, H_kv, S, D = 1, 2, 56, 8
@@ -766,7 +769,7 @@ class TestReAttentionReposition(unittest.TestCase):
         compacted positions recovers the same raw K as the original retained
         keys un-rotated at their ORIGINAL positions — only the encoded
         position changed, not the underlying content."""
-        from eval_harness.prefill_methods.base import (
+        from eval_harness.attention_methods._method_base import (
             apply_rotary_pos_emb,
             build_cos_sin,
             undo_rotary_pos_emb,
@@ -830,7 +833,7 @@ class TestReAttentionReposition(unittest.TestCase):
         """Long context: R <= A, implied positions in [0, A); and
         compute_question_position_ids switches between anchored (long) and
         original (short) positions."""
-        from eval_harness.prefill_methods.base import apply_rotary_pos_emb
+        from eval_harness.attention_methods._method_base import apply_rotary_pos_emb
 
         torch.manual_seed(51)
         B, H_kv, D = 1, 2, 8
@@ -881,7 +884,7 @@ class TestReAttentionReposition(unittest.TestCase):
     def test_reposition_requires_bound(self):
         """reposition=True with no window and recall_clip<=0 → unbounded
         compacted window → ValueError."""
-        from eval_harness.prefill_methods.base import apply_rotary_pos_emb
+        from eval_harness.attention_methods._method_base import apply_rotary_pos_emb
 
         method = self._make_method(
             reposition=True, recall_clip=-1, reposition_window=None,
@@ -910,7 +913,7 @@ class TestReAttentionReposition(unittest.TestCase):
     def test_reposition_streaming_path(self):
         """mid_size=0 (StreamingLLM) + reposition=True over a long context:
         retains exactly global+local, repositions, returns without error."""
-        from eval_harness.prefill_methods.base import apply_rotary_pos_emb
+        from eval_harness.attention_methods._method_base import apply_rotary_pos_emb
 
         torch.manual_seed(61)
         B, H_kv, S, D = 1, 2, 128, 8
@@ -947,7 +950,7 @@ class TestReAttentionReposition(unittest.TestCase):
         torch.testing.assert_close(on_values, values[:, :, expected_idx, :])
 
         # Keys re-rotated to [A-R, A-1]; un-rotating recovers the raw retained.
-        from eval_harness.prefill_methods.base import build_cos_sin, undo_rotary_pos_emb
+        from eval_harness.attention_methods._method_base import build_cos_sin, undo_rotary_pos_emb
         R = on_keys.shape[2]
         A = method._reposition_anchor()
         new_pos = torch.arange(A - R, A).unsqueeze(0)
@@ -962,7 +965,7 @@ class TestReAttentionReposition(unittest.TestCase):
         the cache holds s·R(pos)·k_raw): repositioning via the kwargs
         un-rotation path must yield s·R(new)·k_raw — exactly ONE factor of s,
         not the s² double-scaling defect."""
-        from eval_harness.prefill_methods.base import (
+        from eval_harness.attention_methods._method_base import (
             apply_rotary_pos_emb,
             build_cos_sin,
         )
@@ -1016,7 +1019,7 @@ class TestReAttentionReposition(unittest.TestCase):
         un-rotation falls back to the unscaled inv_freq trig: the result must
         be the identical s·R(new)·k_raw — the two un-rotation paths agree on
         the amplitude convention."""
-        from eval_harness.prefill_methods.base import (
+        from eval_harness.attention_methods._method_base import (
             apply_rotary_pos_emb,
             build_cos_sin,
         )
@@ -1105,7 +1108,7 @@ class TestReAttentionUniformRetained(unittest.TestCase):
     B_MIDDLE = sorted({8, 9, 10, 11, 12})
 
     def _make_method(self, **kwargs):
-        from eval_harness.prefill_methods.reattention import ReAttentionMethod
+        from eval_harness.attention_methods.reattention import ReAttentionMethod
 
         defaults = dict(
             global_size=self.G, local_size=self.L, mid_size=2, span_size=4,
@@ -1271,7 +1274,7 @@ class TestReAttentionKernelDispatch(unittest.TestCase):
     """
 
     def _make_method(self, **kwargs):
-        from eval_harness.prefill_methods.reattention import ReAttentionMethod
+        from eval_harness.attention_methods.reattention import ReAttentionMethod
 
         defaults = dict(global_size=4, local_size=4, mid_size=4, span_size=0)
         defaults.update(kwargs)
@@ -1294,7 +1297,7 @@ class TestReAttentionKernelDispatch(unittest.TestCase):
         self.assertFalse(m._should_use_kernel(q, k, n_middle=256))
 
     def test_kernel_gate_rejects_bad_constraints(self):
-        from eval_harness.prefill_methods import reattention as reatt_mod
+        from eval_harness.attention_methods import reattention as reatt_mod
 
         # Pretend the kernel is importable and tensors are on CUDA so we can
         # exercise the constraint checks without a GPU.
@@ -1319,7 +1322,7 @@ class TestReAttentionKernelDispatch(unittest.TestCase):
             self.assertFalse(gate(mid_size=4, D=128, n_middle=200))  # n_middle %128
 
     def test_force_raises_when_kernel_unavailable(self):
-        from eval_harness.prefill_methods import reattention as reatt_mod
+        from eval_harness.attention_methods import reattention as reatt_mod
 
         m = self._make_method(use_triton_kernel="force")
         q = torch.randn(1, 4, 256, 128)
@@ -1329,7 +1332,7 @@ class TestReAttentionKernelDispatch(unittest.TestCase):
                 m._should_use_kernel(q, k, n_middle=256)
 
     def test_force_raises_on_unmet_constraints(self):
-        from eval_harness.prefill_methods import reattention as reatt_mod
+        from eval_harness.attention_methods import reattention as reatt_mod
 
         m = self._make_method(use_triton_kernel="force")
         q = torch.randn(1, 4, 256, 64)  # head_dim 64 → unmet, CPU → unmet
@@ -1388,7 +1391,7 @@ class TestReAttentionKernelDispatch(unittest.TestCase):
         dense path, the full hook output is identical — validating that the
         kernel's int32 [B,H_q,q_len,topk] output, query-padding drop, and
         downstream unique/span wiring are all correct."""
-        from eval_harness.prefill_methods import reattention as reatt_mod
+        from eval_harness.attention_methods import reattention as reatt_mod
 
         torch.manual_seed(5)
         B, H_kv, S, D = 1, 2, 80, 8
@@ -1438,7 +1441,7 @@ class TestReAttentionKernelDispatch(unittest.TestCase):
     def test_kernel_topk_pads_and_drops_query_rows(self):
         """_kernel_topk pads q_len to %128, calls the kernel, and slices the
         result back to the true q_len."""
-        from eval_harness.prefill_methods import reattention as reatt_mod
+        from eval_harness.attention_methods import reattention as reatt_mod
 
         m = self._make_method(mid_size=4)
         B, H_q, q_len, D = 1, 2, 50, 128  # q_len 50 → padded to 128
@@ -1485,7 +1488,7 @@ class TestReAttentionKernelDispatch(unittest.TestCase):
         params = dict(global_size=global_size, local_size=local_size,
                       mid_size=mid_size, span_size=0)
 
-        from eval_harness.prefill_methods.reattention import ReAttentionMethod
+        from eval_harness.attention_methods.reattention import ReAttentionMethod
         dense = ReAttentionMethod(use_triton_kernel="off", **params)
         kern = ReAttentionMethod(use_triton_kernel="force", **params)
 
@@ -1683,7 +1686,7 @@ class _FakeDynamicCache:
 
 class TestDCAMethod(unittest.TestCase):
     def _make_method(self, **kwargs):
-        from eval_harness.prefill_methods.dca import DCAMethod
+        from eval_harness.attention_methods.dca import DCAMethod
 
         defaults = dict(chunk_size=12, local_window=4, pretraining_length=10_000, use_flash_attn="off")
         defaults.update(kwargs)
@@ -1701,20 +1704,20 @@ class TestDCAMethod(unittest.TestCase):
         self.assertEqual(self._make_method(use_flash_attn="force")._backend, "force")
 
     def test_resolve_heads(self):
-        from eval_harness.prefill_methods.dca import DCAMethod
+        from eval_harness.attention_methods.dca import DCAMethod
 
         attn = _FakeDCAAttn(hidden_dim=32, num_heads=4, head_dim=8, num_kv_heads=2)
         self.assertEqual(DCAMethod._resolve_heads(attn), (4, 2, 8))
 
     def test_abs_positions_from_cache_position(self):
-        from eval_harness.prefill_methods.dca import DCAMethod
+        from eval_harness.attention_methods.dca import DCAMethod
 
         cp = torch.arange(5, 10)
         pos = DCAMethod._abs_positions(cp, None, None, 0, 5, torch.device("cpu"))
         torch.testing.assert_close(pos, torch.arange(5, 10))
 
     def test_abs_positions_from_cache_length(self):
-        from eval_harness.prefill_methods.dca import DCAMethod
+        from eval_harness.attention_methods.dca import DCAMethod
 
         cache = _FakeDynamicCache()
         cache.update(torch.randn(1, 1, 7, 8), torch.randn(1, 1, 7, 8), 0)
@@ -1982,7 +1985,7 @@ class TestDCAMethod(unittest.TestCase):
 
     def test_context_manager_installs_and_restores_forward(self):
         """__call__ swaps self_attn.forward on full-attn layers and restores it."""
-        from eval_harness.prefill_methods.dca import DCAMethod
+        from eval_harness.attention_methods.dca import DCAMethod
 
         class FakeRotary(nn.Module):
             def __init__(self):
@@ -2054,7 +2057,7 @@ class TestResearchAdapterPrefillMethodWiring(unittest.TestCase):
         self.assertIsNone(ResearchAdapter._build_attention_method(cfg))
 
     def test_build_attention_method_reattention(self):
-        from eval_harness.prefill_methods.reattention import ReAttentionMethod
+        from eval_harness.attention_methods.reattention import ReAttentionMethod
         from eval_harness.research_adapter import ResearchConfig, ResearchAdapter
 
         cfg = ResearchConfig(

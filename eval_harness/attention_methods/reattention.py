@@ -116,7 +116,7 @@ from typing import Optional, Set, Tuple
 import torch
 from torch import nn
 
-from .base import (
+from ._method_base import (
     PrefillMethod,
     apply_rotary_pos_emb,
     build_cos_sin,
@@ -124,7 +124,7 @@ from .base import (
     get_rotary_emb,
     undo_rotary_pos_emb,
 )
-from .registry import register_prefill_method
+from ._method_registry import register_prefill_method
 
 logger = logging.getLogger(__name__)
 

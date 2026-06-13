@@ -7,7 +7,7 @@ from transformers import AutoModelForCausalLM, Cache, Pipeline
 from transformers.pipelines import PIPELINE_REGISTRY
 from transformers.pipelines.base import GenericTensor
 
-from eval_harness.prefill_methods.base import PrefillMethod
+from eval_harness.attention_methods._method_base import PrefillMethod
 from eval_harness.kv_compression.cache_adapter import CacheAdapter, create_cache_adapter
 from eval_harness.kv_compression.base import KVCompressor
 from eval_harness.kv_compression.compressors.decoding_sketch import DecodingSketch

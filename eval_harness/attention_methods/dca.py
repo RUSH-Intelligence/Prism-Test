@@ -1,7 +1,7 @@
 """Dual Chunk Attention (DCA) as a Door-2 attention method.
 
 Faithful port of ChunkLlama (arXiv:2402.17463); the attention math is unchanged
-from the legacy ``eval_harness.prefill_methods.dca`` — only the *installation*
+from the legacy ``eval_harness.attention_methods.dca`` — only the *installation*
 differs: this subclasses :class:`AttentionMethod`, so the base handles the
 ``self_attn.forward`` replacement, full-attention-layer discovery and
 restore, and DCA only supplies :meth:`setup` (capture ``inv_freq``) and
@@ -28,7 +28,7 @@ from eval_harness.kernels.dca_flash import (
     get_mscale,
     merge_attn_outputs,
 )
-from eval_harness.prefill_methods.base import (
+from eval_harness.attention_methods._method_base import (
     apply_rotary_pos_emb,
     build_cos_sin,
     get_inv_freq,
@@ -95,6 +95,36 @@ class DCAMethod(AttentionMethod):
             logger.warning("DCA: could not extract inv_freq; running as a no-op.")
             return False
         return True
+
+    def _make_dca_forward(self, attn: nn.Module, layer_idx: int):
+        """Standalone DCA forward (no phase gating / no saved-forward fallback).
+
+        DCA is ``phase=both`` and decides prefill/decode from kv_len itself, so
+        this is exactly the installed forward without the base's gating layer.
+        Kept so the reference-oracle tests can drive the math on an un-installed
+        instance.
+        """
+        def dca_forward(
+            hidden_states,
+            position_embeddings=None,
+            attention_mask=None,
+            past_key_values=None,
+            cache_position=None,
+            **kwargs,
+        ):
+            return self.attention_forward(
+                module=attn,
+                layer_idx=layer_idx,
+                hidden_states=hidden_states,
+                is_decode=False,
+                position_embeddings=position_embeddings,
+                attention_mask=attention_mask,
+                past_key_values=past_key_values,
+                cache_position=cache_position,
+                **kwargs,
+            )
+
+        return dca_forward
 
     def attention_forward(
         self,
