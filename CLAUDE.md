@@ -61,10 +61,11 @@ Results land in `results/<benchmark>__<model>__<backend>__.../{predictions.csv,m
 > The description below reflects the current implementation.
 
 `ResearchAdapter` (`research_adapter.py`) is a thin `HFAdapter` subclass. It **deletes**
-`rope_method`/`rope_scale_factor` (`research_adapter.py:60`) and installs **no** identity-RoPE
-swap and **no** attention-function override. It builds a `sketch` (KV compression) and a
-`prefill_method` (context extension) from `CacheConfig` and runs everything through
-`SketchTextGenerationPipeline` (`sketch/pipeline.py`).
+`rope_method`/`rope_scale_factor` and installs **no** identity-RoPE
+swap and **no** attention-function override. It builds the three doors — a positional
+method (door 1), an attention method (door 2), and a KV compressor (door 3) — from
+`ResearchConfig` and runs everything through `SketchTextGenerationPipeline`
+(`research_pipeline.py`).
 
 Key consequence: **prefill is a single full-context pass** through the model's *normal* forward
 (`pipeline._forward` → `self.model.model(input_ids=context_ids, past_key_values=cache)`), so the
@@ -74,14 +75,14 @@ DCA replaces the attention forward and re-rotates at cyclic positions).
 
 ### Extension points — two mechanisms
 
-Context-extension / compression behavior is supplied by `eval_harness/prefill_methods/` and
-`eval_harness/sketch/sketches/`, installed by the pipeline as **nested context managers**
-(`prefill_method(model)` outer, `sketch(model)` inner) so forward hooks fire method-then-sketch:
+Context-extension / compression behavior is supplied by `eval_harness/attention_methods/` and
+`eval_harness/kv_compression/`, installed by the pipeline as **nested context managers**
+(attention method outer, KV compressor inner) so forward hooks fire method-then-compressor:
 
 1. **Post-attention prune hook** (`PrefillMethod.prefill_forward_hook`, `base.py`): fires
    *after* each full-attention layer during prefill, may return `(keys, values)` to replace the
-   cache contents. No-ops on decode (via `BaseSketch._is_decoding_step`,
-   `sketch/sketches/base_sketch.py`). **ReAttention** uses this:
+   cache contents. No-ops on decode (via `KVCompressor._is_decoding_step`,
+   `kv_compression/base.py`). **ReAttention** uses this:
    it un-rotates cached K to score raw Q·K, selects `[global | top-k middle | local]`, and
    prunes the cache. Prefill-only. Because HF's normal decode shares ONE causal mask/position
    grid across layers (sized from layer 0), per-layer selection must not leave a *ragged*
@@ -190,6 +191,6 @@ Constraints to keep in mind when wiring runs or reviewing changes:
 - Position IDs everywhere are *absolute* (token's position in the full sequence), not chunk-relative.
 - New benchmarks: drop into `eval_harness/benchmarks/`, subclass `base.Benchmark`, register in `registry.py`.
 - New positional methods (door 1): drop into `eval_harness/positional_methods/`, subclass `PositionalMethod`, decorate with `@register_positional_method`. Override `compute_inv_freq` (frequency scaling) and/or `remap_position_ids` (position remap); set `mscale` for a logit temperature.
-- New attention methods (door 2): drop into `eval_harness/attention_methods/`, subclass `AttentionMethod`, decorate with `@register_attention_method`. Implement `attention_forward` (one impl; framework gates it by `phase` ∈ prefill|decode|both) and `setup(model)`. Custom kernels live in `eval_harness/kernels/`. (Legacy faithful methods — reattention / reattention_exact — still live in `prefill_methods/` and are reachable via `attention_method`.)
+- New attention methods (door 2): drop into `eval_harness/attention_methods/`, subclass `AttentionMethod`, decorate with `@register_attention_method`. Implement `attention_forward` (one impl; framework gates it by `phase` ∈ prefill|decode|both) and `setup(model)`. Custom kernels live in `eval_harness/kernels/`. (Legacy faithful methods — reattention / reattention_exact — now live in `attention_methods/` as `PrefillMethod` subclasses and are reachable via `attention_method`.)
 - New KV compressors (door 3): drop into `eval_harness/kv_compression/compressors/`, subclass `KVCompressor` (or `ScorerKVCompressor` for score-and-topk methods), decorate with `@register_kv_compressor` — auto-discovered, selected via `kv_compressor` + `kv_compressor_kwargs`; `schedule` ∈ streaming|post_prefill|decode gates firing. Ports of kvpress presses replicate upstream quirks on purpose and document deviations in the class docstring; keep that contract when editing.
 - The HF `DynamicCache` on the research path stores **RoPE-rotated** K/V. `KnormSketch` norm-scoring is still valid (RoPE is orthogonal, norms preserved), but any consumer that assumes contiguous absolute positions must account for DCA's cyclic-rotated keys.

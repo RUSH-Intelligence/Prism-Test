@@ -103,7 +103,7 @@ class CompactorSketch(ScorerKVCompressor):
     - ``(cos, sin)`` are rebuilt from ``module.rotary_emb`` when
       ``kwargs['position_embeddings']`` is unavailable.
 
-    Do not combine with ``prefill_method: dca``: DCA caches keys rotated at
+    Do not combine with ``attention_method: dca``: DCA caches keys rotated at
     cyclic positions, which breaks the non-causal q.k logits.
 
     Parameters

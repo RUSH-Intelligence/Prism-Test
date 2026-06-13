@@ -79,7 +79,7 @@ llm_kwargs:
     # raw-KV cache (cache index == absolute position); any sketch rewriting
     # the cache trips its RuntimeError guard (reattention_exact.py).
     kv_compressor: none               # "none" = no sketch hooks installed
-    compression_ratio: 0.0          # unused while sketch_name is none
+    compression_ratio: 0.0          # unused while kv_compressor is none
     max_context_length: null        # null -> fall back to max_model_len above
     log_cache_seq_len: false        # true logs cache lengths (full context here — never pruned)
 

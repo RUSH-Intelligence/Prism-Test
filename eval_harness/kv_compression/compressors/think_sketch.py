@@ -72,7 +72,7 @@ class ThinKSketch(KVCompressor):
     - ``__post_init__`` asserts ``0 <= key_channel_compression_ratio < 1``;
       kvpress does not guard (a ratio of 1.0 would silently zero every key
       channel).
-    - Combining with ``prefill_method: dca`` is approximate/unsupported: DCA
+    - Combining with ``attention_method: dca`` is approximate/unsupported: DCA
       caches keys rotated at cyclic positions ``pos % chunk_len``, so the
       cached-key channel statistics and ``kwargs["position_embeddings"]`` no
       longer correspond to DCA's internal positioning.

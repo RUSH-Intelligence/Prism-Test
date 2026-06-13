@@ -66,7 +66,7 @@ class ChunkKVSketch(KVCompressor):
       instead of silently applying row 0's selection to every row.
     - ``press`` is optional (defaults to ``KnormSketch``) and
       ``compression_ratio`` is accepted at construction, both so the sketch is
-      usable through the registry / ``CacheConfig`` wiring.
+      usable through the registry / ``ResearchConfig`` wiring.
     """
 
     press: Optional[ScorerKVCompressor] = None

@@ -8,7 +8,7 @@ __all__ = [
     "HFAdapter",
     "HFGenerateConfig",
     "ResearchAdapter",
-    "CacheConfig",
+    "ResearchConfig",
     "SketchTextGenerationPipeline",
     "KVCompressor",
     "ScorerKVCompressor",
@@ -29,9 +29,9 @@ def __getattr__(name: str):
     if name == "HFGenerateConfig":
         from .hf_adapter import HFGenerateConfig
         return HFGenerateConfig
-    if name in ("ResearchAdapter", "CacheConfig"):
-        from .research_adapter import ResearchAdapter, CacheConfig
-        return ResearchAdapter if name == "ResearchAdapter" else CacheConfig
+    if name in ("ResearchAdapter", "ResearchConfig"):
+        from .research_adapter import ResearchAdapter, ResearchConfig
+        return ResearchAdapter if name == "ResearchAdapter" else ResearchConfig
     if name in (
         "SketchTextGenerationPipeline",
         "KVCompressor",
