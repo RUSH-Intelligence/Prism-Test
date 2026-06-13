@@ -9,7 +9,7 @@ sparsity, expert pruning.
 Nothing is built here yet.  When Door 4 lands it should mirror the other doors:
 a ``MLPMethod`` base + an auto-discovery registry (see
 ``eval_harness/kv_compression/`` for the pattern), installed by the
-``ResearchGenerationPipeline`` as the innermost nested context manager so the
+``SketchTextGenerationPipeline`` as the innermost nested context manager so the
 door stack becomes::
 
     positional_method(model)
