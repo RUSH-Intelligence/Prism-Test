@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import Any, List, Optional
 
 from .hf_adapter import HFAdapter, HFGenerateConfig
@@ -11,9 +11,8 @@ from .sketch import (
     DecodingSketch,
     KnormSketch,
     PrefillDecodingSketch,
-    ReAttentionSketch,
-    RandomSketch,
     SketchTextGenerationPipeline,
+    get_sketch_class,
 )
 from .sketch.cache_adapter import CacheAdapter, create_cache_adapter
 
@@ -24,6 +23,7 @@ logger = logging.getLogger(__name__)
 class CacheConfig:
     # Sketch/KV-compression controls.
     sketch_name: str = "none"
+    sketch_kwargs: Optional[dict] = None
     compression_ratio: float = 0.0
     compression_interval: int = 512
     target_size: int = 2048
@@ -97,12 +97,6 @@ class ResearchAdapter(HFAdapter):
         name = (cfg.sketch_name or "none").strip().lower()
         if name in {"none", "no_sketch", "no_press"}:
             return None
-        if name in {"knorm", "knorm_sketch"}:
-            return KnormSketch(compression_ratio=cfg.compression_ratio)
-        if name in {"reattention", "reattention_sketch"}:
-            return ReAttentionSketch(compression_ratio=cfg.compression_ratio)
-        if name in {"random", "random_sketch"}:
-            return RandomSketch(compression_ratio=cfg.compression_ratio)
         if name in {"decoding_knorm", "decoding"}:
             return DecodingSketch(
                 base_sketch=KnormSketch(compression_ratio=cfg.compression_ratio),
@@ -120,7 +114,14 @@ class ResearchAdapter(HFAdapter):
                     hidden_states_buffer_size=cfg.hidden_states_buffer_size,
                 ),
             )
-        raise ValueError(f"Unknown sketch_name '{cfg.sketch_name}'.")
+        # Everything else resolves through the sketches registry; the
+        # adapter-level compression_ratio is applied unless the sketch does
+        # not declare that field or sketch_kwargs overrides it.
+        cls = get_sketch_class(name)
+        kw = dict(cfg.sketch_kwargs or {})
+        if "compression_ratio" in {f.name for f in fields(cls)}:
+            kw.setdefault("compression_ratio", cfg.compression_ratio)
+        return cls(**kw)
 
     def generate(self, prompts: List[str], gen_cfg: HFGenerateConfig) -> List[str]:
         texts: List[str] = []

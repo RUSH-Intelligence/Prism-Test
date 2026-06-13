@@ -4,9 +4,11 @@ from typing import Optional
 import torch
 from torch import nn
 
+from eval_harness.sketch.sketches.registry import register_sketch
 from eval_harness.sketch.sketches.scorer_sketch import ScorerSketch
 
 
+@register_sketch("random", aliases=["random_sketch"])
 @dataclass
 class RandomSketch(ScorerSketch):
     compression_ratio: float = 0.0

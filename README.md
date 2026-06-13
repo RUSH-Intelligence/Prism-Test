@@ -43,7 +43,7 @@ Prism-Test gives you all four with a single config file.
 - **Four backends, one runner.** `vllm` for production throughput, `hf` for clean prefill/decode debugging, `research` for compression experiments, `rag` for retrieval baselines.
 - **Per-context batching.** The runner groups by shared context so a 1M-token document is prefilled once and reused across all of its questions.
 - **Pluggable context-extension methods.** The `research` backend installs post-attention prune hooks (ReAttention) and replaces `self_attn.forward` (DCA); there is no identity-RoPE swap, so HF's `DynamicCache` stores RoPE-rotated K/V. Methods that need position-agnostic K recover it on the fly — ReAttention un-rotates the cached K, DCA re-rotates keys at cyclic positions — which is the foundation for sparse selection and context extension.
-- **Pluggable sketches.** `knorm`, `reattention`, `random`, and decoding-time variants compress the KV cache during prefill or decode.
+- **Pluggable sketches.** A registry (`@register_sketch`, auto-discovered) of ~36 KV-compression baselines — mostly faithful kvpress 0.5.1 ports (`snapkv`, `pyramidkv`, `tova`, `expected_attention`, `streaming_llm`, `adakv`, `duo_attention`, `kvzip`, `qfilter`, wrappers like `chunk`/`composed`/`per_layer_compression`, ...) alongside `knorm`, `reattention`, `random`, and decoding-time variants — compressing the KV cache during prefill or decode. List them with `from eval_harness.sketch import available_sketches`; see [BENCHMARKING.md](BENCHMARKING.md#layer-1--a-kv-cache-compression-sketch) for the full roster and per-sketch constraints.
 - **A standalone benchmark registry.** Drop a file into [eval_harness/benchmarks/](eval_harness/benchmarks/), decorate with `@register_benchmark`, and it's runnable from the CLI.
 - **Deterministic runs.** Seeded RNG, `temperature=0.0` by default, configs persisted alongside outputs.
 - **Tested without GPUs.** Unit tests bypass model loading via `object.__new__` + fake modules; CI is cheap.
@@ -66,10 +66,10 @@ Prism-Test/
 │   ├── rag_adapter.py          # OnePassRAG backend wrapper
 │   ├── rag/                    # LanceDB + llm-embedder + Ollama
 │   ├── sketch/                 # KV-cache compression sketches
-│   │   ├── attention_patch.py
+│   │   ├── attention_patch.py  # global masking patch (adakv/dms/duo_attention/kvzip/fastkvzip)
 │   │   ├── cache_adapter.py
 │   │   ├── pipeline.py
-│   │   └── sketches/           # knorm, reattention, random, ...
+│   │   └── sketches/           # @register_sketch registry: knorm, snapkv, pyramidkv, tova, ... (~36 baselines)
 │   ├── benchmarks/             # one module per benchmark
 │   │   ├── base.py
 │   │   ├── registry.py         # get_benchmark(), @register_benchmark
