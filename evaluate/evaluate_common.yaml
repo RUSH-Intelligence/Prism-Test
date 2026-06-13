@@ -8,11 +8,11 @@
 #   python -m eval_harness.cli run --config_file ./evaluate/evaluate_common.yaml
 #
 # ---------------------------------------------------------------------------
-# COMPATIBILITY MATRIX (prefill_method x sketch_name) — not every combination
+# COMPATIBILITY MATRIX (attention_method x kv_compressor) — not every combination
 # is sound; the pipeline installs prefill_method (outer) then sketch (inner),
 # so post-attention hooks fire method-first:
 #
-#   prefill_method      | sketch allowed?
+#   attention_method    | kv_compressor allowed?
 #   --------------------+------------------------------------------------------
 #   none                | any            (pure KV-compression run — see
 #                       |                 evaluate_kv.yaml)
@@ -56,7 +56,7 @@ model: meta-llama/Llama-3.1-8B-Instruct
 tensor_parallel_size: 1        # vLLM-only; ignored by the research backend (single-GPU .to("cuda"))
 dtype: bfloat16                # keep bf16/fp16: the einsum_topk Triton kernel requires it
 max_model_len: 18000           # pipeline truncation cap for ruler16k (used because
-                               # cache_config.max_context_length below is null).
+                               # research_config.max_context_length below is null).
                                # Raise for longer benchmarks (e.g. 66000 for ruler64k).
 gpu_memory_utilization: 0.9    # vLLM-only; ignored by the research backend
 trust_remote_code: true
@@ -84,13 +84,13 @@ llm_kwargs:
   # is the research backend's validated parity path.
   attn_implementation: sdpa
 
-  # This dict becomes research_adapter.CacheConfig (runner.py:144-145).
-  cache_config:
+  # This dict becomes research_adapter.ResearchConfig (runner.py:144-145).
+  research_config:
     # --- KV-compression sketch ---------------------------------------------
     # none | knorm | reattention | random | decoding_knorm | prefill_decoding_knorm
     # (see evaluate_kv.yaml for per-sketch descriptions; respect the
     # compatibility matrix above when a prefill method is active)
-    sketch_name: knorm
+    kv_compressor: knorm
     compression_ratio: 0.5          # fraction of the cache PRUNED, in [0, 1)
     compression_interval: 512       # decoding-sketches only
     target_size: 2048               # decoding-sketches only
@@ -106,8 +106,8 @@ llm_kwargs:
     # cache to [global | top-k middle | local].  It composes with sketches
     # (see matrix); contrast with reattention_exact, which bounds the
     # attention scope during prefill itself (paper baseline, sketch-free).
-    prefill_method: reattention
-    prefill_method_kwargs:
+    attention_method: reattention
+    attention_method_kwargs:
       global_size: 32           # sink tokens always retained
       local_size: 4096          # local window always retained
       mid_size: 4               # top-k middle keys per (head, query)

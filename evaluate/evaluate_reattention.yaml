@@ -12,7 +12,7 @@
 #
 # NOTE: `reattention_exact` reproduces the ORIGINAL ReAttention computation
 # (chunked prefill + pre-attention recall + contiguous re-rotation) — this is
-# the real context-extension baseline.  The hook port (`prefill_method:
+# the real context-extension baseline.  The hook port (`attention_method:
 # reattention`) only reproduces the retention POLICY (exact prefill, pruned
 # decode cache) and is position-OOD beyond 8192 — it measures pruning, not
 # extension.  Use this file for the paper baseline.
@@ -41,7 +41,7 @@ tensor_parallel_size: 1        # vLLM-only; ignored by the research backend (sin
 dtype: bfloat16                # keep bf16/fp16: the flash-attn fast paths require it (fp32
                                # silently falls back to torch); einsum_topk auto-casts to bf16
 max_model_len: 18000           # pipeline truncation cap for ruler16k (research_adapter.py:64 —
-                               # used because cache_config.max_context_length below is null).
+                               # used because research_config.max_context_length below is null).
                                # Raise for longer benchmarks (e.g. 66000 for ruler64k).
 gpu_memory_utilization: 0.9    # vLLM-only; ignored by the research backend
 trust_remote_code: true
@@ -72,13 +72,13 @@ llm_kwargs:
   # sdpa is the validated load/parity path.
   attn_implementation: sdpa
 
-  # This dict becomes research_adapter.CacheConfig (runner.py:144-145).
-  cache_config:
+  # This dict becomes research_adapter.ResearchConfig (runner.py:144-145).
+  research_config:
     # --- KV-compression sketch: OFF (this file is the pure baseline) --------
     # MUST stay none with reattention_exact: the method requires an unpruned
     # raw-KV cache (cache index == absolute position); any sketch rewriting
     # the cache trips its RuntimeError guard (reattention_exact.py).
-    sketch_name: none               # "none" = no sketch hooks installed
+    kv_compressor: none               # "none" = no sketch hooks installed
     compression_ratio: 0.0          # unused while sketch_name is none
     max_context_length: null        # null -> fall back to max_model_len above
     log_cache_seq_len: false        # true logs cache lengths (full context here — never pruned)
@@ -88,8 +88,8 @@ llm_kwargs:
     # original computation — raw (pre-RoPE) K/V cache for the whole context
     # (never pruned), chunked prefill, PRE-attention recall per chunk and
     # (recall_option: whole) per decode step, RoPE applied after selection.
-    prefill_method: reattention_exact
-    prefill_method_kwargs:
+    attention_method: reattention_exact
+    attention_method_kwargs:
       # Paper hparams (eval_reattn_niah.py tag '-reattn-32.4x32.4096.512-gu-clip127')
       global_size: 32           # sink tokens always in the recall view
       local_size: 4096          # local window; the exact port 128-aligns it per chunk
