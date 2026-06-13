@@ -19,7 +19,8 @@ eviction, quantization and merging all return replacement ``(keys, values)``.
 
 This is the renamed successor of ``eval_harness.sketch`` /
 ``BaseSketch.compress`` — the ``compress(...) -> (keys, values)`` contract is
-preserved so the ~31 ported kvpress compressors migrate mechanically.
+preserved so the ported kvpress compressors migrate mechanically.  Score-based
+compressors extend :class:`ScorerKVCompressor` (renamed ``ScorerSketch``).
 
 Pipeline position (outer → inner)::
 
@@ -34,13 +35,102 @@ import logging
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, FrozenSet, Generator, Iterable, Tuple
+from typing import FrozenSet, Generator, Iterable, Tuple
 
 import torch
 from torch import nn
+from transformers import PreTrainedModel, QuantizedCache
+
+from eval_harness.sketch.utils import extract_keys_and_values
 
 logger = logging.getLogger(__name__)
 
+
+# ----------------------------------------------------------------------
+# Model-family helpers (own copies so Door 3 does not depend on `sketch`)
+# ----------------------------------------------------------------------
+
+def _try_import(name: str):
+    try:
+        import transformers
+
+        return getattr(transformers, name, None)
+    except Exception:
+        return None
+
+
+_MODEL_NAMES = (
+    "LlamaForCausalLM",
+    "MistralForCausalLM",
+    "Mistral3ForConditionalGeneration",
+    "Phi3ForCausalLM",
+    "Qwen2ForCausalLM",
+    "Qwen3ForCausalLM",
+    "Qwen3_5ForCausalLM",
+    "Gemma3ForCausalLM",
+    "Gemma3ForConditionalGeneration",
+)
+SUPPORTED_MODELS = tuple(m for m in (_try_import(n) for n in _MODEL_NAMES) if m is not None)
+
+_Gemma3Causal = _try_import("Gemma3ForCausalLM")
+_Gemma3Cond = _try_import("Gemma3ForConditionalGeneration")
+_Qwen35 = _try_import("Qwen3_5ForCausalLM")
+
+
+def _is_gemma3(model) -> bool:
+    return (_Gemma3Cond is not None and isinstance(model, _Gemma3Cond)) or (
+        _Gemma3Causal is not None and isinstance(model, _Gemma3Causal)
+    )
+
+
+def _is_non_full_attention_layer(layer: nn.Module) -> bool:
+    """Best-effort detection of non-full attention layers.
+
+    For mixed-attention families (Gemma3, Qwen3.5) we only hook full-softmax
+    layers; this flags sliding/linear (or any non-full typed) layer to skip.
+    """
+    attn = getattr(layer, "self_attn", None)
+    if attn is None:
+        return False
+
+    for attr in ("layer_type", "attention_type"):
+        val = getattr(layer, attr, None)
+        if isinstance(val, str):
+            lowered = val.lower()
+            if "full" in lowered:
+                return False
+            if any(token in lowered for token in ("sliding", "linear")):
+                return True
+            return True
+
+    is_sliding = getattr(attn, "is_sliding", None)
+    if is_sliding is not None:
+        return bool(is_sliding)
+    is_linear = getattr(attn, "is_linear", None)
+    if is_linear is not None:
+        return bool(is_linear)
+
+    cfg = getattr(attn, "config", None)
+    for attr in ("layer_type", "attention_type"):
+        val = getattr(cfg, attr, None) if cfg is not None else None
+        if isinstance(val, str):
+            lowered = val.lower()
+            if "full" in lowered:
+                return False
+            if any(token in lowered for token in ("sliding", "linear")):
+                return True
+            return True
+
+    sw = getattr(cfg, "sliding_window", None) if cfg is not None else None
+    if isinstance(sw, int):
+        return sw > 0
+
+    return False
+
+
+# ----------------------------------------------------------------------
+# Schedule / operation model
+# ----------------------------------------------------------------------
 
 class CompressionSchedule(str, Enum):
     """When a KV compressor fires.  Combinable (a compressor may use several)."""
@@ -52,14 +142,9 @@ class CompressionSchedule(str, Enum):
     @classmethod
     def coerce_set(
         cls,
-        value: "CompressionSchedule | str | Iterable[Any]",
+        value: "CompressionSchedule | str | Iterable",
     ) -> FrozenSet["CompressionSchedule"]:
-        """Parse one schedule, or a list of them, into a frozenset.
-
-        Accepts an enum member, a string, or any iterable of those — so YAML
-        ``compression_schedule: post_prefill`` and
-        ``compression_schedule: [streaming, decode]`` both work.
-        """
+        """Parse one schedule, or a list of them, into a frozenset."""
         if isinstance(value, (CompressionSchedule, str)):
             value = [value]
         out = set()
@@ -99,11 +184,18 @@ class KVCompressor:
     in :attr:`schedule`.
     """
 
+    # kw_only so subclasses (the ported compressors) can still declare REQUIRED
+    # positional fields like ``press: ScorerKVCompressor`` without hitting the
+    # "non-default argument follows default argument" dataclass error — the old
+    # ``BaseSketch`` had no fields, so these additions must not reorder theirs.
     schedule: FrozenSet[CompressionSchedule] = field(
-        default_factory=lambda: frozenset({CompressionSchedule.POST_PREFILL})
+        default_factory=lambda: frozenset({CompressionSchedule.POST_PREFILL}),
+        kw_only=True,
     )
-    operation: CompressionOperation = CompressionOperation.EVICT
-    decode_interval: int = 1
+    operation: CompressionOperation = field(
+        default=CompressionOperation.EVICT, kw_only=True,
+    )
+    decode_interval: int = field(default=1, kw_only=True)
 
     def __post_init__(self) -> None:
         self.schedule = CompressionSchedule.coerce_set(self.schedule)
@@ -126,11 +218,31 @@ class KVCompressor:
         return CompressionSchedule.DECODE in self.schedule
 
     # ------------------------------------------------------------------
-    # The single override point
+    # Lifecycle / detection
     # ------------------------------------------------------------------
 
-    def post_init_from_model(self, model: nn.Module) -> None:
+    def post_init_from_model(self, model: PreTrainedModel) -> None:
         """Optional per-model setup (head dims, budgets) on install."""
+
+    @staticmethod
+    def _is_decoding_step(module: nn.Module, kwargs: dict, q_len: int) -> bool:
+        """Detect decoding vs prefill across transformers versions."""
+        cache_position = kwargs.get("cache_position")
+        if cache_position is not None:
+            return cache_position[-1] > q_len
+
+        cache = kwargs.get("past_key_values")
+        if cache is not None:
+            try:
+                return cache.get_seq_length(module.layer_idx) > q_len
+            except Exception:
+                pass
+
+        return q_len <= 1
+
+    # ------------------------------------------------------------------
+    # The single override point
+    # ------------------------------------------------------------------
 
     def compress(
         self,
@@ -154,12 +266,6 @@ class KVCompressor:
     # Hook install / dispatch
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _is_decoding_step(module: nn.Module, kwargs: dict, q_len: int) -> bool:
-        from eval_harness.sketch.sketches.base_sketch import BaseSketch
-
-        return BaseSketch._is_decoding_step(module, kwargs, q_len)
-
     def forward_hook(
         self,
         module: nn.Module,
@@ -167,10 +273,6 @@ class KVCompressor:
         kwargs: dict,
         output: list,
     ):
-        from transformers import QuantizedCache
-
-        from eval_harness.sketch.utils import extract_keys_and_values
-
         hidden_states = kwargs["hidden_states"]
         cache = kwargs["past_key_values"]
         cache_layer = cache.layers[module.layer_idx]
@@ -204,25 +306,29 @@ class KVCompressor:
         return output
 
     @contextmanager
-    def __call__(self, model: nn.Module) -> Generator:
-        from eval_harness.sketch.sketches.base_sketch import (
-            _is_non_full_attention_layer,
-        )
+    def __call__(self, model: PreTrainedModel) -> Generator:
+        if not isinstance(model, SUPPORTED_MODELS):
+            logger.warning(
+                "Model %s not tested, supported models: %s", type(model), SUPPORTED_MODELS,
+            )
 
-        from eval_harness.attention_methods.base import _is_gemma3
-
-        is_gemma3 = _is_gemma3(model)
-        language_model = (
-            model.model.language_model
-            if hasattr(model.model, "language_model")
-            else model.model
-        )
+        is_gemma3_family = _is_gemma3(model)
+        if is_gemma3_family or (_Qwen35 is not None and isinstance(model, _Qwen35)):
+            logger.warning(
+                "Compression is only applied to full-softmax attention layers "
+                "for this model family",
+            )
 
         self.post_init_from_model(model)
         hooks = []
         try:
+            language_model = (
+                model.model.language_model
+                if hasattr(model.model, "language_model")
+                else model.model
+            )
             for layer in language_model.layers:
-                if is_gemma3 and getattr(layer.self_attn, "is_sliding", False):
+                if is_gemma3_family and getattr(layer.self_attn, "is_sliding", False):
                     continue
                 if _is_non_full_attention_layer(layer):
                     continue
@@ -236,3 +342,53 @@ class KVCompressor:
         finally:
             for hook in hooks:
                 hook.remove()
+
+
+@dataclass
+class ScorerKVCompressor(KVCompressor):
+    """Score-based eviction compressor (renamed ``ScorerSketch``).
+
+    Subclasses implement :meth:`score`; :meth:`compress` keeps the top
+    ``(1 - compression_ratio)`` fraction of tokens by score.
+    """
+
+    compression_ratio: float = 0.0
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        assert 0 <= self.compression_ratio < 1, "Compression ratio must be between 0 and 1"
+
+    def score(
+        self,
+        module: nn.Module,
+        hidden_states: torch.Tensor,
+        keys: torch.Tensor,
+        values: torch.Tensor,
+        attentions: torch.Tensor,
+        kwargs,
+    ) -> torch.Tensor:
+        raise NotImplementedError
+
+    def compress(
+        self,
+        module: nn.Module,
+        hidden_states: torch.Tensor,
+        keys: torch.Tensor,
+        values: torch.Tensor,
+        attentions: torch.Tensor,
+        kwargs: dict,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        if self.compression_ratio == 0:
+            return keys, values
+
+        scores = self.score(module, hidden_states, keys, values, attentions, kwargs)
+
+        k_len = keys.shape[2]
+        n_kept = int(k_len * (1 - self.compression_ratio))
+        indices = scores.topk(n_kept, dim=-1).indices
+        indices = indices.unsqueeze(-1).expand(-1, -1, -1, module.head_dim)
+
+        keys = keys.gather(2, indices).contiguous()
+        values = values.gather(2, indices).contiguous()
+
+        return keys, values

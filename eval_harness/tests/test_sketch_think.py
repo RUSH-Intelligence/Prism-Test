@@ -247,7 +247,11 @@ class TestThinKSketch(unittest.TestCase):
         with self.assertRaises(AttributeError):
             sketch.compression_ratio = 0.5
         field_names = {f.name for f in dataclasses.fields(ThinKSketch)}
-        self.assertEqual(field_names, {"key_channel_compression_ratio", "window_size"})
+        # The KVCompressor base contributes the schedule/operation model; ThinK's
+        # OWN fields remain exactly these two, and compression_ratio stays a
+        # computed property (never a field).
+        base_fields = {"schedule", "operation", "decode_interval"}
+        self.assertEqual(field_names - base_fields, {"key_channel_compression_ratio", "window_size"})
         self.assertNotIn("compression_ratio", field_names)
 
     def test_fused_qkv_proj_path_matches_q_slice(self):
