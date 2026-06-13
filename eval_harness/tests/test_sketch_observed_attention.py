@@ -13,11 +13,11 @@ import torch
 from torch import nn
 from transformers import DynamicCache
 
-from eval_harness.sketch.sketches.observed_attention_sketch import ObservedAttentionSketch
-from eval_harness.sketch.sketches.registry import (
-    available_sketches,
-    get_sketch,
-    get_sketch_class,
+from eval_harness.kv_compression.compressors.observed_attention_sketch import ObservedAttentionSketch
+from eval_harness.kv_compression.registry import (
+    available_kv_compressors,
+    get_kv_compressor,
+    get_kv_compressor_class,
 )
 
 
@@ -60,11 +60,11 @@ def _observed_attention_oracle(attentions, num_key_value_heads):
 
 class TestObservedAttentionRegistry(unittest.TestCase):
     def test_registered_name(self):
-        self.assertIn("observed_attention", available_sketches())
-        self.assertIs(get_sketch_class("observed_attention"), ObservedAttentionSketch)
+        self.assertIn("observed_attention", available_kv_compressors())
+        self.assertIs(get_kv_compressor_class("observed_attention"), ObservedAttentionSketch)
 
-    def test_get_sketch_injects_compression_ratio(self):
-        sketch = get_sketch("observed_attention", compression_ratio=0.25)
+    def test_get_kv_compressor_injects_compression_ratio(self):
+        sketch = get_kv_compressor("observed_attention", compression_ratio=0.25)
         self.assertIsInstance(sketch, ObservedAttentionSketch)
         self.assertAlmostEqual(sketch.compression_ratio, 0.25)
 

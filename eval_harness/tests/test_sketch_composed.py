@@ -20,16 +20,16 @@ from torch import nn
 from transformers import DynamicCache
 
 from eval_harness.research_adapter import CacheConfig, ResearchAdapter
-from eval_harness.sketch.sketches.composed_sketch import ComposedSketch
-from eval_harness.sketch.sketches.decoding_sketch import DecodingSketch
-from eval_harness.sketch.sketches.knorm_sketch import KnormSketch
-from eval_harness.sketch.sketches.random_sketch import RandomSketch
-from eval_harness.sketch.sketches.registry import (
-    available_sketches,
-    get_sketch,
-    get_sketch_class,
+from eval_harness.kv_compression.compressors.composed_sketch import ComposedSketch
+from eval_harness.kv_compression.compressors.decoding_sketch import DecodingSketch
+from eval_harness.kv_compression.compressors.knorm_sketch import KnormSketch
+from eval_harness.kv_compression.compressors.random_sketch import RandomSketch
+from eval_harness.kv_compression.registry import (
+    available_kv_compressors,
+    get_kv_compressor,
+    get_kv_compressor_class,
 )
-from eval_harness.sketch.sketches.scorer_sketch import ScorerSketch
+from eval_harness.kv_compression.base import ScorerKVCompressor
 
 
 class _FakeAttnModule(nn.Module):
@@ -45,7 +45,7 @@ class _FakeAttnModule(nn.Module):
 
 
 @dataclass
-class _RecordingSketch(ScorerSketch):
+class _RecordingSketch(ScorerKVCompressor):
     def __post_init__(self):
         super().__post_init__()
         self.seen_models = []
@@ -88,11 +88,11 @@ def _prefill_hook(sketch, module, cache, seq, batch=1, hidden=16):
 
 class TestComposedRegistry(unittest.TestCase):
     def test_registered_under_composed(self):
-        self.assertIn("composed", available_sketches())
-        self.assertIs(get_sketch_class("composed"), ComposedSketch)
+        self.assertIn("composed", available_kv_compressors())
+        self.assertIs(get_kv_compressor_class("composed"), ComposedSketch)
 
-    def test_get_sketch_resolves_member_specs(self):
-        sketch = get_sketch(
+    def test_get_kv_compressor_resolves_member_specs(self):
+        sketch = get_kv_compressor(
             "composed",
             presses=[("knorm", {"compression_ratio": 0.5}), "random"],
         )

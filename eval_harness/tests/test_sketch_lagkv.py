@@ -11,11 +11,11 @@ import unittest
 
 import torch
 
-from eval_harness.sketch.sketches.lagkv_sketch import LagKVSketch
-from eval_harness.sketch.sketches.registry import (
-    available_sketches,
-    get_sketch,
-    get_sketch_class,
+from eval_harness.kv_compression.compressors.lagkv_sketch import LagKVSketch
+from eval_harness.kv_compression.registry import (
+    available_kv_compressors,
+    get_kv_compressor,
+    get_kv_compressor_class,
 )
 
 
@@ -86,11 +86,11 @@ def _kept_positions(original: torch.Tensor, compressed: torch.Tensor) -> list[in
 
 class TestLagKVRegistry(unittest.TestCase):
     def test_registered_name(self):
-        self.assertIn("lagkv", available_sketches())
-        self.assertIs(get_sketch_class("lagkv"), LagKVSketch)
+        self.assertIn("lagkv", available_kv_compressors())
+        self.assertIs(get_kv_compressor_class("lagkv"), LagKVSketch)
 
-    def test_get_sketch_instantiates_with_kwargs(self):
-        sketch = get_sketch(
+    def test_get_kv_compressor_instantiates_with_kwargs(self):
+        sketch = get_kv_compressor(
             "lagkv", compression_ratio=0.25, n_sink=2, lag_size=16, cross_scoring=True
         )
         self.assertIsInstance(sketch, LagKVSketch)

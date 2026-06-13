@@ -6,15 +6,15 @@ from typing import Any, List, Optional
 
 from .hf_adapter import HFAdapter, HFGenerateConfig
 from .prefill_methods import PrefillMethod, get_prefill_method
-from .sketch import (
-    BaseSketch,
+from .kv_compression import (
+    KVCompressor,
     DecodingSketch,
     KnormSketch,
     PrefillDecodingSketch,
-    SketchTextGenerationPipeline,
-    get_sketch_class,
+    get_kv_compressor_class,
 )
-from .sketch.cache_adapter import CacheAdapter, create_cache_adapter
+from .kv_compression.cache_adapter import CacheAdapter, create_cache_adapter
+from .research_pipeline import SketchTextGenerationPipeline
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +73,7 @@ class ResearchAdapter(HFAdapter):
         )
 
         self._max_context_length = requested_ctx
-        self._sketch: Optional[BaseSketch] = self._build_sketch(self._cache_cfg)
+        self._sketch: Optional[KVCompressor] = self._build_sketch(self._cache_cfg)
         self._prefill_method: PrefillMethod = self._build_prefill_method(self._cache_cfg)
         self._cache_adapter: CacheAdapter = create_cache_adapter(self._model)
         self._pipe = SketchTextGenerationPipeline(model=self._model, tokenizer=self._tokenizer)
@@ -93,7 +93,7 @@ class ResearchAdapter(HFAdapter):
         kw = dict(cfg.prefill_method_kwargs or {})
         return get_prefill_method(name, **kw)
 
-    def _build_sketch(self, cfg: CacheConfig) -> Optional[BaseSketch]:
+    def _build_sketch(self, cfg: CacheConfig) -> Optional[KVCompressor]:
         name = (cfg.sketch_name or "none").strip().lower()
         if name in {"none", "no_sketch", "no_press"}:
             return None
@@ -117,7 +117,7 @@ class ResearchAdapter(HFAdapter):
         # Everything else resolves through the sketches registry; the
         # adapter-level compression_ratio is applied unless the sketch does
         # not declare that field or sketch_kwargs overrides it.
-        cls = get_sketch_class(name)
+        cls = get_kv_compressor_class(name)
         kw = dict(cfg.sketch_kwargs or {})
         if "compression_ratio" in {f.name for f in fields(cls)}:
             kw.setdefault("compression_ratio", cfg.compression_ratio)

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import torch
 
-from eval_harness.sketch.cache_adapter import (
+from eval_harness.kv_compression.cache_adapter import (
     HybridCacheAdapter,
     StandardCacheAdapter,
     create_cache_adapter,

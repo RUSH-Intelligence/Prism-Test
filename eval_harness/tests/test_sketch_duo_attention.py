@@ -23,8 +23,8 @@ import numpy as np
 import torch
 from torch import nn
 
-from eval_harness.sketch.attention_patch import attention_patch, search_hyperplane
-from eval_harness.sketch.sketches.duo_attention_sketch import PATTERNS_DICT, DuoAttentionSketch
+from eval_harness.kv_compression.attention_patch import attention_patch, search_hyperplane
+from eval_harness.kv_compression.compressors.duo_attention_sketch import PATTERNS_DICT, DuoAttentionSketch
 
 
 # ======================================================================
@@ -564,10 +564,10 @@ class TestPatternLoading(unittest.TestCase):
 
 class TestRegistryWiring(unittest.TestCase):
     def test_registry_resolution(self):
-        from eval_harness.sketch.sketches.registry import get_sketch, get_sketch_class
+        from eval_harness.kv_compression.registry import get_kv_compressor, get_kv_compressor_class
 
-        self.assertIs(get_sketch_class("duo_attention"), DuoAttentionSketch)
-        sketch = get_sketch("duo_attention", head_compression_ratio=0.5)
+        self.assertIs(get_kv_compressor_class("duo_attention"), DuoAttentionSketch)
+        sketch = get_kv_compressor("duo_attention", head_compression_ratio=0.5)
         self.assertIsInstance(sketch, DuoAttentionSketch)
         self.assertAlmostEqual(sketch.head_compression_ratio, 0.5)
 

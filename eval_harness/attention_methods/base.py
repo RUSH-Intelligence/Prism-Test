@@ -187,7 +187,7 @@ class AttentionMethod:
 
     @contextmanager
     def __call__(self, model: Any) -> Generator:
-        from eval_harness.sketch.sketches.base_sketch import (
+        from eval_harness.kv_compression.base import (
             _is_non_full_attention_layer,
         )
 
@@ -283,7 +283,7 @@ class AttentionMethod:
     ) -> bool:
         """Prefill-vs-decode detection across transformers versions.
 
-        Mirrors ``BaseSketch._is_decoding_step``: a decode step is one whose
+        Mirrors ``KVCompressor._is_decoding_step``: a decode step is one whose
         already-cached length exceeds the current query length.
         """
         q_len = hidden_states.shape[1]

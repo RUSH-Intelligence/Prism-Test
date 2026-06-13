@@ -14,12 +14,12 @@ from torch import nn
 from torch.nn import functional as F
 from transformers import DynamicCache
 
-from eval_harness.sketch.sketches.keydiff_sketch import KeyDiffSketch
-from eval_harness.sketch.sketches.knorm_sketch import KnormSketch
-from eval_harness.sketch.sketches.registry import (
-    available_sketches,
-    get_sketch,
-    get_sketch_class,
+from eval_harness.kv_compression.compressors.keydiff_sketch import KeyDiffSketch
+from eval_harness.kv_compression.compressors.knorm_sketch import KnormSketch
+from eval_harness.kv_compression.registry import (
+    available_kv_compressors,
+    get_kv_compressor,
+    get_kv_compressor_class,
 )
 
 
@@ -62,11 +62,11 @@ _PINNED_ORDER = [3, 0, 2, 1]  # descending-score order
 
 class TestKeyDiffRegistry(unittest.TestCase):
     def test_registered_under_keydiff(self):
-        self.assertIn("keydiff", available_sketches())
-        self.assertIs(get_sketch_class("keydiff"), KeyDiffSketch)
+        self.assertIn("keydiff", available_kv_compressors())
+        self.assertIs(get_kv_compressor_class("keydiff"), KeyDiffSketch)
 
-    def test_get_sketch_instantiates_with_ratio(self):
-        sketch = get_sketch("keydiff", compression_ratio=0.3)
+    def test_get_kv_compressor_instantiates_with_ratio(self):
+        sketch = get_kv_compressor("keydiff", compression_ratio=0.3)
         self.assertIsInstance(sketch, KeyDiffSketch)
         self.assertAlmostEqual(sketch.compression_ratio, 0.3)
 

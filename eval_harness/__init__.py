@@ -10,8 +10,8 @@ __all__ = [
     "ResearchAdapter",
     "CacheConfig",
     "SketchTextGenerationPipeline",
-    "BaseSketch",
-    "ScorerSketch",
+    "KVCompressor",
+    "ScorerKVCompressor",
     "KnormSketch",
     "RandomSketch",
     "DecodingSketch",
@@ -34,27 +34,27 @@ def __getattr__(name: str):
         return ResearchAdapter if name == "ResearchAdapter" else CacheConfig
     if name in (
         "SketchTextGenerationPipeline",
-        "BaseSketch",
-        "ScorerSketch",
+        "KVCompressor",
+        "ScorerKVCompressor",
         "KnormSketch",
         "RandomSketch",
         "DecodingSketch",
         "PrefillDecodingSketch",
     ):
-        from .sketch import (
-            BaseSketch,
+        from .kv_compression import (
+            KVCompressor,
             DecodingSketch,
             KnormSketch,
             PrefillDecodingSketch,
             RandomSketch,
-            ScorerSketch,
-            SketchTextGenerationPipeline,
+            ScorerKVCompressor,
         )
+        from .research_pipeline import SketchTextGenerationPipeline
 
         mapping = {
             "SketchTextGenerationPipeline": SketchTextGenerationPipeline,
-            "BaseSketch": BaseSketch,
-            "ScorerSketch": ScorerSketch,
+            "KVCompressor": KVCompressor,
+            "ScorerKVCompressor": ScorerKVCompressor,
             "KnormSketch": KnormSketch,
             "RandomSketch": RandomSketch,
             "DecodingSketch": DecodingSketch,

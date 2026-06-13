@@ -190,7 +190,7 @@ class PrefillMethod:
         Hooks are installed on full-attention ``self_attn`` layers only
         (skipping sliding-window/linear layers on hybrid models).
         """
-        from eval_harness.sketch.sketches.base_sketch import _is_non_full_attention_layer
+        from eval_harness.kv_compression.base import _is_non_full_attention_layer
 
         try:
             _Gemma3Cond = None
@@ -241,8 +241,8 @@ class PrefillMethod:
         output: list,
     ):
         """Internal hook dispatcher — delegates to ``prefill_forward_hook``."""
-        from eval_harness.sketch.sketches.base_sketch import BaseSketch
-        from eval_harness.sketch.utils import extract_keys_and_values
+        from eval_harness.kv_compression.base import KVCompressor
+        from eval_harness.kv_compression.utils import extract_keys_and_values
         from transformers import QuantizedCache
 
         hidden_states = kwargs.get("hidden_states")
@@ -253,7 +253,7 @@ class PrefillMethod:
         q_len = hidden_states.shape[1]
 
         # Only run during prefill, not decode.
-        if BaseSketch._is_decoding_step(module, kwargs, q_len):
+        if KVCompressor._is_decoding_step(module, kwargs, q_len):
             return output
 
         keys, values = extract_keys_and_values(cache, module.layer_idx)

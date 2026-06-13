@@ -16,18 +16,18 @@ from torch import nn
 from torch.nn import functional as F
 from transformers import DynamicCache
 
-from eval_harness.sketch.sketches.finch_sketch import (
+from eval_harness.kv_compression.compressors.finch_sketch import (
     FinchSketch,
     _compute_window_attention,
     _rerotate_keys,
 )
-from eval_harness.sketch.sketches.registry import (
-    available_sketches,
-    get_sketch,
-    get_sketch_class,
+from eval_harness.kv_compression.registry import (
+    available_kv_compressors,
+    get_kv_compressor,
+    get_kv_compressor_class,
 )
 
-_FINCH_LOGGER = "eval_harness.sketch.sketches.finch_sketch"
+_FINCH_LOGGER = "eval_harness.kv_compression.compressors.finch_sketch"
 
 
 def _rotate_half(x):
@@ -166,12 +166,12 @@ def _tagged(B, H, S, D):
 
 class TestFinchRegistry(unittest.TestCase):
     def test_finch_registered_exactly_once(self):
-        self.assertIs(get_sketch_class("finch"), FinchSketch)
-        names = [n for n in available_sketches() if get_sketch_class(n) is FinchSketch]
+        self.assertIs(get_kv_compressor_class("finch"), FinchSketch)
+        names = [n for n in available_kv_compressors() if get_kv_compressor_class(n) is FinchSketch]
         self.assertEqual(names, ["finch"])
 
-    def test_get_sketch_instantiates_with_ratio(self):
-        sketch = get_sketch("finch", compression_ratio=0.3)
+    def test_get_kv_compressor_instantiates_with_ratio(self):
+        sketch = get_kv_compressor("finch", compression_ratio=0.3)
         self.assertIsInstance(sketch, FinchSketch)
         self.assertAlmostEqual(sketch.compression_ratio, 0.3)
         self.assertIsNone(sketch.window_size)

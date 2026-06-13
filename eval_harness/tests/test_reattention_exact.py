@@ -1062,8 +1062,8 @@ def _build_model(num_hidden_layers):
 
 
 def _pipe_forward(model, method, ctx=300, questions=1, qlen=8, mnt=4):
-    from eval_harness.sketch.cache_adapter import create_cache_adapter
-    from eval_harness.sketch.pipeline import SketchTextGenerationPipeline
+    from eval_harness.kv_compression.cache_adapter import create_cache_adapter
+    from eval_harness.research_pipeline import SketchTextGenerationPipeline
 
     pipe = object.__new__(SketchTextGenerationPipeline)
     pipe.model = model

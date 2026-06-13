@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import torch
 from torch import nn
 
-from eval_harness.sketch.sketches.simlayerkv_sketch import SimLayerKVSketch
+from eval_harness.kv_compression.compressors.simlayerkv_sketch import SimLayerKVSketch
 
 
 # ======================================================================
@@ -105,7 +105,7 @@ def _position_keys(H_kv, S, D, offset=0.0):
     return t.view(1, 1, S, 1).expand(1, H_kv, S, D).clone()
 
 
-LOGGER_NAME = "eval_harness.sketch.sketches.simlayerkv_sketch"
+LOGGER_NAME = "eval_harness.kv_compression.compressors.simlayerkv_sketch"
 
 
 # ======================================================================
@@ -398,10 +398,10 @@ class TestFlashAssertion(unittest.TestCase):
 
 class TestRegistryWiring(unittest.TestCase):
     def test_registry_resolution(self):
-        from eval_harness.sketch.sketches.registry import get_sketch, get_sketch_class
+        from eval_harness.kv_compression.registry import get_kv_compressor, get_kv_compressor_class
 
-        self.assertIs(get_sketch_class("simlayerkv"), SimLayerKVSketch)
-        sketch = get_sketch("simlayerkv", lazy_threshold=0.8, n_recent=128)
+        self.assertIs(get_kv_compressor_class("simlayerkv"), SimLayerKVSketch)
+        sketch = get_kv_compressor("simlayerkv", lazy_threshold=0.8, n_recent=128)
         self.assertIsInstance(sketch, SimLayerKVSketch)
         self.assertAlmostEqual(sketch.lazy_threshold, 0.8)
         self.assertEqual(sketch.n_recent, 128)

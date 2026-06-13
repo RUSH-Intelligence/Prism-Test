@@ -16,12 +16,12 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from eval_harness.sketch.sketches.expected_attention_sketch import ExpectedAttentionSketch
-from eval_harness.sketch.sketches.expected_attention_stats_sketch import (
+from eval_harness.kv_compression.compressors.expected_attention_sketch import ExpectedAttentionSketch
+from eval_harness.kv_compression.compressors.expected_attention_stats_sketch import (
     ExpectedAttentionStats,
     ExpectedAttentionStatsSketch,
 )
-from eval_harness.sketch.sketches.registry import get_sketch, get_sketch_class
+from eval_harness.kv_compression.registry import get_kv_compressor, get_kv_compressor_class
 
 
 class _StubRotary:
@@ -120,13 +120,13 @@ def _make_stats_container(num_layers=2, num_heads=2, head_dim=4, seed=0):
 
 class TestRegistry(unittest.TestCase):
     def test_registered_name(self):
-        self.assertIs(get_sketch_class("expected_attention_stats"), ExpectedAttentionStatsSketch)
+        self.assertIs(get_kv_compressor_class("expected_attention_stats"), ExpectedAttentionStatsSketch)
 
     def test_subclasses_base_port(self):
         self.assertTrue(issubclass(ExpectedAttentionStatsSketch, ExpectedAttentionSketch))
 
     def test_kwargs_construction_and_defaults(self):
-        sketch = get_sketch("expected_attention_stats", compression_ratio=0.3, stats_folder="/tmp/x")
+        sketch = get_kv_compressor("expected_attention_stats", compression_ratio=0.3, stats_folder="/tmp/x")
         self.assertIsInstance(sketch, ExpectedAttentionStatsSketch)
         self.assertAlmostEqual(sketch.compression_ratio, 0.3)
         self.assertEqual(sketch.stats_folder, "/tmp/x")

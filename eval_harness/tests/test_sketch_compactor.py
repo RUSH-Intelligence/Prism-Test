@@ -15,7 +15,7 @@ from unittest import mock
 import torch
 from torch import nn
 
-from eval_harness.sketch.sketches.compactor_sketch import (
+from eval_harness.kv_compression.compressors.compactor_sketch import (
     CompactorSketch,
     _get_prerope_key_states,
     _get_prerope_query_states,
@@ -172,15 +172,15 @@ def _ref_compactor_score(sketch, module, hidden_states, keys, values, cos, sin, 
 
 class TestCompactorRegistry(unittest.TestCase):
     def test_registered_and_resolves(self):
-        from eval_harness.sketch.sketches.registry import (
-            available_sketches,
-            get_sketch,
-            get_sketch_class,
+        from eval_harness.kv_compression.registry import (
+            available_kv_compressors,
+            get_kv_compressor,
+            get_kv_compressor_class,
         )
 
-        self.assertIn("compactor", available_sketches())
-        self.assertIs(get_sketch_class("compactor"), CompactorSketch)
-        sketch = get_sketch("compactor", compression_ratio=0.3, sketch_dimension=16, chunk_size=64)
+        self.assertIn("compactor", available_kv_compressors())
+        self.assertIs(get_kv_compressor_class("compactor"), CompactorSketch)
+        sketch = get_kv_compressor("compactor", compression_ratio=0.3, sketch_dimension=16, chunk_size=64)
         self.assertIsInstance(sketch, CompactorSketch)
         self.assertAlmostEqual(sketch.compression_ratio, 0.3)
         self.assertEqual(sketch.sketch_dimension, 16)

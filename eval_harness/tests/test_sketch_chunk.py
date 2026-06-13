@@ -13,12 +13,12 @@ from types import SimpleNamespace
 
 import torch
 
-from eval_harness.sketch.sketches.base_sketch import BaseSketch
-from eval_harness.sketch.sketches.chunk_sketch import ChunkSketch
-from eval_harness.sketch.sketches.knorm_sketch import KnormSketch
-from eval_harness.sketch.sketches.random_sketch import RandomSketch
-from eval_harness.sketch.sketches.registry import get_sketch, get_sketch_class
-from eval_harness.sketch.sketches.scorer_sketch import ScorerSketch
+from eval_harness.kv_compression.base import KVCompressor
+from eval_harness.kv_compression.compressors.chunk_sketch import ChunkSketch
+from eval_harness.kv_compression.compressors.knorm_sketch import KnormSketch
+from eval_harness.kv_compression.compressors.random_sketch import RandomSketch
+from eval_harness.kv_compression.registry import get_kv_compressor, get_kv_compressor_class
+from eval_harness.kv_compression.base import ScorerKVCompressor
 
 
 def _fake_module(head_dim: int = 4, **extra) -> SimpleNamespace:
@@ -26,7 +26,7 @@ def _fake_module(head_dim: int = 4, **extra) -> SimpleNamespace:
 
 
 @dataclass
-class _FirstChannelSketch(ScorerSketch):
+class _FirstChannelSketch(ScorerKVCompressor):
     """Deterministic test scorer: score = keys[..., 0]."""
 
     def score(self, module, hidden_states, keys, values, attentions, kwargs):
@@ -34,7 +34,7 @@ class _FirstChannelSketch(ScorerSketch):
 
 
 @dataclass
-class _RecordingSketch(ScorerSketch):
+class _RecordingSketch(ScorerKVCompressor):
     """Records post_init_from_model and per-chunk score() call arguments."""
 
     def __post_init__(self):
@@ -86,8 +86,8 @@ def _norm_encoded_kv(norms, head_dim):
 
 class TestChunkSketchConstruction(unittest.TestCase):
     def test_registry_resolution(self):
-        self.assertIs(get_sketch_class("chunk"), ChunkSketch)
-        sketch = get_sketch("chunk", press=KnormSketch(compression_ratio=0.5), chunk_length=4)
+        self.assertIs(get_kv_compressor_class("chunk"), ChunkSketch)
+        sketch = get_kv_compressor("chunk", press=KnormSketch(compression_ratio=0.5), chunk_length=4)
         self.assertIsInstance(sketch, ChunkSketch)
         self.assertEqual(sketch.chunk_length, 4)
         self.assertEqual(sketch.compression_ratio, 0.5)
@@ -96,7 +96,7 @@ class TestChunkSketchConstruction(unittest.TestCase):
         self.assertEqual(ChunkSketch(press=KnormSketch()).chunk_length, 1024)
 
     def test_post_init_rejects_non_scorer_press(self):
-        for bad in (None, object(), "knorm", BaseSketch()):
+        for bad in (None, object(), "knorm", KVCompressor()):
             with self.assertRaises(AssertionError):
                 ChunkSketch(press=bad)
 

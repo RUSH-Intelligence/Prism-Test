@@ -16,11 +16,11 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from eval_harness.sketch.sketches.expected_attention_sketch import (
+from eval_harness.kv_compression.compressors.expected_attention_sketch import (
     ExpectedAttentionSketch,
     _get_prerope_query_states,
 )
-from eval_harness.sketch.sketches.registry import get_sketch, get_sketch_class
+from eval_harness.kv_compression.registry import get_kv_compressor, get_kv_compressor_class
 
 
 class _StubRotary:
@@ -254,10 +254,10 @@ def _loop_oracle(module, hidden_states, keys, values, *, n_sink, n_future_positi
 
 class TestRegistry(unittest.TestCase):
     def test_registered_name(self):
-        self.assertIs(get_sketch_class("expected_attention"), ExpectedAttentionSketch)
+        self.assertIs(get_kv_compressor_class("expected_attention"), ExpectedAttentionSketch)
 
     def test_kwargs_construction(self):
-        sketch = get_sketch(
+        sketch = get_kv_compressor(
             "expected_attention", compression_ratio=0.25, n_future_positions=7,
             n_sink=2, use_covariance=False, use_vnorm=False, epsilon=0.1,
         )

@@ -41,7 +41,7 @@ import torch
 from torch import nn
 from transformers import PreTrainedModel, QuantizedCache
 
-from eval_harness.sketch.utils import extract_keys_and_values
+from eval_harness.kv_compression.utils import extract_keys_and_values
 
 logger = logging.getLogger(__name__)
 
@@ -187,7 +187,7 @@ class KVCompressor:
     # kw_only so subclasses (the ported compressors) can still declare REQUIRED
     # positional fields like ``press: ScorerKVCompressor`` without hitting the
     # "non-default argument follows default argument" dataclass error — the old
-    # ``BaseSketch`` had no fields, so these additions must not reorder theirs.
+    # ``KVCompressor`` had no fields, so these additions must not reorder theirs.
     schedule: FrozenSet[CompressionSchedule] = field(
         default_factory=lambda: frozenset({CompressionSchedule.POST_PREFILL}),
         kw_only=True,
@@ -346,7 +346,7 @@ class KVCompressor:
 
 @dataclass
 class ScorerKVCompressor(KVCompressor):
-    """Score-based eviction compressor (renamed ``ScorerSketch``).
+    """Score-based eviction compressor (renamed ``ScorerKVCompressor``).
 
     Subclasses implement :meth:`score`; :meth:`compress` keeps the top
     ``(1 - compression_ratio)`` fraction of tokens by score.

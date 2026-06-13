@@ -16,14 +16,14 @@ from types import SimpleNamespace
 import torch
 from torch import nn
 
-from eval_harness.sketch.sketches.leverage_sketch import (
+from eval_harness.kv_compression.compressors.leverage_sketch import (
     LeverageScoreSketch,
     _get_prerope_key_states,
 )
-from eval_harness.sketch.sketches.registry import (
-    available_sketches,
-    get_sketch,
-    get_sketch_class,
+from eval_harness.kv_compression.registry import (
+    available_kv_compressors,
+    get_kv_compressor,
+    get_kv_compressor_class,
 )
 
 
@@ -364,17 +364,17 @@ class TestLeverageHookIntegration(unittest.TestCase):
 
 class TestLeverageRegistry(unittest.TestCase):
     def test_registry_resolution(self):
-        self.assertIn("leverage", available_sketches())
-        self.assertIs(get_sketch_class("leverage"), LeverageScoreSketch)
+        self.assertIn("leverage", available_kv_compressors())
+        self.assertIs(get_kv_compressor_class("leverage"), LeverageScoreSketch)
 
-    def test_get_sketch_round_trips_fields(self):
-        sketch = get_sketch("leverage", compression_ratio=0.5, sketch_dimension=64)
+    def test_get_kv_compressor_round_trips_fields(self):
+        sketch = get_kv_compressor("leverage", compression_ratio=0.5, sketch_dimension=64)
         self.assertIsInstance(sketch, LeverageScoreSketch)
         self.assertAlmostEqual(sketch.compression_ratio, 0.5)
         self.assertEqual(sketch.sketch_dimension, 64)
 
     def test_default_sketch_dimension(self):
-        sketch = get_sketch("leverage", compression_ratio=0.25)
+        sketch = get_kv_compressor("leverage", compression_ratio=0.25)
         self.assertEqual(sketch.sketch_dimension, 48)
         self.assertAlmostEqual(sketch.compression_ratio, 0.25)
 

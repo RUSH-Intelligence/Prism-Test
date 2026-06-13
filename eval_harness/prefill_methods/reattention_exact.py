@@ -203,7 +203,7 @@ class ReAttentionExactMethod(ReAttentionMethod):
 
     @contextmanager
     def __call__(self, model: Any) -> Generator:  # type: ignore[override]
-        from eval_harness.sketch.sketches.base_sketch import _is_non_full_attention_layer
+        from eval_harness.kv_compression.base import _is_non_full_attention_layer
 
         self._inv_freq = get_inv_freq(model)
         if self._inv_freq is None:

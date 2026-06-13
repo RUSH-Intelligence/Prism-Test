@@ -6,7 +6,7 @@ from unittest.mock import patch
 from eval_harness.hf_adapter import HFGenerateConfig
 from eval_harness.prefill_methods.base import PrefillMethod
 from eval_harness.research_adapter import CacheConfig, ResearchAdapter
-from eval_harness.sketch import (
+from eval_harness.kv_compression import (
     DecodingSketch,
     KnormSketch,
     PrefillDecodingSketch,

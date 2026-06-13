@@ -16,13 +16,13 @@ from types import SimpleNamespace
 import torch
 from torch import nn
 
-from eval_harness.sketch.sketches.base_sketch import BaseSketch
-from eval_harness.sketch.sketches.knorm_sketch import KnormSketch
-from eval_harness.sketch.sketches.per_layer_compression_sketch import PerLayerCompressionSketch
-from eval_harness.sketch.sketches.random_sketch import RandomSketch
-from eval_harness.sketch.sketches.scorer_sketch import ScorerSketch
+from eval_harness.kv_compression.base import KVCompressor
+from eval_harness.kv_compression.compressors.knorm_sketch import KnormSketch
+from eval_harness.kv_compression.compressors.per_layer_compression_sketch import PerLayerCompressionSketch
+from eval_harness.kv_compression.compressors.random_sketch import RandomSketch
+from eval_harness.kv_compression.base import ScorerKVCompressor
 
-LOGGER_NAME = "eval_harness.sketch.sketches.per_layer_compression_sketch"
+LOGGER_NAME = "eval_harness.kv_compression.compressors.per_layer_compression_sketch"
 
 
 # ======================================================================
@@ -50,8 +50,8 @@ class _FakeCache:
         self.layers = layers
 
 
-class _NoRatioPress(ScorerSketch):
-    """ScorerSketch whose own __init__ signature lacks compression_ratio."""
+class _NoRatioPress(ScorerKVCompressor):
+    """ScorerKVCompressor whose own __init__ signature lacks compression_ratio."""
 
     def __init__(self):
         super().__init__(compression_ratio=0.0)
@@ -110,7 +110,7 @@ class TestConstructionAndProperties(unittest.TestCase):
 
     def test_non_scorer_press_rejected(self):
         with self.assertRaises(AssertionError):
-            _make(BaseSketch(), [0.1])
+            _make(KVCompressor(), [0.1])
 
     def test_press_without_compression_ratio_in_signature_rejected(self):
         with self.assertRaises(AssertionError):
@@ -437,10 +437,10 @@ class TestPostInitFromModel(unittest.TestCase):
 
 class TestRegistryAndWiring(unittest.TestCase):
     def test_registered_name_resolves(self):
-        from eval_harness.sketch.sketches.registry import available_sketches, get_sketch_class
+        from eval_harness.kv_compression.registry import available_kv_compressors, get_kv_compressor_class
 
-        self.assertIs(get_sketch_class("per_layer_compression"), PerLayerCompressionSketch)
-        self.assertIn("per_layer_compression", available_sketches())
+        self.assertIs(get_kv_compressor_class("per_layer_compression"), PerLayerCompressionSketch)
+        self.assertIn("per_layer_compression", available_kv_compressors())
 
     def test_compression_ratio_is_not_a_dataclass_field(self):
         # ResearchAdapter._build_sketch injects cfg.compression_ratio only for

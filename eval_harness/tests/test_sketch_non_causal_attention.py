@@ -20,10 +20,10 @@ import torch
 from torch import nn
 from transformers import LlamaConfig, LlamaForCausalLM
 
-from eval_harness.sketch.cache_adapter import create_cache_adapter
-from eval_harness.sketch.pipeline import SketchTextGenerationPipeline
-from eval_harness.sketch.sketches.non_causal_attention_sketch import NonCausalAttnSketch
-from eval_harness.sketch.sketches.registry import get_sketch, get_sketch_class
+from eval_harness.kv_compression.cache_adapter import create_cache_adapter
+from eval_harness.research_pipeline import SketchTextGenerationPipeline
+from eval_harness.kv_compression.compressors.non_causal_attention_sketch import NonCausalAttnSketch
+from eval_harness.kv_compression.registry import get_kv_compressor, get_kv_compressor_class
 
 
 # ======================================================================
@@ -167,10 +167,10 @@ def _score_reference(q_raw, keys, values, cos, sin, chunk_size):
 
 class TestRegistry(unittest.TestCase):
     def test_registered_name_resolves(self):
-        self.assertIs(get_sketch_class("non_causal_attention"), NonCausalAttnSketch)
+        self.assertIs(get_kv_compressor_class("non_causal_attention"), NonCausalAttnSketch)
 
     def test_instantiation_with_kwargs(self):
-        sketch = get_sketch("non_causal_attention", compression_ratio=0.25, chunk_size=64)
+        sketch = get_kv_compressor("non_causal_attention", compression_ratio=0.25, chunk_size=64)
         self.assertIsInstance(sketch, NonCausalAttnSketch)
         self.assertAlmostEqual(sketch.compression_ratio, 0.25)
         self.assertEqual(sketch.chunk_size, 64)

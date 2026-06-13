@@ -22,8 +22,8 @@ CORE_MODULES = [
     "eval_harness.benchmarks.common",
     "eval_harness.benchmarks.registry",
     "eval_harness.benchmarks.mock_benchmark",
-    "eval_harness.sketch",
-    "eval_harness.sketch.cache_adapter",
+    "eval_harness.kv_compression",
+    "eval_harness.kv_compression.cache_adapter",
 ]
 
 OPTIONAL_MODULES = {

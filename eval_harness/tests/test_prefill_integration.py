@@ -41,8 +41,8 @@ from transformers import LlamaConfig, LlamaForCausalLM
 from eval_harness.prefill_methods.base import PrefillMethod
 from eval_harness.prefill_methods.dca import DCAMethod
 from eval_harness.prefill_methods.reattention import ReAttentionMethod
-from eval_harness.sketch.cache_adapter import create_cache_adapter
-from eval_harness.sketch.pipeline import SketchTextGenerationPipeline
+from eval_harness.kv_compression.cache_adapter import create_cache_adapter
+from eval_harness.research_pipeline import SketchTextGenerationPipeline
 
 
 class _StubTokenizer:

@@ -3,20 +3,20 @@ from __future__ import annotations
 import unittest
 
 from eval_harness.research_adapter import CacheConfig, ResearchAdapter
-from eval_harness.sketch import (
+from eval_harness.kv_compression import (
     DecodingSketch,
     KnormSketch,
     RandomSketch,
     ReAttentionSketch,
-    available_sketches,
-    get_sketch,
-    get_sketch_class,
+    available_kv_compressors,
+    get_kv_compressor,
+    get_kv_compressor_class,
 )
 
 
 class TestSketchRegistry(unittest.TestCase):
     def test_existing_sketches_registered_with_aliases(self):
-        names = available_sketches()
+        names = available_kv_compressors()
         for name in (
             "knorm", "knorm_sketch",
             "random", "random_sketch",
@@ -24,20 +24,20 @@ class TestSketchRegistry(unittest.TestCase):
         ):
             self.assertIn(name, names)
 
-    def test_get_sketch_class_resolves_aliases(self):
-        self.assertIs(get_sketch_class("knorm"), KnormSketch)
-        self.assertIs(get_sketch_class("knorm_sketch"), KnormSketch)
-        self.assertIs(get_sketch_class("ReAttention"), ReAttentionSketch)
+    def test_get_kv_compressor_class_resolves_aliases(self):
+        self.assertIs(get_kv_compressor_class("knorm"), KnormSketch)
+        self.assertIs(get_kv_compressor_class("knorm_sketch"), KnormSketch)
+        self.assertIs(get_kv_compressor_class("ReAttention"), ReAttentionSketch)
 
-    def test_get_sketch_instantiates_with_kwargs(self):
-        sketch = get_sketch("random", compression_ratio=0.25, seed=7)
+    def test_get_kv_compressor_instantiates_with_kwargs(self):
+        sketch = get_kv_compressor("random", compression_ratio=0.25, seed=7)
         self.assertIsInstance(sketch, RandomSketch)
         self.assertAlmostEqual(sketch.compression_ratio, 0.25)
         self.assertEqual(sketch.seed, 7)
 
     def test_unknown_sketch_lists_available(self):
         with self.assertRaises(ValueError) as ctx:
-            get_sketch_class("definitely_not_a_sketch")
+            get_kv_compressor_class("definitely_not_a_sketch")
         self.assertIn("Available:", str(ctx.exception))
         self.assertIn("knorm", str(ctx.exception))
 

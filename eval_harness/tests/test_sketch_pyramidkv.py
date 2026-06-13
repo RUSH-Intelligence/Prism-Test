@@ -14,8 +14,8 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from eval_harness.sketch.sketches.pyramidkv_sketch import PyramidKVSketch
-from eval_harness.sketch.sketches.snapkv_sketch import SnapKVSketch
+from eval_harness.kv_compression.compressors.pyramidkv_sketch import PyramidKVSketch
+from eval_harness.kv_compression.compressors.snapkv_sketch import SnapKVSketch
 
 
 class _FakePyramidAttn(nn.Module):
@@ -138,15 +138,15 @@ def _kvpress_score_reference(
 
 class TestPyramidKVRegistry(unittest.TestCase):
     def test_registered_as_pyramidkv(self):
-        from eval_harness.sketch.sketches.registry import (
-            available_sketches,
-            get_sketch,
-            get_sketch_class,
+        from eval_harness.kv_compression.registry import (
+            available_kv_compressors,
+            get_kv_compressor,
+            get_kv_compressor_class,
         )
 
-        self.assertIn("pyramidkv", available_sketches())
-        self.assertIs(get_sketch_class("pyramidkv"), PyramidKVSketch)
-        sketch = get_sketch(
+        self.assertIn("pyramidkv", available_kv_compressors())
+        self.assertIs(get_kv_compressor_class("pyramidkv"), PyramidKVSketch)
+        sketch = get_kv_compressor(
             "pyramidkv", compression_ratio=0.5, window_size=4, kernel_size=3, beta=2
         )
         self.assertIsInstance(sketch, PyramidKVSketch)

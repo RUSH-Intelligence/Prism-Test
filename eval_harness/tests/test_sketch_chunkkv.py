@@ -13,9 +13,9 @@ from types import SimpleNamespace
 
 import torch
 
-from eval_harness.sketch.sketches.chunkkv_sketch import ChunkKVSketch
-from eval_harness.sketch.sketches.knorm_sketch import KnormSketch
-from eval_harness.sketch.sketches.registry import get_sketch, get_sketch_class
+from eval_harness.kv_compression.compressors.chunkkv_sketch import ChunkKVSketch
+from eval_harness.kv_compression.compressors.knorm_sketch import KnormSketch
+from eval_harness.kv_compression.registry import get_kv_compressor, get_kv_compressor_class
 
 
 def _fake_module(head_dim: int = 2, **extra) -> SimpleNamespace:
@@ -272,7 +272,7 @@ class TestChunkKVConstruction(unittest.TestCase):
         self.assertEqual(sketch.compression_ratio, 0.0)
 
     def test_press_must_be_scorer_sketch(self):
-        with self.assertRaisesRegex(AssertionError, "requires a ScorerSketch"):
+        with self.assertRaisesRegex(AssertionError, "requires a ScorerKVCompressor"):
             ChunkKVSketch(press=object())
 
     def test_compression_ratio_property_delegates_to_inner(self):
@@ -320,10 +320,10 @@ class TestChunkKVConstruction(unittest.TestCase):
 
 class TestChunkKVRegistry(unittest.TestCase):
     def test_registry_resolution(self):
-        self.assertIs(get_sketch_class("chunkkv"), ChunkKVSketch)
+        self.assertIs(get_kv_compressor_class("chunkkv"), ChunkKVSketch)
 
-    def test_get_sketch_sets_fields(self):
-        sketch = get_sketch("chunkkv", compression_ratio=0.4, chunk_length=8)
+    def test_get_kv_compressor_sets_fields(self):
+        sketch = get_kv_compressor("chunkkv", compression_ratio=0.4, chunk_length=8)
         self.assertIsInstance(sketch, ChunkKVSketch)
         self.assertEqual(sketch.chunk_length, 8)
         self.assertIsInstance(sketch.press, KnormSketch)

@@ -10,8 +10,8 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from eval_harness.sketch.sketches.cur_sketch import CURSketch
-from eval_harness.sketch.sketches.registry import available_sketches, get_sketch, get_sketch_class
+from eval_harness.kv_compression.compressors.cur_sketch import CURSketch
+from eval_harness.kv_compression.registry import available_kv_compressors, get_kv_compressor, get_kv_compressor_class
 
 _KVPRESS_ROOT = "/scratch/sj157/kvpress"
 try:
@@ -97,11 +97,11 @@ def _random_kv(b, h, s, d, seed=0):
 
 class TestCURRegistry(unittest.TestCase):
     def test_registered_under_cur(self):
-        self.assertIn("cur", available_sketches())
-        self.assertIs(get_sketch_class("cur"), CURSketch)
+        self.assertIn("cur", available_kv_compressors())
+        self.assertIs(get_kv_compressor_class("cur"), CURSketch)
 
-    def test_get_sketch_instantiates_with_kwargs(self):
-        sketch = get_sketch(
+    def test_get_kv_compressor_instantiates_with_kwargs(self):
+        sketch = get_kv_compressor(
             "cur",
             compression_ratio=0.3,
             num_sinks=2,

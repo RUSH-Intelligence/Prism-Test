@@ -17,8 +17,8 @@ import torch
 from torch import nn
 from transformers import DynamicCache
 
-from eval_harness.sketch.sketches.kvzap_sketch import KVzapConfig, KVzapModel, KVzapSketch
-from eval_harness.sketch.sketches.registry import available_sketches, get_sketch, get_sketch_class
+from eval_harness.kv_compression.compressors.kvzap_sketch import KVzapConfig, KVzapModel, KVzapSketch
+from eval_harness.kv_compression.registry import available_kv_compressors, get_kv_compressor, get_kv_compressor_class
 
 
 class _FakeAttnModule(nn.Module):
@@ -74,11 +74,11 @@ def _kvzap_compress_reference(surrogate, layer_idx, hidden_states, keys, values,
 
 class TestKVzapRegistry(unittest.TestCase):
     def test_registered_as_kvzap(self):
-        self.assertIn("kvzap", available_sketches())
-        self.assertIs(get_sketch_class("kvzap"), KVzapSketch)
+        self.assertIn("kvzap", available_kv_compressors())
+        self.assertIs(get_kv_compressor_class("kvzap"), KVzapSketch)
 
-    def test_get_sketch_instantiates_with_kwargs(self):
-        sketch = get_sketch(
+    def test_get_kv_compressor_instantiates_with_kwargs(self):
+        sketch = get_kv_compressor(
             "kvzap", compression_ratio=0.25, model_type="linear", model_name_override="Qwen3-8B"
         )
         self.assertIsInstance(sketch, KVzapSketch)
