@@ -154,6 +154,15 @@ class AttentionMethod:
     def supported_backends(self) -> Set[str]:
         return {"research"}
 
+    def setup(self, model: Any) -> bool:
+        """Per-model setup on context-manager entry (capture ``inv_freq``, …).
+
+        Return ``False`` to skip installation entirely — the method then runs as
+        a transparent no-op (the model's original forwards are left in place).
+        Default: install.
+        """
+        return True
+
     def on_prefill_start(self, total_context_length: int) -> None:
         """Called once before the prefill pass (or its first chunk)."""
 
@@ -181,6 +190,10 @@ class AttentionMethod:
         from eval_harness.sketch.sketches.base_sketch import (
             _is_non_full_attention_layer,
         )
+
+        if not self.setup(model):
+            yield
+            return
 
         is_gemma3 = _is_gemma3(model)
         language_model = (
