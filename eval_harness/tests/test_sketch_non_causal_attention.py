@@ -21,7 +21,7 @@ from torch import nn
 from transformers import LlamaConfig, LlamaForCausalLM
 
 from eval_harness.kv_compression.cache_adapter import create_cache_adapter
-from eval_harness.research_pipeline import SketchTextGenerationPipeline
+from eval_harness.research_pipeline import ResearchGenerationPipeline
 from eval_harness.kv_compression.compressors.non_causal_attention_sketch import NonCausalAttnSketch
 from eval_harness.kv_compression.registry import get_kv_compressor, get_kv_compressor_class
 
@@ -615,7 +615,7 @@ def _build_model(num_hidden_layers: int = 2) -> LlamaForCausalLM:
 class TestPipelineIntegration(unittest.TestCase):
     def test_prefill_compression_uniform_layers_then_decode(self):
         model = _build_model(num_hidden_layers=2)
-        pipe = object.__new__(SketchTextGenerationPipeline)
+        pipe = object.__new__(ResearchGenerationPipeline)
         pipe.model = model
         pipe.tokenizer = _StubTokenizer()
 
@@ -631,8 +631,8 @@ class TestPipelineIntegration(unittest.TestCase):
         answers = pipe._forward(
             inputs,
             max_new_tokens=5,
-            sketch=sketch,
-            prefill_method=None,
+            kv_compressor=sketch,
+            attention_method=None,
             cache=cache,
             cache_adapter=cache_adapter,
         )

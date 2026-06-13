@@ -60,7 +60,7 @@ class ObservedAttentionSketch(ScorerKVCompressor):
             raise ValueError(
                 f"Observed attention covers {attentions.shape[-1]} keys but the cache holds "
                 f"{keys.shape[2]}; a prefill method pruned the cache before this sketch fired. "
-                "Use prefill_method='none' with the observed_attention sketch."
+                "Use attention_method='none' with the observed_attention sketch."
             )
         scores = attentions.sum(2)
         bsz, num_key_value_heads, n_tokens, _ = keys.shape

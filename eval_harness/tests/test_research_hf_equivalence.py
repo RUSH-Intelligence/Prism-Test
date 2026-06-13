@@ -19,7 +19,7 @@ class _FakeCacheAdapter:
 
 
 class TestResearchAdapterContract(unittest.TestCase):
-    @patch("eval_harness.research_adapter.SketchTextGenerationPipeline")
+    @patch("eval_harness.research_adapter.ResearchGenerationPipeline")
     @patch("eval_harness.research_adapter.HFAdapter.__init__", autospec=True)
     @patch("eval_harness.research_adapter.create_cache_adapter")
     def test_init_builds_pipe_and_sketch(self, mock_create_cache_adapter, mock_hf_init, mock_pipe):

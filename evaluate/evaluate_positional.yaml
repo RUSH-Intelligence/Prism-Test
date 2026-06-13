@@ -1,0 +1,109 @@
+# ============================================================================
+# Positional (Door 1) baseline — RoPE context extension, STANDALONE
+# (no attention method, no KV-compression compressor)
+# ============================================================================
+# Runs a Door-1 positional method by itself: it rescales how token positions
+# are stamped into RoPE so an 8k-native model stays in-distribution past its
+# pretraining window.  Default: YaRN extending Meta-Llama-3-8B (8192 native)
+# to ~16k for ruler16k.  This is the context-extension axis that needs NO
+# attention-math change and NO cache pruning — just a different rotation.
+#
+#   python -m eval_harness.cli run --config_file ./evaluate/evaluate_positional.yaml
+#
+# Door 1 wraps the model's shared rotary_emb (research_pipeline installs it as
+# the OUTERMOST nested context manager), so the modified (cos, sin) is seen by
+# every layer across BOTH prefill and decode.  It composes with Door 3 (a KV
+# compressor) but is overridden, for the layers it owns, by any Door-2
+# attention method that computes its own RoPE (DCA) — so this file leaves
+# Doors 2 and 3 off to isolate the positional effect.
+#
+# Benchmark/generation settings mirror evaluate_reattention.yaml / evaluate_dca.yaml
+# so the positional baseline is directly comparable to the other extension axes
+# (same subsets, per-subset cap, dtype/seed/decoding, same 8k base model).
+
+# Available benchmarks:
+#   aime, aime2024, aime2025, gsm_infinite_hard_128k, gsm_infinite_medium_128k,
+#   gsm_infinite_symbolic_128k, infinite_bench, mock_benchmark,
+#   ruler, ruler16k, ruler32k, ruler64k, ruler128k,
+#   longbench, longbenchv2, loft, loft_rag, loogle, prism1m, zero_scrolls
+benchmark: ruler16k
+# Comma-separated subset list; null = all benchmark defaults.  Default here:
+# the same three anchors used by the other baseline configs, for a direct
+# method-vs-method comparison.
+subsets: niah_single_1,niah_single_3,niah_multikey_3
+
+# Inference backend: vllm | hf | rag | research  (positional methods need research)
+backend: research
+
+# Gated HF repo: accept the Meta license on the Hub and authenticate
+# (HF_TOKEN / `huggingface-cli login`) before running.  This is the BASE
+# model (8k native, no chat template): pipeline.preprocess uses bos_token +
+# raw context, the intended RULER base-model formatting.  The whole point of
+# this file is to extend that 8k window — run evaluate_hf.yaml on this same
+# model to see the un-extended collapse beyond 8192.
+model: meta-llama/Meta-Llama-3-8B
+
+# Runtime
+tensor_parallel_size: 1        # vLLM-only; ignored by the research backend (single-GPU .to("cuda"))
+dtype: bfloat16
+max_model_len: 18000           # pipeline truncation cap for ruler16k (used because
+                               # research_config.max_context_length below is null).
+                               # Raise for longer benchmarks (e.g. 66000 for ruler64k)
+                               # and bump positional factor to match.
+gpu_memory_utilization: 0.9    # vLLM-only; ignored by the research backend
+trust_remote_code: true
+enable_prefix_caching: true    # vLLM-only; ignored by the research backend
+
+# Generation
+max_new_tokens: 128
+temperature: 0.0               # greedy
+top_p: 1.0
+system_prompt: null
+seed: 42
+
+# Evaluation limits (max_requests applies PER SUBSET — runner.py:79)
+max_requests: 200
+fraction: 1.0
+query_aware: false
+
+# Method-specific subdir: the auto-named run dir encodes benchmark/model/
+# backend but NOT the positional method, so distinct baselines sharing a model
+# would otherwise write to the same directory.
+output_dir: ./results/positional
+
+llm_kwargs:
+  # runner._setup_adapter (runner.py:141) defaults this to sdpa anyway; sdpa is
+  # the research backend's validated parity path.  Door 1 only changes the
+  # rotary (cos, sin); it works under any attention implementation.
+  attn_implementation: sdpa
+
+  # This dict becomes research_adapter.ResearchConfig (runner.py:144-145).
+  research_config:
+    # --- Positional method (Door 1, context extension) ---------------------
+    # none | yarn | ntk | linear_pi
+    #   yarn      — NTK-by-parts frequency scaling + logit-temperature mscale
+    #               (kwargs: factor, original_max_position_embeddings,
+    #                beta_fast, beta_slow, attention_factor, truncate)
+    #   ntk       — static NTK-aware base scaling (kwargs: factor)
+    #   linear_pi — divide absolute positions by a factor (kwargs: factor)
+    positional_method: yarn
+    positional_method_kwargs:
+      factor: 2.0                          # target / native = 16384 / 8192
+      original_max_position_embeddings: 8192   # Llama-3-8B native window
+      # beta_fast: 32                      # paper defaults; uncomment to override
+      # beta_slow: 1
+      # attention_factor: null            # null -> 0.1*ln(factor)+1 (paper/HF mscale)
+      # truncate: true                    # floor/ceil the correction range (HF default)
+
+    # --- Attention method (Door 2): OFF (isolate the positional axis) -------
+    attention_method: none
+    attention_method_kwargs: {}
+
+    # --- KV-compression compressor (Door 3): OFF ----------------------------
+    kv_compressor: none               # "none" = no compressor hooks installed
+    compression_ratio: 0.0          # unused while kv_compressor is none
+    max_context_length: null        # null -> fall back to max_model_len above
+    log_cache_seq_len: false        # true logs cache lengths (full context here — never pruned)
+
+    # --- Prefill ------------------------------------------------------------
+    prefill_chunk_size: null        # null = single full-context pass

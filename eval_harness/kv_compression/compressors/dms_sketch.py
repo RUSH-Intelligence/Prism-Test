@@ -77,11 +77,11 @@ class DMSSketch(KVCompressor):
       'eager'`` (the attention patch only wraps ``ALL_ATTENTION_FUNCTIONS`` entries;
       eager dispatches around it) and prefill methods that replace
       ``self_attn.forward`` (dca, reattention_exact) or register cache-pruning
-      forward hooks (reattention). Use ``prefill_method='none'``.
+      forward hooks (reattention). Use ``attention_method='none'``.
     - ``decoding=True`` requires the pipeline to keep sketch hooks installed during
       the question/decode phase. kvpress's pipeline re-registers DMS hooks for the
       decode phase (kvpress pipeline.py:227-229); Prism's
-      ``SketchTextGenerationPipeline`` does not yet have that gate, so a warning is
+      ``ResearchGenerationPipeline`` does not yet have that gate, so a warning is
       emitted at construction — without the gate, decode-time eviction does not run
       in pipeline evals. kvpress's latent multi-question hazard (decode-time masked
       indices outliving a cache restore) is inherited unchanged.
@@ -104,7 +104,7 @@ class DMSSketch(KVCompressor):
         )
         if self.decoding:
             logger.warning(
-                "DMSSketch(decoding=True): SketchTextGenerationPipeline does not re-register "
+                "DMSSketch(decoding=True): ResearchGenerationPipeline does not re-register "
                 "sketch hooks for the decode phase (the kvpress DMSPress pipeline gate is not "
                 "ported); decode-time eviction only happens while the hooks remain installed."
             )
@@ -199,12 +199,12 @@ class DMSSketch(KVCompressor):
             if "forward" in vars(attn):
                 raise ValueError(
                     "DMSSketch is incompatible with prefill methods that replace self_attn.forward "
-                    "(e.g. 'dca', 'reattention_exact'); use prefill_method='none'."
+                    "(e.g. 'dca', 'reattention_exact'); use attention_method='none'."
                 )
             if getattr(attn, "_forward_hooks", None):
                 raise ValueError(
                     "DMSSketch is incompatible with prefill methods that register cache-pruning "
-                    "forward hooks (e.g. 'reattention'); use prefill_method='none'."
+                    "forward hooks (e.g. 'reattention'); use attention_method='none'."
                 )
 
     @contextmanager

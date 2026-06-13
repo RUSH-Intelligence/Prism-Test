@@ -9,7 +9,7 @@ __all__ = [
     "HFGenerateConfig",
     "ResearchAdapter",
     "ResearchConfig",
-    "SketchTextGenerationPipeline",
+    "ResearchGenerationPipeline",
     "KVCompressor",
     "ScorerKVCompressor",
     "KnormSketch",
@@ -33,7 +33,7 @@ def __getattr__(name: str):
         from .research_adapter import ResearchAdapter, ResearchConfig
         return ResearchAdapter if name == "ResearchAdapter" else ResearchConfig
     if name in (
-        "SketchTextGenerationPipeline",
+        "ResearchGenerationPipeline",
         "KVCompressor",
         "ScorerKVCompressor",
         "KnormSketch",
@@ -49,10 +49,10 @@ def __getattr__(name: str):
             RandomSketch,
             ScorerKVCompressor,
         )
-        from .research_pipeline import SketchTextGenerationPipeline
+        from .research_pipeline import ResearchGenerationPipeline
 
         mapping = {
-            "SketchTextGenerationPipeline": SketchTextGenerationPipeline,
+            "ResearchGenerationPipeline": ResearchGenerationPipeline,
             "KVCompressor": KVCompressor,
             "ScorerKVCompressor": ScorerKVCompressor,
             "KnormSketch": KnormSketch,

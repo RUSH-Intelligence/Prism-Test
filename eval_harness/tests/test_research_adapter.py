@@ -108,7 +108,7 @@ class TestResearchAdapterGenerate(unittest.TestCase):
 
 
 class TestResearchAdapterInitRopeScaling(unittest.TestCase):
-    @patch("eval_harness.research_adapter.SketchTextGenerationPipeline")
+    @patch("eval_harness.research_adapter.ResearchGenerationPipeline")
     @patch("eval_harness.research_adapter.HFAdapter.__init__", autospec=True)
     @patch("eval_harness.research_adapter.create_cache_adapter")
     def test_init_builds_cache_adapter_and_pipeline(

@@ -1063,9 +1063,9 @@ def _build_model(num_hidden_layers):
 
 def _pipe_forward(model, method, ctx=300, questions=1, qlen=8, mnt=4):
     from eval_harness.kv_compression.cache_adapter import create_cache_adapter
-    from eval_harness.research_pipeline import SketchTextGenerationPipeline
+    from eval_harness.research_pipeline import ResearchGenerationPipeline
 
-    pipe = object.__new__(SketchTextGenerationPipeline)
+    pipe = object.__new__(ResearchGenerationPipeline)
     pipe.model = model
     pipe.tokenizer = _StubTokenizer()
     ca = create_cache_adapter(model)
@@ -1075,8 +1075,8 @@ def _pipe_forward(model, method, ctx=300, questions=1, qlen=8, mnt=4):
         "context_ids": torch.randint(0, 256, (1, ctx)),
         "questions_ids": [torch.randint(0, 256, (1, qlen)) for _ in range(questions)],
     }
-    answers = pipe._forward(inputs, max_new_tokens=mnt, sketch=None,
-                            prefill_method=method, cache=cache, cache_adapter=ca)
+    answers = pipe._forward(inputs, max_new_tokens=mnt, kv_compressor=None,
+                            attention_method=method, cache=cache, cache_adapter=ca)
     lens = [int(layer.keys.shape[2]) for layer in cache.layers]
     return answers, lens
 

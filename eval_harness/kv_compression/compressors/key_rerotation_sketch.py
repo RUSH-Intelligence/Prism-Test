@@ -49,7 +49,7 @@ class KeyRerotationSketch(KVCompressor):
     -----------------------
     - kvpress's pipeline special-cases ``KeyRerotationPress`` and rebases
       question/decode position ids to the compressed cache length (kvpress
-      pipeline.py:233-234). Prism's ``SketchTextGenerationPipeline`` has no such hook
+      pipeline.py:233-234). Prism's ``ResearchGenerationPipeline`` has no such hook
       for sketches, so question/decode positions continue from the original context
       length, leaving a positional gap of ``S - n_kept`` between the re-rotated keys
       (at positions ``0..n_kept-1``) and the first question token. A warning is
@@ -73,7 +73,7 @@ class KeyRerotationSketch(KVCompressor):
         assert isinstance(self.press, ScorerKVCompressor)
         logger.warning(
             "KeyRerotationSketch compacts kept keys to positions 0..n_kept-1, but "
-            "SketchTextGenerationPipeline does not rebase question/decode position ids "
+            "ResearchGenerationPipeline does not rebase question/decode position ids "
             "to the compressed cache length (kvpress's pipeline special-cases "
             "KeyRerotationPress for this); decode will see a positional gap between "
             "the last key and the first question token."

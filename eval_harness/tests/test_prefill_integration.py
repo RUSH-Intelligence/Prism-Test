@@ -1,6 +1,6 @@
 """End-to-end integration of prefill methods through the real pipeline.
 
-These tests drive :meth:`SketchTextGenerationPipeline._forward` on a TINY,
+These tests drive :meth:`ResearchGenerationPipeline._forward` on a TINY,
 config-built ``LlamaForCausalLM`` (CPU, eager attention, random weights — no
 downloaded checkpoints) so that a *real* model forward, the installed
 ``prefill_method`` hooks/forward-replacement, and the per-token decode loop all
@@ -42,7 +42,7 @@ from eval_harness.attention_methods._method_base import PrefillMethod
 from eval_harness.attention_methods.dca import DCAMethod
 from eval_harness.attention_methods.reattention import ReAttentionMethod
 from eval_harness.kv_compression.cache_adapter import create_cache_adapter
-from eval_harness.research_pipeline import SketchTextGenerationPipeline
+from eval_harness.research_pipeline import ResearchGenerationPipeline
 
 
 class _StubTokenizer:
@@ -82,8 +82,8 @@ def _build_model(num_hidden_layers: int) -> LlamaForCausalLM:
     return model
 
 
-def _make_pipeline(model: LlamaForCausalLM) -> SketchTextGenerationPipeline:
-    pipe = object.__new__(SketchTextGenerationPipeline)
+def _make_pipeline(model: LlamaForCausalLM) -> ResearchGenerationPipeline:
+    pipe = object.__new__(ResearchGenerationPipeline)
     pipe.model = model
     pipe.tokenizer = _StubTokenizer()
     return pipe
@@ -117,8 +117,8 @@ class TestPrefillIntegration(unittest.TestCase):
         answers = pipe._forward(
             _make_inputs(),
             max_new_tokens=self.MAX_NEW_TOKENS,
-            sketch=None,
-            prefill_method=PrefillMethod(),
+            kv_compressor=None,
+            attention_method=PrefillMethod(),
             cache=None,
             cache_adapter=None,
         )
@@ -144,8 +144,8 @@ class TestPrefillIntegration(unittest.TestCase):
         answers = pipe._forward(
             _make_inputs(),
             max_new_tokens=self.MAX_NEW_TOKENS,
-            sketch=None,
-            prefill_method=method,
+            kv_compressor=None,
+            attention_method=method,
             cache=None,
             cache_adapter=None,
         )
@@ -223,8 +223,8 @@ class TestPrefillIntegration(unittest.TestCase):
         answers = pipe._forward(
             _make_inputs(),
             max_new_tokens=self.MAX_NEW_TOKENS,
-            sketch=None,
-            prefill_method=method,
+            kv_compressor=None,
+            attention_method=method,
             cache=cache,
             cache_adapter=cache_adapter,
         )
@@ -257,8 +257,8 @@ class TestPrefillIntegration(unittest.TestCase):
         answers = pipe._forward(
             _make_inputs(),
             max_new_tokens=self.MAX_NEW_TOKENS,
-            sketch=None,
-            prefill_method=method,
+            kv_compressor=None,
+            attention_method=method,
             cache=cache,
             cache_adapter=cache_adapter,
         )
@@ -290,8 +290,8 @@ class TestPrefillIntegration(unittest.TestCase):
         answers = pipe._forward(
             _make_inputs(),
             max_new_tokens=self.MAX_NEW_TOKENS,
-            sketch=None,
-            prefill_method=method,
+            kv_compressor=None,
+            attention_method=method,
             cache=None,
             cache_adapter=None,
         )

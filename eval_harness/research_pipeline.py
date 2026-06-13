@@ -16,14 +16,14 @@ from eval_harness.kv_compression.compressors.prefill_decoding_sketch import Pref
 logger = logging.getLogger(__name__)
 
 
-class SketchTextGenerationPipeline(Pipeline):
+class ResearchGenerationPipeline(Pipeline):
     def _sanitize_parameters(
         self,
         question: Optional[str] = None,
         questions: Optional[list[str]] = None,
         answer_prefix: Optional[str] = None,
-        sketch: Optional[KVCompressor] = None,
-        prefill_method: Optional[PrefillMethod] = None,
+        kv_compressor: Optional[KVCompressor] = None,
+        attention_method: Optional[PrefillMethod] = None,
         positional_method=None,
         max_new_tokens: int = 50,
         max_context_length: Optional[int] = None,
@@ -46,8 +46,8 @@ class SketchTextGenerationPipeline(Pipeline):
             "enable_thinking": enable_thinking,
         }
         forward_kwargs = {
-            "sketch": sketch,
-            "prefill_method": prefill_method,
+            "kv_compressor": kv_compressor,
+            "attention_method": attention_method,
             "positional_method": positional_method,
             "max_new_tokens": max_new_tokens,
             "prefill_chunk_size": prefill_chunk_size,
@@ -97,14 +97,14 @@ class SketchTextGenerationPipeline(Pipeline):
         self,
         input_tensors: dict[str, GenericTensor],
         max_new_tokens: int = 50,
-        sketch: Optional[KVCompressor] = None,
-        prefill_method: Optional[PrefillMethod] = None,
+        kv_compressor: Optional[KVCompressor] = None,
+        attention_method: Optional[PrefillMethod] = None,
         positional_method=None,
         prefill_chunk_size: Optional[int] = None,
         cache: Optional[Cache] = None,
         cache_adapter: Optional[CacheAdapter] = None,
     ):
-        if isinstance(sketch, (DecodingSketch, PrefillDecodingSketch)) and len(input_tensors["questions_ids"]) > 1:
+        if isinstance(kv_compressor, (DecodingSketch, PrefillDecodingSketch)) and len(input_tensors["questions_ids"]) > 1:
             raise ValueError("DecodingSketch is not compatible with multiple questions. Please specify one question.")
 
         context_ids = input_tensors["context_ids"].to(self.model.device)
@@ -113,10 +113,10 @@ class SketchTextGenerationPipeline(Pipeline):
         cache_adapter = cache_adapter or create_cache_adapter(self.model)
         cache = cache_adapter.initialize_cache(cache)
 
-        # Determine whether to use a non-trivial prefill method.
-        use_prefill_method = (
-            prefill_method is not None
-            and type(prefill_method) is not PrefillMethod  # not the base no-op
+        # Determine whether to use a non-trivial attention method (door 2).
+        use_attention_method = (
+            attention_method is not None
+            and type(attention_method) is not PrefillMethod  # not the base no-op
         )
 
         # Door 1 (positional) wraps the rotary embedding for the WHOLE run
@@ -128,30 +128,30 @@ class SketchTextGenerationPipeline(Pipeline):
             else contextlib.nullcontext()
         )
 
-        perform_prefill_compression = sketch is not None and not isinstance(sketch, DecodingSketch)
+        perform_prefill_compression = kv_compressor is not None and not isinstance(kv_compressor, DecodingSketch)
 
-        # Hook ordering: prefill_method hooks install FIRST (outermost context
-        # manager), then sketch hooks install SECOND.  Since forward hooks fire
-        # in registration order, method hooks run before sketch hooks.
+        # Hook ordering: attention-method hooks install FIRST (outermost context
+        # manager), then KV-compressor hooks install SECOND.  Since forward hooks
+        # fire in registration order, method hooks run before compressor hooks.
         #
-        #   model forward → method hook (select/restructure) → sketch hook (compress)
-        method_ctx = prefill_method(self.model) if use_prefill_method else contextlib.nullcontext()
-        sketch_ctx = sketch(self.model) if perform_prefill_compression else contextlib.nullcontext()
+        #   model forward → method hook (select/restructure) → compressor hook (compress)
+        attention_ctx = attention_method(self.model) if use_attention_method else contextlib.nullcontext()
+        compressor_ctx = kv_compressor(self.model) if perform_prefill_compression else contextlib.nullcontext()
 
-        # The prefill-method context stays open across BOTH prefill and decode.
+        # The attention-method context stays open across BOTH prefill and decode.
         # Methods that intercept the attention computation (e.g. DCA, which
         # replaces self_attn.forward) must remain active during decode; methods
         # that only prune on prefill (e.g. ReAttention) no-op on decode steps.
-        with positional_ctx, method_ctx:
-            if use_prefill_method:
-                prefill_method.on_prefill_start(context_length)
-            with sketch_ctx:
+        with positional_ctx, attention_ctx:
+            if use_attention_method:
+                attention_method.on_prefill_start(context_length)
+            with compressor_ctx:
                 # Tell the compressor we are prefilling so it does not rely on
                 # the cache_position heuristic, which mislabels non-first
                 # chunked-prefill chunks as decode (and would then skip a
                 # ``streaming`` compressor after the first chunk).
-                if sketch is not None:
-                    sketch.set_phase("prefill")
+                if kv_compressor is not None:
+                    kv_compressor.set_phase("prefill")
                 self._run_prefill(
                     context_ids=context_ids,
                     cache=cache,
@@ -161,20 +161,20 @@ class SketchTextGenerationPipeline(Pipeline):
 
                 logger.debug(f"Context Length: {context_length}")
                 logger.debug(f"Compressed Context Length: {cache_adapter.get_seq_length(cache)}")
-            if use_prefill_method:
-                prefill_method.on_prefill_end()
+            if use_attention_method:
+                attention_method.on_prefill_end()
 
-            perform_decoding_compression = sketch is not None and isinstance(sketch, (DecodingSketch, PrefillDecodingSketch))
-            if sketch is not None:
-                sketch.set_phase("decode")
-            with sketch(self.model) if perform_decoding_compression else contextlib.nullcontext():
+            perform_decoding_compression = kv_compressor is not None and isinstance(kv_compressor, (DecodingSketch, PrefillDecodingSketch))
+            if kv_compressor is not None:
+                kv_compressor.set_phase("decode")
+            with kv_compressor(self.model) if perform_decoding_compression else contextlib.nullcontext():
                 answers = []
                 for question_ids in input_tensors["questions_ids"]:
                     checkpoint = cache_adapter.clone_or_checkpoint_for_multi_question(cache)
 
-                    # Allow prefill method to override question position IDs.
-                    if use_prefill_method:
-                        question_position_ids = prefill_method.compute_question_position_ids(
+                    # Allow the attention method to override question position IDs.
+                    if use_attention_method:
+                        question_position_ids = attention_method.compute_question_position_ids(
                             context_length, question_ids.shape[1], self.model.device,
                         )
                     else:
@@ -302,7 +302,7 @@ class SketchTextGenerationPipeline(Pipeline):
 
 
 PIPELINE_REGISTRY.register_pipeline(
-    "sketch-text-generation",
-    pipeline_class=SketchTextGenerationPipeline,
+    "research-text-generation",
+    pipeline_class=ResearchGenerationPipeline,
     pt_model=AutoModelForCausalLM,
 )

@@ -233,7 +233,7 @@ Use this when none of the above fits — e.g., you want a new context-extension 
 Files you'll touch:
 
 - [eval_harness/research_adapter.py](eval_harness/research_adapter.py) — the thin `HFAdapter` subclass that builds the three doors (`positional_method`, `attention_method`, `kv_compressor`) from `ResearchConfig` and runs them through the pipeline.
-- [eval_harness/research_pipeline.py](eval_harness/research_pipeline.py) — `SketchTextGenerationPipeline`; the chunked-prefill loop (`_forward`, single full-context pass by default) and per-token decode (`generate_answer`), plus the nested install of the doors: `positional_method` (outer) → `attention_method` → `kv_compressor` (inner).
+- [eval_harness/research_pipeline.py](eval_harness/research_pipeline.py) — `ResearchGenerationPipeline`; the chunked-prefill loop (`_forward`, single full-context pass by default) and per-token decode (`generate_answer`), plus the nested install of the doors: `positional_method` (outer) → `attention_method` → `kv_compressor` (inner).
 - [eval_harness/kv_compression/cache_adapter.py](eval_harness/kv_compression/cache_adapter.py) — `DynamicCache` semantics (rotated K/V) and the length-based multi-question checkpoint/restore.
 
 Tests that must keep passing:
@@ -249,7 +249,7 @@ If you find yourself working here, document *why* in your branch — Layer 3 cha
 
 ## Research backend architecture
 
-You only need this section if you're working at Layer 0, 2, or 3. `ResearchAdapter` ([eval_harness/research_adapter.py](eval_harness/research_adapter.py)) is a thin `HFAdapter` subclass. It does **not** install an identity-RoPE swap or an attention-function override; it builds the **three doors** — `positional_method` (Door 1), `attention_method` (Door 2), and `kv_compressor` (Door 3) — from `ResearchConfig` and runs everything through `SketchTextGenerationPipeline` ([eval_harness/research_pipeline.py](eval_harness/research_pipeline.py)).
+You only need this section if you're working at Layer 0, 2, or 3. `ResearchAdapter` ([eval_harness/research_adapter.py](eval_harness/research_adapter.py)) is a thin `HFAdapter` subclass. It does **not** install an identity-RoPE swap or an attention-function override; it builds the **three doors** — `positional_method` (Door 1), `attention_method` (Door 2), and `kv_compressor` (Door 3) — from `ResearchConfig` and runs everything through `ResearchGenerationPipeline` ([eval_harness/research_pipeline.py](eval_harness/research_pipeline.py)).
 
 #### Prefill pass (single, or chunked/streaming)
 

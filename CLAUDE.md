@@ -17,8 +17,8 @@ eval_harness/
   runner.py              # load dataset → setup adapter → groupby(context) generation → score
   vllm_adapter.py        # vLLM backend
   hf_adapter.py          # HF backend — clean prefill/decode split, native flash attention
-  research_adapter.py    # HF subclass: builds the THREE DOORS from ResearchConfig and runs them through SketchTextGenerationPipeline (research_pipeline.py)
-  research_pipeline.py   # SketchTextGenerationPipeline: chunked prefill + decode, installs the three door context managers (positional → attention → kv) nested
+  research_adapter.py    # HF subclass: builds the THREE DOORS from ResearchConfig and runs them through ResearchGenerationPipeline (research_pipeline.py)
+  research_pipeline.py   # ResearchGenerationPipeline: chunked prefill + decode, installs the three door context managers (positional → attention → kv) nested
   positional_methods/    # DOOR 1 (RoPE freq/position): base.py (PositionalMethod), registry.py, yarn.py, ntk.py, linear_pi.py
   attention_methods/     # DOOR 2 (attention math): base.py (AttentionMethod + AttentionPhase), registry.py, dca.py; plus the faithful ReAttention methods (reattention.py prune, reattention_exact.py) as legacy PrefillMethod subclasses on the same method slot — _method_base.py (RoPE helpers + PrefillMethod) + _method_registry.py (register_prefill_method)
   kv_compression/        # DOOR 3 (KV compression): base.py (KVCompressor/ScorerKVCompressor + CompressionSchedule/Operation), registry.py (@register_kv_compressor), cache_adapter.py, utils.py, attention_patch.py, compressors/ (~36 KV baselines, mostly kvpress 0.5.1 ports)
@@ -28,14 +28,14 @@ eval_harness/
   benchmarks/            # one module per benchmark; registry.py exposes get_benchmark()
   tests/                 # unittest — no model loading; uses object.__new__ + fake models
 run_eval.py              # thin wrapper over CliEntryPoint
-evaluate/                # ready-made run configs: evaluate_{vllm,hf,kv,dca,reattention,common}.yaml
+evaluate/                # ready-made run configs: evaluate_{vllm,hf,kv,positional,dca,reattention,common}.yaml
 ```
 
 ## Running
 
 ```bash
 # Eval
-python -m eval_harness.cli run --config_file ./evaluate/evaluate_common.yaml   # or evaluate_{vllm,hf,kv,dca,reattention}.yaml
+python -m eval_harness.cli run --config_file ./evaluate/evaluate_common.yaml   # or evaluate_{vllm,hf,kv,positional,dca,reattention}.yaml
 # or override on CLI: --benchmark, --subsets, --backend, --model, --max_new_tokens, ...
 
 # Tests (from repo root)
@@ -64,7 +64,7 @@ Results land in `results/<benchmark>__<model>__<backend>__.../{predictions.csv,m
 `rope_method`/`rope_scale_factor` and installs **no** identity-RoPE
 swap and **no** attention-function override. It builds the three doors — a positional
 method (door 1), an attention method (door 2), and a KV compressor (door 3) — from
-`ResearchConfig` and runs everything through `SketchTextGenerationPipeline`
+`ResearchConfig` and runs everything through `ResearchGenerationPipeline`
 (`research_pipeline.py`).
 
 Key consequence: **prefill is a single full-context pass** through the model's *normal* forward

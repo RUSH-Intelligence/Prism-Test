@@ -158,7 +158,7 @@ class FinchSketch(ScorerKVCompressor):
     -----------------------
     - ``rerotate_keys`` defaults to ``False`` (kvpress: ``True``). The kvpress
       pipeline special-cases FinchPress to rebase question/decode position ids
-      to the compressed cache length; Prism's ``SketchTextGenerationPipeline``
+      to the compressed cache length; Prism's ``ResearchGenerationPipeline``
       has no such hook, so rerotated keys (compacted to ``0..n_kept-1``) would
       face inflated relative distances from question/decode positions. With
       ``rerotate_keys=False`` kept keys retain their original rotations and
@@ -198,7 +198,7 @@ class FinchSketch(ScorerKVCompressor):
         if self.rerotate_keys:
             logger.warning(
                 "FinchSketch(rerotate_keys=True) repositions kept keys to 0..n_kept-1, but "
-                "SketchTextGenerationPipeline does not rebase question/decode position ids to "
+                "ResearchGenerationPipeline does not rebase question/decode position ids to "
                 "the compressed cache length (kvpress special-cases FinchPress for this); "
                 "decode will see inflated relative distances."
             )

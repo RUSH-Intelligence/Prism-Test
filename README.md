@@ -60,8 +60,8 @@ Prism-Test/
 │   ├── runner.py               # dataset → adapter → groupby(context) → score
 │   ├── vllm_adapter.py         # vLLM backend
 │   ├── hf_adapter.py           # HuggingFace backend (clean prefill/decode)
-│   ├── research_adapter.py     # HF subclass: builds the three doors (positional/attention/KV) and runs them through SketchTextGenerationPipeline
-│   ├── research_pipeline.py    # SketchTextGenerationPipeline: chunked prefill + decode; installs the doors as nested context managers
+│   ├── research_adapter.py     # HF subclass: builds the three doors (positional/attention/KV) and runs them through ResearchGenerationPipeline
+│   ├── research_pipeline.py    # ResearchGenerationPipeline: chunked prefill + decode; installs the doors as nested context managers
 │   ├── positional_methods/     # DOOR 1 (RoPE freq/position): base.py, registry.py, yarn.py, ntk.py, linear_pi.py
 │   ├── attention_methods/      # DOOR 2 (attention math): base.py, registry.py, dca.py + legacy reattention.py, reattention_exact.py
 │   ├── kernels/                # Triton einsum-topk + bitonic merge (ReAttention), flash-attn-with-LSE (DCA)
@@ -93,7 +93,7 @@ Prism-Test/
 │   ├── 250K/{Easy,Medium}/
 │   └── 1M/{Easy,Medium}/
 ├── results/                    # per-run output directories
-├── evaluate/                   # ready-made run configs: evaluate_{vllm,hf,kv,dca,reattention,common}.yaml
+├── evaluate/                   # ready-made run configs: evaluate_{vllm,hf,kv,positional,dca,reattention,common}.yaml
 ├── run_eval.py                 # thin wrapper over CliEntryPoint
 ├── pyproject.toml              # project metadata + loose dep constraints
 ├── uv.lock                     # uv-native pinned lock (reproducible installs)
@@ -292,7 +292,7 @@ Tests bypass model loading via `object.__new__(Adapter)` plus fake `nn.Module` d
 Highlights:
 
 - [test_hf_adapter.py](eval_harness/tests/test_hf_adapter.py) — prefill/decode boundaries, position ID accounting
-- [test_research_adapter.py](eval_harness/tests/test_research_adapter.py) — door selection, pipeline wiring, generation through `SketchTextGenerationPipeline`
+- [test_research_adapter.py](eval_harness/tests/test_research_adapter.py) — door selection, pipeline wiring, generation through `ResearchGenerationPipeline`
 - [test_prefill_methods.py](eval_harness/tests/test_prefill_methods.py) — attention-method (Door 2) wiring into the research adapter and post-attention `prefill_forward_hook` ordering (ReAttention prune, DCA `self_attn.forward` replacement)
 - [test_three_doors_integration.py](eval_harness/tests/test_three_doors_integration.py) / [test_positional_methods.py](eval_harness/tests/test_positional_methods.py) / [test_chunked_prefill.py](eval_harness/tests/test_chunked_prefill.py) — three-door composition, Door 1 RoPE math, chunked-prefill equivalence
 - [test_cache_adapter.py](eval_harness/tests/test_cache_adapter.py) — `DynamicCache` checkpoint/restore semantics over rotated K/V

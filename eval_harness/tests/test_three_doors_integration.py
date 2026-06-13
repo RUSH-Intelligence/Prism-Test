@@ -21,7 +21,7 @@ from eval_harness.positional_methods import PositionalMethod
 from eval_harness.positional_methods.linear_pi import LinearPIMethod
 from eval_harness.positional_methods.yarn import YaRNMethod
 from eval_harness.research_adapter import ResearchAdapter, ResearchConfig
-from eval_harness.research_pipeline import SketchTextGenerationPipeline
+from eval_harness.research_pipeline import ResearchGenerationPipeline
 
 
 class _StubTokenizer:
@@ -50,8 +50,8 @@ def _build_model(num_hidden_layers: int = 2) -> LlamaForCausalLM:
     return model
 
 
-def _make_pipeline(model) -> SketchTextGenerationPipeline:
-    pipe = object.__new__(SketchTextGenerationPipeline)
+def _make_pipeline(model) -> ResearchGenerationPipeline:
+    pipe = object.__new__(ResearchGenerationPipeline)
     pipe.model = model
     pipe.tokenizer = _StubTokenizer()
     return pipe
@@ -107,8 +107,8 @@ class TestPipelineComposesDoors(unittest.TestCase):
             answers = pipe._forward(
                 _inputs(),
                 max_new_tokens=4,
-                sketch=sketch,
-                prefill_method=None,
+                kv_compressor=sketch,
+                attention_method=None,
                 positional_method=positional_method,
                 cache=cache,
                 cache_adapter=adapter,

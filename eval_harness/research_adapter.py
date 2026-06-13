@@ -21,7 +21,7 @@ from .kv_compression import (
 from .kv_compression.cache_adapter import CacheAdapter, create_cache_adapter
 from .positional_methods import PositionalMethod, get_positional_method
 from .attention_methods._method_registry import get_prefill_method
-from .research_pipeline import SketchTextGenerationPipeline
+from .research_pipeline import ResearchGenerationPipeline
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +109,7 @@ class ResearchAdapter(HFAdapter):
         self._attention_method = self._build_attention_method(self._cfg)
         self._kv_compressor: Optional[KVCompressor] = self._build_kv_compressor(self._cfg)
         self._cache_adapter: CacheAdapter = create_cache_adapter(self._model)
-        self._pipe = SketchTextGenerationPipeline(model=self._model, tokenizer=self._tokenizer)
+        self._pipe = ResearchGenerationPipeline(model=self._model, tokenizer=self._tokenizer)
 
         logger.info(
             "ResearchAdapter initialized: positional=%s attention=%s(phase=%s) "
@@ -200,8 +200,8 @@ class ResearchAdapter(HFAdapter):
                 prompt,
                 question="",
                 positional_method=self._positional_method,
-                prefill_method=self._attention_method,
-                sketch=self._kv_compressor,
+                attention_method=self._attention_method,
+                kv_compressor=self._kv_compressor,
                 prefill_chunk_size=self._cfg.prefill_chunk_size,
                 max_new_tokens=gen_cfg.max_tokens,
                 max_context_length=self._max_context_length,
@@ -229,8 +229,8 @@ class ResearchAdapter(HFAdapter):
             questions=questions,
             answer_prefix=answer_prefix,
             positional_method=self._positional_method,
-            prefill_method=self._attention_method,
-            sketch=self._kv_compressor,
+            attention_method=self._attention_method,
+            kv_compressor=self._kv_compressor,
             prefill_chunk_size=self._cfg.prefill_chunk_size,
             max_new_tokens=gen_cfg.max_tokens,
             max_context_length=self._max_context_length,

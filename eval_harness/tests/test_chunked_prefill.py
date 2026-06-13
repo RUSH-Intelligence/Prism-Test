@@ -1,6 +1,6 @@
 """Equivalence guard for chunked prefill (Step 2).
 
-Drives the real ``SketchTextGenerationPipeline._run_prefill`` / ``_forward`` on
+Drives the real ``ResearchGenerationPipeline._run_prefill`` / ``_forward`` on
 a TINY config-built Llama (CPU, eager, random weights — same fake pattern as
 ``test_prefill_integration.py``).  The contract:
 
@@ -20,7 +20,7 @@ from transformers import DynamicCache, LlamaConfig, LlamaForCausalLM
 from eval_harness.attention_methods._method_base import PrefillMethod
 from eval_harness.kv_compression import KnormSketch
 from eval_harness.kv_compression.cache_adapter import create_cache_adapter
-from eval_harness.research_pipeline import SketchTextGenerationPipeline
+from eval_harness.research_pipeline import ResearchGenerationPipeline
 
 
 class _StubTokenizer:
@@ -49,8 +49,8 @@ def _build_model(num_hidden_layers: int = 2) -> LlamaForCausalLM:
     return model
 
 
-def _make_pipeline(model: LlamaForCausalLM) -> SketchTextGenerationPipeline:
-    pipe = object.__new__(SketchTextGenerationPipeline)
+def _make_pipeline(model: LlamaForCausalLM) -> ResearchGenerationPipeline:
+    pipe = object.__new__(ResearchGenerationPipeline)
     pipe.model = model
     pipe.tokenizer = _StubTokenizer()
     return pipe
@@ -127,8 +127,8 @@ class TestChunkedPrefillEquivalence(unittest.TestCase):
                 return pipe._forward(
                     inputs,
                     max_new_tokens=5,
-                    sketch=None,
-                    prefill_method=PrefillMethod(),
+                    kv_compressor=None,
+                    attention_method=PrefillMethod(),
                     prefill_chunk_size=chunk_size,
                     cache=adapter.initialize_cache(None),
                     cache_adapter=adapter,
@@ -173,8 +173,8 @@ class TestStreamingCompressionBounded(unittest.TestCase):
             answers = pipe._forward(
                 inputs,
                 max_new_tokens=3,
-                sketch=sketch,
-                prefill_method=None,
+                kv_compressor=sketch,
+                attention_method=None,
                 positional_method=None,
                 prefill_chunk_size=chunk_size,
                 cache=cache,
