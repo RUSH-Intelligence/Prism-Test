@@ -154,3 +154,20 @@ def _infer_seq_len(position_ids: torch.Tensor) -> int:
     if position_ids is None or position_ids.numel() == 0:
         return 0
     return int(position_ids.max().item()) + 1
+
+
+def recover_base_and_dim(inv_freq: torch.Tensor) -> Tuple[float, int]:
+    """Recover the RoPE base ``theta`` and rotary ``dim`` from ``inv_freq``.
+
+    The native frequencies are ``inv_freq[j] = base ** (-(2j)/dim)`` for
+    ``j = 0 … dim/2 - 1``, so ``dim = 2 * len(inv_freq)`` and, from ``j = 1``,
+    ``base = inv_freq[1] ** (-dim/2)``.  Methods that rebuild frequencies (NTK,
+    YaRN) use this so they need no extra config to recover ``theta``.
+    """
+    inv_freq = inv_freq.detach().to(torch.float64)
+    half = inv_freq.shape[-1]
+    dim = 2 * half
+    if half < 2:
+        raise ValueError("inv_freq must have at least 2 entries to recover base")
+    base = float(inv_freq[1].item() ** (-dim / 2.0))
+    return base, dim
