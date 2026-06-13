@@ -96,7 +96,7 @@ Before publishing a comparison, confirm each of the following is **intentional**
 | `max_model_len`            | Override the model's positional cap when running past its training window.                      |
 | `query_aware`              | If `True`, the question is concatenated into the context — needed for some query-aware methods. Note it in your write-up. |
 | `max_requests` / `max_requests_per_subset` | Subsampling caps. Same value across compared runs or numbers don't line up.    |
-| `llm_kwargs.research_config`  | Sketch name, compression ratio, target size, and `prefill_method` (+ its kwargs). Pin all of these when comparing runs.  |
+| `llm_kwargs.research_config`  | The three-door config: `kv_compressor` (+ `compression_ratio`, `target_size`), `attention_method`, and `positional_method` (+ their kwargs). Pin all of these when comparing runs.  |
 
 ### Output format
 
@@ -117,7 +117,7 @@ The raw `context` column is **not** persisted (it can be hundreds of thousands o
 
 There are three layers, from least to most invasive. **Use the smallest one that fits your work.** Going deeper than necessary means more code to maintain and more places your method can drift from the reference path.
 
-(A fourth option — Layer 0, a new context-extension *prefill method* — is covered in [Research backend architecture](#research-backend-architecture): subclass `PrefillMethod`, register with `@register_prefill_method`.)
+(A fourth option — Layer 0, a new context-extension method — is covered in [Research backend architecture](#research-backend-architecture): for a RoPE frequency/position change subclass `PositionalMethod` (Door 1, register with `@register_positional_method`); for an attention-math change subclass `AttentionMethod` (Door 2, register with `@register_attention_method`). The legacy `PrefillMethod` + `@register_prefill_method` slot still backs the faithful `reattention`/`reattention_exact` ports.)
 
 ### Layer 1 — a KV-cache compression sketch
 
@@ -134,7 +134,7 @@ Use this when your method is "decide which tokens to keep / drop / rescore *afte
            ...
    ```
 
-2. Decorate the class with `@register_kv_compressor("my_sketch")` ([eval_harness/kv_compression/compressors/registry.py](eval_harness/kv_compression/compressors/registry.py)) and drop the file into [eval_harness/kv_compression/compressors/](eval_harness/kv_compression/compressors/) — sketch modules are auto-discovered on first lookup, so adding a sketch never requires editing shared files. `ResearchAdapter._build_kv_compressor` ([eval_harness/research_adapter.py](eval_harness/research_adapter.py)) resolves `kv_compressor` through the registry and passes `kv_compressor_kwargs` to the constructor; the adapter-level `compression_ratio` is injected as a default **only when the class declares a `compression_ratio` dataclass field** (sketches that expose it as a property — `think`, `simlayerkv`, `key_rerotation`, `dms` — must be configured via `kv_compressor_kwargs` or programmatically). Composite sketches whose arguments can't be expressed as flat config kwargs (`DecodingSketch`, `PrefillDecodingSketch`) remain named special cases in `_build_kv_compressor` instead of registry entries.
+2. Decorate the class with `@register_kv_compressor("my_sketch")` ([eval_harness/kv_compression/registry.py](eval_harness/kv_compression/registry.py)) and drop the file into [eval_harness/kv_compression/compressors/](eval_harness/kv_compression/compressors/) — sketch modules are auto-discovered on first lookup, so adding a sketch never requires editing shared files. `ResearchAdapter._build_kv_compressor` ([eval_harness/research_adapter.py](eval_harness/research_adapter.py)) resolves `kv_compressor` through the registry and passes `kv_compressor_kwargs` to the constructor; the adapter-level `compression_ratio` is injected as a default **only when the class declares a `compression_ratio` dataclass field** (sketches that expose it as a property — `think`, `simlayerkv`, `key_rerotation`, `dms` — must be configured via `kv_compressor_kwargs` or programmatically). Composite sketches whose arguments can't be expressed as flat config kwargs (`DecodingSketch`, `PrefillDecodingSketch`) remain named special cases in `_build_kv_compressor` instead of registry entries.
 
 3. Select it in YAML:
 
@@ -155,7 +155,7 @@ Use this when your method is "decide which tokens to keep / drop / rescore *afte
    print(available_kv_compressors())
    ```
 
-Reference implementations to read first: [knorm_sketch.py](eval_harness/kv_compression/compressors/knorm_sketch.py), [reattention_sketch.py](eval_harness/kv_compression/compressors/reattention_sketch.py) (scoring base class in [scorer_sketch.py](eval_harness/kv_compression/compressors/scorer_sketch.py)), [random_sketch.py](eval_harness/kv_compression/compressors/random_sketch.py), [decoding_sketch.py](eval_harness/kv_compression/compressors/decoding_sketch.py).
+Reference implementations to read first: [knorm_sketch.py](eval_harness/kv_compression/compressors/knorm_sketch.py), [reattention_sketch.py](eval_harness/kv_compression/compressors/reattention_sketch.py) (scoring base class `ScorerKVCompressor` in [base.py](eval_harness/kv_compression/base.py)), [random_sketch.py](eval_harness/kv_compression/compressors/random_sketch.py), [decoding_sketch.py](eval_harness/kv_compression/compressors/decoding_sketch.py).
 
 Shipped sketches (mostly faithful ports of kvpress 0.5.1 presses — each module's class docstring lists its parameters, the upstream quirks replicated on purpose, and its deviations from kvpress; read it before reporting numbers):
 
