@@ -58,7 +58,7 @@ class ThinKSketch(KVCompressor):
 
     ``compression_ratio`` is a read-only property equal to
     ``key_channel_compression_ratio / 2`` (keys are half the KV cache); it is
-    deliberately not a dataclass field, so ``ResearchAdapter._build_sketch``
+    deliberately not a dataclass field, so ``ResearchAdapter._build_kv_compressor``
     does not inject the adapter-level ratio — configure via
     ``kv_compressor_kwargs={key_channel_compression_ratio, window_size}``.
 

@@ -64,7 +64,7 @@ llm_kwargs:
   # This dict becomes research_adapter.ResearchConfig (runner.py:144-145).
   research_config:
     # --- KV-compression sketch ---------------------------------------------
-    # Available sketches (research_adapter._build_sketch):
+    # Available sketches (research_adapter._build_kv_compressor):
     #   none                   — compression off (no sketch hooks installed)
     #   knorm                  — prune lowest-scoring keys by key-norm
     #                            (score = -||k||; large-norm keys evicted),

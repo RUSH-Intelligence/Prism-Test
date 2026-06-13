@@ -72,7 +72,7 @@ class PerLayerCompressionSketch(KVCompressor):
       under any attention implementation. The raggedness check conservatively
       compares the first ``num_hidden_layers`` entries even though
       mixed-attention families only hook full-attention layers.
-    - ``ResearchAdapter._build_sketch`` does not inject the adapter-level
+    - ``ResearchAdapter._build_kv_compressor`` does not inject the adapter-level
       ``cfg.compression_ratio`` (``compression_ratio`` here is a read-only
       property, not a dataclass field); all configuration flows through
       ``kv_compressor_kwargs``.

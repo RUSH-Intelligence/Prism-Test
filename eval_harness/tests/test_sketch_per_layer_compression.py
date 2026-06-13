@@ -443,7 +443,7 @@ class TestRegistryAndWiring(unittest.TestCase):
         self.assertIn("per_layer_compression", available_kv_compressors())
 
     def test_compression_ratio_is_not_a_dataclass_field(self):
-        # ResearchAdapter._build_sketch injects cfg.compression_ratio only for
+        # ResearchAdapter._build_kv_compressor injects cfg.compression_ratio only for
         # dataclass fields, so the adapter-level ratio is ignored here.
         self.assertNotIn("compression_ratio", {f.name for f in fields(PerLayerCompressionSketch)})
 

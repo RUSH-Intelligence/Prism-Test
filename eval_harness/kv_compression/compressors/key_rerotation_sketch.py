@@ -55,7 +55,7 @@ class KeyRerotationSketch(KVCompressor):
       (at positions ``0..n_kept-1``) and the first question token. A warning is
       logged at construction.
     - ``compression_ratio`` is a property, not a dataclass field, so
-      ``ResearchAdapter._build_sketch``'s ``fields()``-based ratio injection does not
+      ``ResearchAdapter._build_kv_compressor``'s ``fields()``-based ratio injection does not
       fire for the registry name ``key_rerotation``; construct programmatically with
       the ratio set on the wrapped sketch, e.g.
       ``KeyRerotationSketch(press=KnormSketch(compression_ratio=0.5))``, or add an

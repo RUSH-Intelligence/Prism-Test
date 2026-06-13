@@ -146,6 +146,12 @@ class SketchTextGenerationPipeline(Pipeline):
             if use_prefill_method:
                 prefill_method.on_prefill_start(context_length)
             with sketch_ctx:
+                # Tell the compressor we are prefilling so it does not rely on
+                # the cache_position heuristic, which mislabels non-first
+                # chunked-prefill chunks as decode (and would then skip a
+                # ``streaming`` compressor after the first chunk).
+                if sketch is not None:
+                    sketch.set_phase("prefill")
                 self._run_prefill(
                     context_ids=context_ids,
                     cache=cache,
@@ -159,6 +165,8 @@ class SketchTextGenerationPipeline(Pipeline):
                 prefill_method.on_prefill_end()
 
             perform_decoding_compression = sketch is not None and isinstance(sketch, (DecodingSketch, PrefillDecodingSketch))
+            if sketch is not None:
+                sketch.set_phase("decode")
             with sketch(self.model) if perform_decoding_compression else contextlib.nullcontext():
                 answers = []
                 for question_ids in input_tensors["questions_ids"]:
@@ -205,11 +213,12 @@ class SketchTextGenerationPipeline(Pipeline):
         (they evict after each chunk's forward).
 
         .. note::
-            The legacy ``_is_decoding_step`` heuristic
-            (``cache_position[-1] > q_len``) misclassifies later prefill chunks
-            as decode.  That detection is reworked alongside the Door-3
-            ``schedule`` gating (it does not affect the default single-pass
-            path, where no chunk has a non-zero start).
+            The cache_position heuristic (``cache_position[-1] > q_len``) would
+            misclassify later prefill chunks as decode (they start past
+            ``q_len``).  ``_forward`` therefore declares the phase explicitly via
+            ``KVCompressor.set_phase("prefill")`` before this loop, so a
+            ``streaming`` compressor fires after *every* chunk, not just the
+            first.
         """
         context_length = context_ids.shape[1]
         if prefill_chunk_size is None or prefill_chunk_size >= context_length:
@@ -228,8 +237,15 @@ class SketchTextGenerationPipeline(Pipeline):
         device = self.model.device
         for start in range(0, context_length, prefill_chunk_size):
             end = min(start + prefill_chunk_size, context_length)
+            # ``position_ids`` carry the ABSOLUTE RoPE position; ``cache_position``
+            # is the PHYSICAL slot in the cache.  These coincide until a
+            # ``streaming`` compressor evicts mid-prefill — then the cache is
+            # shorter than ``start``, so the physical slots must follow the
+            # actual (post-eviction) cache length, or HF's causal mask (built
+            # from ``cache_position``) would let queries attend across the gap.
             position_ids = torch.arange(start, end, device=device).unsqueeze(0)
-            cache_position = torch.arange(start, end, device=device)
+            past_len = cache.get_seq_length()
+            cache_position = torch.arange(past_len, past_len + (end - start), device=device)
             self.model.model(
                 input_ids=context_ids[:, start:end],
                 past_key_values=cache,

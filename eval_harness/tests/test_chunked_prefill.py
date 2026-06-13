@@ -18,6 +18,7 @@ import torch
 from transformers import DynamicCache, LlamaConfig, LlamaForCausalLM
 
 from eval_harness.attention_methods._method_base import PrefillMethod
+from eval_harness.kv_compression import KnormSketch
 from eval_harness.kv_compression.cache_adapter import create_cache_adapter
 from eval_harness.research_pipeline import SketchTextGenerationPipeline
 
@@ -143,6 +144,68 @@ class TestChunkedPrefillEquivalence(unittest.TestCase):
         ctx = torch.randint(0, 256, (1, 16))
         with self.assertRaises(ValueError):
             pipe._run_prefill(context_ids=ctx, cache=DynamicCache(), prefill_chunk_size=0)
+
+
+class TestStreamingCompressionBounded(unittest.TestCase):
+    """``streaming`` KV compression must fire after EVERY prefill chunk.
+
+    Regression for the cache_position heuristic that labelled every chunk past
+    the first as decode — a ``streaming`` compressor (``fires_on_decode=False``)
+    was then skipped on all but the first chunk, so the cache grew unbounded.
+    The pipeline now declares the phase explicitly and feeds each chunk physical
+    ``cache_position`` derived from the (post-eviction) cache length.
+    """
+
+    CONTEXT_LEN = 200
+    CHUNK = 40
+
+    def _post_prefill_seq_len(self, sketch, chunk_size):
+        model = _build_model()
+        pipe = _make_pipeline(model)
+        torch.manual_seed(4)
+        inputs = {
+            "context_ids": torch.randint(0, 256, (1, self.CONTEXT_LEN)),
+            "questions_ids": [torch.randint(0, 256, (1, 6))],
+        }
+        adapter = create_cache_adapter(model)
+        cache = adapter.initialize_cache(None)
+        with torch.no_grad():
+            answers = pipe._forward(
+                inputs,
+                max_new_tokens=3,
+                sketch=sketch,
+                prefill_method=None,
+                positional_method=None,
+                prefill_chunk_size=chunk_size,
+                cache=cache,
+                cache_adapter=adapter,
+            )
+        # The decode loop checkpoints/restores the cache per question, so after
+        # _forward the cache is back at its post-prefill (compressed) length.
+        return adapter.get_seq_length(cache), answers
+
+    def test_streaming_bounds_cache_across_chunks(self):
+        """50% streaming eviction with 5 chunks keeps the cache near the chunk
+        size (~38), NOT the ~180 the single-fire bug would leave."""
+        seq_len, answers = self._post_prefill_seq_len(
+            KnormSketch(compression_ratio=0.5, schedule=["streaming"]),
+            chunk_size=self.CHUNK,
+        )
+        # Repeated eviction converges near the chunk size; the bug would leave
+        # 0.5*CHUNK + 4*CHUNK = 180.  A threshold of 2*CHUNK separates the two.
+        self.assertLess(seq_len, 2 * self.CHUNK)
+        self.assertGreater(seq_len, 0)
+        # Decode still completes (positions stay consistent after eviction).
+        self.assertIsInstance(answers[0], str)
+
+    def test_streaming_single_pass_fires_once(self):
+        """With no chunking (single pass) streaming coincides with a single
+        post_prefill fire: 50% of 200 == ~100."""
+        seq_len, _ = self._post_prefill_seq_len(
+            KnormSketch(compression_ratio=0.5, schedule=["streaming"]),
+            chunk_size=None,
+        )
+        self.assertEqual(seq_len, self.CONTEXT_LEN // 2)
 
 
 if __name__ == "__main__":

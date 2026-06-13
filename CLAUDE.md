@@ -81,8 +81,9 @@ Context-extension / compression behavior is supplied by `eval_harness/attention_
 
 1. **Post-attention prune hook** (`PrefillMethod.prefill_forward_hook`, `base.py`): fires
    *after* each full-attention layer during prefill, may return `(keys, values)` to replace the
-   cache contents. No-ops on decode (via `KVCompressor._is_decoding_step`,
-   `kv_compression/base.py`). **ReAttention** uses this:
+   cache contents. No-ops on decode (the pipeline declares the phase explicitly via
+   `KVCompressor.set_phase`, falling back to the `_is_decoding_step` cache_position
+   heuristic; `kv_compression/base.py`). **ReAttention** uses this:
    it un-rotates cached K to score raw Q·K, selects `[global | top-k middle | local]`, and
    prunes the cache. Prefill-only. Because HF's normal decode shares ONE causal mask/position
    grid across layers (sized from layer 0), per-layer selection must not leave a *ragged*

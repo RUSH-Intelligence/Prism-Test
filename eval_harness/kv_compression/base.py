@@ -201,6 +201,9 @@ class KVCompressor:
         self.schedule = CompressionSchedule.coerce_set(self.schedule)
         if not isinstance(self.operation, CompressionOperation):
             self.operation = CompressionOperation(str(self.operation).strip().lower())
+        # Prefill/decode phase declared explicitly by the pipeline (see
+        # set_phase).  ``None`` falls back to the cache_position heuristic.
+        self._explicit_phase = None
 
     # ------------------------------------------------------------------
     # Schedule predicates
@@ -224,9 +227,33 @@ class KVCompressor:
     def post_init_from_model(self, model: PreTrainedModel) -> None:
         """Optional per-model setup (head dims, budgets) on install."""
 
+    def set_phase(self, phase) -> None:
+        """Declare the phase of the upcoming forward(s): ``"prefill"`` or
+        ``"decode"`` (or ``None`` to restore the heuristic).
+
+        The pipeline calls this because the cache_position heuristic
+        (:meth:`_is_decoding_step`) misclassifies every chunked-prefill chunk
+        *after the first* as decode — those chunks start at ``cache_position``
+        well past ``q_len`` — which would stop a ``streaming`` compressor from
+        firing after the first chunk.  An explicit phase removes the guesswork.
+        """
+        self._explicit_phase = phase
+
+    def _resolve_is_decode(self, module: nn.Module, kwargs: dict, q_len: int) -> bool:
+        """Decode-vs-prefill: the pipeline's explicit phase wins; else heuristic."""
+        phase = getattr(self, "_explicit_phase", None)
+        if phase is not None:
+            return phase == "decode"
+        return self._is_decoding_step(module, kwargs, q_len)
+
     @staticmethod
     def _is_decoding_step(module: nn.Module, kwargs: dict, q_len: int) -> bool:
-        """Detect decoding vs prefill across transformers versions."""
+        """Detect decoding vs prefill across transformers versions.
+
+        Heuristic fallback used when the pipeline has not set an explicit phase
+        (see :meth:`set_phase`).  Reliable for a single-pass prefill and for
+        decode, but NOT for non-first chunked-prefill chunks.
+        """
         cache_position = kwargs.get("cache_position")
         if cache_position is not None:
             return cache_position[-1] > q_len
@@ -278,7 +305,7 @@ class KVCompressor:
         cache_layer = cache.layers[module.layer_idx]
         q_len = hidden_states.shape[1]
 
-        is_decode = self._is_decoding_step(module, kwargs, q_len)
+        is_decode = self._resolve_is_decode(module, kwargs, q_len)
         if is_decode and not self.fires_on_decode:
             return output
         if not is_decode and not self.fires_on_prefill:

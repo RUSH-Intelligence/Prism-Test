@@ -165,7 +165,7 @@ class DuoAttentionSketch(KVCompressor):
       (never an attention class), so the norm branch is dead code in kvpress; the
       duck-typed form applies the norms as intended for Qwen3/Gemma3-style models.
     - ``compression_ratio`` is a read-only property (not a dataclass field), so
-      ``ResearchAdapter._build_sketch`` does not inject the adapter-level ratio; configure
+      ``ResearchAdapter._build_kv_compressor`` does not inject the adapter-level ratio; configure
       via ``kv_compressor_kwargs: {head_compression_ratio: ...}``.
 
     Upstream quirks kept verbatim (do not "fix")
