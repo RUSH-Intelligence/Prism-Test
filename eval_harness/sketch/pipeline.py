@@ -26,6 +26,7 @@ class SketchTextGenerationPipeline(Pipeline):
         prefill_method: Optional[PrefillMethod] = None,
         max_new_tokens: int = 50,
         max_context_length: Optional[int] = None,
+        prefill_chunk_size: Optional[int] = None,
         enable_thinking: bool = False,
         cache: Optional[Cache] = None,
         cache_adapter: Optional[CacheAdapter] = None,
@@ -47,6 +48,7 @@ class SketchTextGenerationPipeline(Pipeline):
             "sketch": sketch,
             "prefill_method": prefill_method,
             "max_new_tokens": max_new_tokens,
+            "prefill_chunk_size": prefill_chunk_size,
             "cache": cache,
             "cache_adapter": cache_adapter,
         }
@@ -95,6 +97,7 @@ class SketchTextGenerationPipeline(Pipeline):
         max_new_tokens: int = 50,
         sketch: Optional[BaseSketch] = None,
         prefill_method: Optional[PrefillMethod] = None,
+        prefill_chunk_size: Optional[int] = None,
         cache: Optional[Cache] = None,
         cache_adapter: Optional[CacheAdapter] = None,
     ):
@@ -131,9 +134,10 @@ class SketchTextGenerationPipeline(Pipeline):
             if use_prefill_method:
                 prefill_method.on_prefill_start(context_length)
             with sketch_ctx:
-                self.model.model(
-                    input_ids=context_ids,
-                    past_key_values=cache,
+                self._run_prefill(
+                    context_ids=context_ids,
+                    cache=cache,
+                    prefill_chunk_size=prefill_chunk_size,
                 )
                 cache_adapter.maybe_slice_prefill(cache)
 
@@ -166,6 +170,60 @@ class SketchTextGenerationPipeline(Pipeline):
                     cache_adapter.restore_after_question(cache, checkpoint)
                     answers.append(answer)
         return answers
+
+    def _run_prefill(
+        self,
+        context_ids: torch.Tensor,
+        cache: Cache,
+        prefill_chunk_size: Optional[int] = None,
+    ) -> None:
+        """Prefill the context into ``cache``.
+
+        ``prefill_chunk_size`` is ``None`` (or ``>=`` the context length) →
+        a SINGLE full-context pass, byte-identical to the original pipeline
+        (HF derives ``position_ids``/``cache_position`` from the empty cache).
+
+        Otherwise the context is processed in ``prefill_chunk_size`` chunks,
+        each fed its true **absolute** ``position_ids`` and ``cache_position``
+        so the model places keys at the correct positions and builds the
+        correct causal mask.  A plain causal forward is invariant to this
+        chunking (each token still attends over keys ``[0, i]``), so the
+        post-prefill cache and final logits match the single-pass path.  This
+        is the memory-bounded path that ``streaming`` KV compressors hook into
+        (they evict after each chunk's forward).
+
+        .. note::
+            The legacy ``_is_decoding_step`` heuristic
+            (``cache_position[-1] > q_len``) misclassifies later prefill chunks
+            as decode.  That detection is reworked alongside the Door-3
+            ``schedule`` gating (it does not affect the default single-pass
+            path, where no chunk has a non-zero start).
+        """
+        context_length = context_ids.shape[1]
+        if prefill_chunk_size is None or prefill_chunk_size >= context_length:
+            self.model.model(
+                input_ids=context_ids,
+                past_key_values=cache,
+            )
+            return
+
+        if prefill_chunk_size <= 0:
+            raise ValueError(
+                f"prefill_chunk_size must be a positive int or None, "
+                f"got {prefill_chunk_size}"
+            )
+
+        device = self.model.device
+        for start in range(0, context_length, prefill_chunk_size):
+            end = min(start + prefill_chunk_size, context_length)
+            position_ids = torch.arange(start, end, device=device).unsqueeze(0)
+            cache_position = torch.arange(start, end, device=device)
+            self.model.model(
+                input_ids=context_ids[:, start:end],
+                past_key_values=cache,
+                position_ids=position_ids,
+                cache_position=cache_position,
+            )
 
     def generate_answer(
         self,
