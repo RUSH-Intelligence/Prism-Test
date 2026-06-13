@@ -63,7 +63,7 @@ Ready-made configs live in [evaluate/](evaluate/): `evaluate_vllm.yaml` /
 `evaluate_hf.yaml` (clean no-method baselines), `evaluate_kv.yaml`
 (KV-compression sketch only), `evaluate_dca.yaml` / `evaluate_reattention.yaml`
 (verified paper baselines), and `evaluate_common.yaml` (the full research
-surface, including the prefill_method × sketch compatibility matrix). Run with:
+surface, including the attention_method × kv_compressor compatibility matrix). Run with:
 
 ```bash
 python -m eval_harness.cli run --config_file ./evaluate/evaluate_common.yaml
@@ -96,7 +96,7 @@ Before publishing a comparison, confirm each of the following is **intentional**
 | `max_model_len`            | Override the model's positional cap when running past its training window.                      |
 | `query_aware`              | If `True`, the question is concatenated into the context — needed for some query-aware methods. Note it in your write-up. |
 | `max_requests` / `max_requests_per_subset` | Subsampling caps. Same value across compared runs or numbers don't line up.    |
-| `llm_kwargs.cache_config`  | Sketch name, compression ratio, target size, and `prefill_method` (+ its kwargs). Pin all of these when comparing runs.  |
+| `llm_kwargs.research_config`  | Sketch name, compression ratio, target size, and `prefill_method` (+ its kwargs). Pin all of these when comparing runs.  |
 
 ### Output format
 
@@ -123,27 +123,27 @@ There are three layers, from least to most invasive. **Use the smallest one that
 
 Use this when your method is "decide which tokens to keep / drop / rescore *after* the keys and values exist." Sketches run as a `forward_hook` on each attention layer at the end of prefill.
 
-1. Subclass [`BaseSketch`](eval_harness/sketch/sketches/base_sketch.py) and implement `compress`:
+1. Subclass [`KVCompressor`](eval_harness/kv_compression/base.py) and implement `compress`:
 
    ```python
-   from eval_harness.sketch.sketches.base_sketch import BaseSketch
+   from eval_harness.kv_compression.base import KVCompressor
 
-   class MySketch(BaseSketch):
+   class MySketch(KVCompressor):
        def compress(self, module, hidden_states, keys, values, attentions, kwargs):
            # return (keys_pruned, values_pruned) with the same trailing shape
            ...
    ```
 
-2. Decorate the class with `@register_sketch("my_sketch")` ([eval_harness/sketch/sketches/registry.py](eval_harness/sketch/sketches/registry.py)) and drop the file into [eval_harness/sketch/sketches/](eval_harness/sketch/sketches/) — sketch modules are auto-discovered on first lookup, so adding a sketch never requires editing shared files. `ResearchAdapter._build_sketch` ([eval_harness/research_adapter.py](eval_harness/research_adapter.py)) resolves `sketch_name` through the registry and passes `sketch_kwargs` to the constructor; the adapter-level `compression_ratio` is injected as a default **only when the class declares a `compression_ratio` dataclass field** (sketches that expose it as a property — `think`, `simlayerkv`, `key_rerotation`, `dms` — must be configured via `sketch_kwargs` or programmatically). Composite sketches whose arguments can't be expressed as flat config kwargs (`DecodingSketch`, `PrefillDecodingSketch`) remain named special cases in `_build_sketch` instead of registry entries.
+2. Decorate the class with `@register_kv_compressor("my_sketch")` ([eval_harness/kv_compression/compressors/registry.py](eval_harness/kv_compression/compressors/registry.py)) and drop the file into [eval_harness/kv_compression/compressors/](eval_harness/kv_compression/compressors/) — sketch modules are auto-discovered on first lookup, so adding a sketch never requires editing shared files. `ResearchAdapter._build_kv_compressor` ([eval_harness/research_adapter.py](eval_harness/research_adapter.py)) resolves `sketch_name` through the registry and passes `sketch_kwargs` to the constructor; the adapter-level `compression_ratio` is injected as a default **only when the class declares a `compression_ratio` dataclass field** (sketches that expose it as a property — `think`, `simlayerkv`, `key_rerotation`, `dms` — must be configured via `sketch_kwargs` or programmatically). Composite sketches whose arguments can't be expressed as flat config kwargs (`DecodingSketch`, `PrefillDecodingSketch`) remain named special cases in `_build_kv_compressor` instead of registry entries.
 
 3. Select it in YAML:
 
    ```yaml
    llm_kwargs:
-     cache_config:
-       sketch_name: my_sketch
+     research_config:
+       kv_compressor: my_sketch
        compression_ratio: 0.5
-       sketch_kwargs: { my_param: 123 }   # extra constructor kwargs, forwarded verbatim
+       kv_compressor_kwargs: { my_param: 123 }   # extra constructor kwargs, forwarded verbatim
        target_size: 2048
        max_context_length: 65536
    ```
@@ -151,11 +151,11 @@ Use this when your method is "decide which tokens to keep / drop / rescore *afte
    List the live registry at any time:
 
    ```python
-   from eval_harness.sketch import available_sketches
-   print(available_sketches())
+   from eval_harness.kv_compression import available_kv_compressors
+   print(available_kv_compressors())
    ```
 
-Reference implementations to read first: [knorm_sketch.py](eval_harness/sketch/sketches/knorm_sketch.py), [reattention_sketch.py](eval_harness/sketch/sketches/reattention_sketch.py) (scoring base class in [scorer_sketch.py](eval_harness/sketch/sketches/scorer_sketch.py)), [random_sketch.py](eval_harness/sketch/sketches/random_sketch.py), [decoding_sketch.py](eval_harness/sketch/sketches/decoding_sketch.py).
+Reference implementations to read first: [knorm_sketch.py](eval_harness/kv_compression/compressors/knorm_sketch.py), [reattention_sketch.py](eval_harness/kv_compression/compressors/reattention_sketch.py) (scoring base class in [scorer_sketch.py](eval_harness/kv_compression/compressors/scorer_sketch.py)), [random_sketch.py](eval_harness/kv_compression/compressors/random_sketch.py), [decoding_sketch.py](eval_harness/kv_compression/compressors/decoding_sketch.py).
 
 Shipped sketches (mostly faithful ports of kvpress 0.5.1 presses — each module's class docstring lists its parameters, the upstream quirks replicated on purpose, and its deviations from kvpress; read it before reporting numbers):
 
@@ -198,10 +198,10 @@ Shipped sketches (mostly faithful ports of kvpress 0.5.1 presses — each module
 | `composed`               | Prefill (wrapper)   | Chains multiple sketches sequentially; members may be registry names / `(name, kwargs)` pairs, so it is reachable from flat YAML. |
 | `key_rerotation`         | Prefill (wrapper)   | Re-rotates kept keys to contiguous positions `0..n_kept-1` after an inner scorer prunes. Caveat: this pipeline does not rebase question/decode position ids, leaving a positional gap (warning logged). |
 | `per_layer_compression` ‡ | Prefill (wrapper)  | Applies per-layer `compression_ratios` through an inner scorer (registry name + `press_kwargs` accepted). |
-| `decoding_knorm`         | Decode (periodic)   | Compress mid-decode every `compression_interval` steps. Not in the registry — named special case in `_build_sketch`. |
-| `prefill_decoding_knorm` | Prefill + decode    | Compress at prefill end and during decode. Not in the registry — named special case in `_build_sketch`. |
+| `decoding_knorm`         | Decode (periodic)   | Compress mid-decode every `compression_interval` steps. Not in the registry — named special case in `_build_kv_compressor`. |
+| `prefill_decoding_knorm` | Prefill + decode    | Compress at prefill end and during decode. Not in the registry — named special case in `_build_kv_compressor`. |
 
-\* **`observed_attention` requires `attn_implementation: eager`** — only the eager forward returns attention probabilities to the hook; under the default sdpa, `attentions` is `None` and the sketch asserts. Run it with `prefill_method: none`.
+\* **`observed_attention` requires `attn_implementation: eager`** — only the eager forward returns attention probabilities to the hook; under the default sdpa, `attentions` is `None` and the sketch asserts. Run it with `attention_method: none`.
 
 † **External assets with injection hooks.** `qfilter`, `kvzap`, `duo_attention`, `expected_attention_stats`, and `fastkvzip` load pre-trained/pre-computed artifacts from the HF hub in `post_init_from_model` (published only for specific models). Each exposes a constructor injection hook for offline compute nodes and tests: `q_filters` (tensor), `model_name_override` (repo-id derivation for local snapshot dirs), `attention_pattern` / `pattern_dir`, `stats_folder`, and `gates` respectively.
 
@@ -209,7 +209,7 @@ Shipped sketches (mostly faithful ports of kvpress 0.5.1 presses — each module
 
 ‡ **Ragged-cache methods need `flash_attention_2`.** `pyramidkv`, `simlayerkv` (with `lazy_threshold < 1.0`), and `per_layer_compression` (with unequal ratios) retain different lengths per layer; under the pinned transformers, sdpa/eager build one decode mask sized from layer 0, so these sketches' `post_init_from_model` raises unless the model runs flash-attention-2 (or the uniform/no-op escape hatch is used).
 
-Composition caveat: prefill-method hooks fire **before** sketch hooks, and most position-sensitive scorers (snapkv, tova, finch, compactor, qfilter, expected_attention / expected_attention_stats, simlayerkv, think, …) assume vanilla absolute-position RoPE-rotated cached keys — do not combine them with `prefill_method: dca` (cyclic key positions) or cache-pruning hooks; the safe, validated combination is `prefill_method: none` unless a sketch's docstring says otherwise.
+Composition caveat: prefill-method hooks fire **before** sketch hooks, and most position-sensitive scorers (snapkv, tova, finch, compactor, qfilter, expected_attention / expected_attention_stats, simlayerkv, think, …) assume vanilla absolute-position RoPE-rotated cached keys — do not combine them with `attention_method: dca` (cyclic key positions) or cache-pruning hooks; the safe, validated combination is `attention_method: none` unless a sketch's docstring says otherwise.
 
 ### Layer 2 — a custom attention kernel
 
@@ -232,8 +232,8 @@ Use this when none of the above fits — e.g., you want a new context-extension 
 
 Files you'll touch:
 
-- [eval_harness/research_adapter.py](eval_harness/research_adapter.py) — the thin `HFAdapter` subclass that builds the `sketch` and `prefill_method` from `CacheConfig` and runs them through the pipeline.
-- [eval_harness/sketch/pipeline.py](eval_harness/sketch/pipeline.py) — `SketchTextGenerationPipeline`; single full-context prefill (`_forward`) and per-token decode (`generate_answer`), and the nested install of `prefill_method` (outer) and `sketch` (inner).
+- [eval_harness/research_adapter.py](eval_harness/research_adapter.py) — the thin `HFAdapter` subclass that builds the `sketch` and `prefill_method` from `ResearchConfig` and runs them through the pipeline.
+- [eval_harness/research_pipeline.py](eval_harness/research_pipeline.py) — `SketchTextGenerationPipeline`; single full-context prefill (`_forward`) and per-token decode (`generate_answer`), and the nested install of `prefill_method` (outer) and `sketch` (inner).
 - [eval_harness/sketch/cache_adapter.py](eval_harness/sketch/cache_adapter.py) — `DynamicCache` semantics (rotated K/V) and the length-based multi-question checkpoint/restore.
 
 Tests that must keep passing:
@@ -248,7 +248,7 @@ If you find yourself working here, document *why* in your branch — Layer 3 cha
 
 ## Research backend architecture
 
-You only need this section if you're working at Layer 0, 2, or 3. `ResearchAdapter` ([eval_harness/research_adapter.py](eval_harness/research_adapter.py)) is a thin `HFAdapter` subclass. It does **not** install an identity-RoPE swap or an attention-function override; it builds a `sketch` (KV compression) and a `prefill_method` (context extension) from `CacheConfig` and runs everything through `SketchTextGenerationPipeline` ([eval_harness/sketch/pipeline.py](eval_harness/sketch/pipeline.py)).
+You only need this section if you're working at Layer 0, 2, or 3. `ResearchAdapter` ([eval_harness/research_adapter.py](eval_harness/research_adapter.py)) is a thin `HFAdapter` subclass. It does **not** install an identity-RoPE swap or an attention-function override; it builds a `sketch` (KV compression) and a `prefill_method` (context extension) from `ResearchConfig` and runs everything through `SketchTextGenerationPipeline` ([eval_harness/research_pipeline.py](eval_harness/research_pipeline.py)).
 
 #### Single full-context prefill pass
 
@@ -280,7 +280,7 @@ The runner feeds all questions for one context together. After the shared prefil
 
 #### Wiring config
 
-`runner._setup_adapter` pulls the `cache_config` dict out of `EvalConfig.llm_kwargs`, converts it to `CacheConfig`, and passes it to `ResearchAdapter`. Relevant fields: `prefill_method` (str, e.g. `"dca"`, `"reattention"`, `"none"`) + `prefill_method_kwargs` (dict), plus the sketch fields (`sketch_name`, resolved through the `@register_sketch` registry; `sketch_kwargs`, forwarded verbatim to the sketch constructor; `compression_ratio`, injected as a default only when the sketch class declares that dataclass field; …). `ResearchAdapter._build_prefill_method` resolves the name via `prefill_methods.get_prefill_method`. ReAttention's `recall_type` defaults to `'qk'` (options: `qk` | `qkv` | `qkv2`) — this is a method kwarg, **not** an adapter-level selection mode.
+`runner._setup_adapter` pulls the `cache_config` dict out of `EvalConfig.llm_kwargs`, converts it to `ResearchConfig`, and passes it to `ResearchAdapter`. Relevant fields: `prefill_method` (str, e.g. `"dca"`, `"reattention"`, `"none"`) + `prefill_method_kwargs` (dict), plus the sketch fields (`sketch_name`, resolved through the `@register_kv_compressor` registry; `sketch_kwargs`, forwarded verbatim to the sketch constructor; `compression_ratio`, injected as a default only when the sketch class declares that dataclass field; …). `ResearchAdapter._build_prefill_method` resolves the name via `prefill_methods.get_prefill_method`. ReAttention's `recall_type` defaults to `'qk'` (options: `qk` | `qkv` | `qkv2`) — this is a method kwarg, **not** an adapter-level selection mode.
 
 ---
 
@@ -388,7 +388,7 @@ pkill -f wake_lock   # only if you started the wake lock
 | RAG: connection refused to Ollama                                    | Start the server first: `~/.ollama/bin/ollama serve`. Verify with `curl http://localhost:11434/api/tags`. |
 | RAG: requests time out after long idle                               | GPU may have entered low-power state — start the wake-lock command shown above.                          |
 | Research backend gives different numbers vs HF on the same prompt    | Confirm `attn_implementation: sdpa` — it is the path the prefill-method/sketch baselines were validated against; FA2 introduces numeric drift vs the SDPA-validated reference. |
-| `observed_attention` asserts / `attentions` is `None`                | It needs eager attention probabilities: set `llm_kwargs: {attn_implementation: eager}` and `prefill_method: none`. |
+| `observed_attention` asserts / `attentions` is `None`                | It needs eager attention probabilities: set `llm_kwargs: {attn_implementation: eager}` and `attention_method: none`. |
 | Masking sketch (`adakv`/`dms`/`duo_attention`/`kvzip`/`fastkvzip`/`critical_adakv`) shows full-length cache / no memory savings | Expected — compression is virtual via `masked_key_indices` + the attention patch; these are quality-only baselines. If quality also looks like no compression at all, check you're not on eager attention or a `self_attn.forward`-replacing prefill method (`dca`, `reattention_exact`), both of which bypass the mask. |
 | `ValueError` from `post_init_from_model` about flash attention       | `pyramidkv` / `simlayerkv` / `per_layer_compression` produce a cross-layer ragged cache that only decodes safely under `flash_attention_2`; switch implementation or use the sketch's uniform fallback. |
 | Hub download fails on a compute node (qfilter/kvzap/duo_attention/expected_attention_stats/fastkvzip) | These sketches fetch external assets; pre-fetch and use the injection hook (`q_filters`, `model_name_override`, `attention_pattern`/`pattern_dir`, `stats_folder`, `gates`). |
