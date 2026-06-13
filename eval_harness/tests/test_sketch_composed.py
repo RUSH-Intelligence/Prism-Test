@@ -19,7 +19,7 @@ import torch
 from torch import nn
 from transformers import DynamicCache
 
-from eval_harness.research_adapter import CacheConfig, ResearchAdapter
+from eval_harness.research_adapter import ResearchConfig, ResearchAdapter
 from eval_harness.kv_compression.compressors.composed_sketch import ComposedSketch
 from eval_harness.kv_compression.compressors.decoding_sketch import DecodingSketch
 from eval_harness.kv_compression.compressors.knorm_sketch import KnormSketch
@@ -117,13 +117,13 @@ class TestComposedRegistry(unittest.TestCase):
 
     def test_build_sketch_does_not_inject_adapter_ratio(self):
         adapter = object.__new__(ResearchAdapter)
-        cfg = CacheConfig(
-            sketch_name="composed",
+        cfg = ResearchConfig(
+            kv_compressor="composed",
             compression_ratio=0.9,
-            sketch_kwargs={"presses": [["knorm", {"compression_ratio": 0.5}]]},
+            kv_compressor_kwargs={"presses": [["knorm", {"compression_ratio": 0.5}]]},
         )
         adapter._cache_cfg = cfg
-        sketch = adapter._build_sketch(cfg)
+        sketch = adapter._build_kv_compressor(cfg)
         self.assertIsInstance(sketch, ComposedSketch)
         self.assertIsNone(sketch.compression_ratio)
         self.assertIsInstance(sketch.presses[0], KnormSketch)

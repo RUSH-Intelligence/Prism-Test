@@ -407,16 +407,16 @@ class TestRegistryWiring(unittest.TestCase):
         self.assertEqual(sketch.n_recent, 128)
 
     def test_build_sketch_does_not_inject_compression_ratio(self):
-        from eval_harness.research_adapter import CacheConfig, ResearchAdapter
+        from eval_harness.research_adapter import ResearchConfig, ResearchAdapter
 
-        cfg = CacheConfig(
-            sketch_name="simlayerkv",
+        cfg = ResearchConfig(
+            kv_compressor="simlayerkv",
             compression_ratio=0.4,
-            sketch_kwargs={"lazy_threshold": 0.8},
+            kv_compressor_kwargs={"lazy_threshold": 0.8},
         )
         adapter = object.__new__(ResearchAdapter)
         adapter._cache_cfg = cfg
-        sketch = adapter._build_sketch(cfg)
+        sketch = adapter._build_kv_compressor(cfg)
         self.assertIsInstance(sketch, SimLayerKVSketch)
         self.assertAlmostEqual(sketch.lazy_threshold, 0.8)
         # compression_ratio is a read-only property, not a dataclass field, so

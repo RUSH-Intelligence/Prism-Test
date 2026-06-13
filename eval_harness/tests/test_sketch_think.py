@@ -335,16 +335,16 @@ class TestThinKRegistry(unittest.TestCase):
         self.assertEqual(sketch.window_size, 2)
 
     def test_build_sketch_does_not_inject_adapter_ratio(self):
-        from eval_harness.research_adapter import CacheConfig, ResearchAdapter
+        from eval_harness.research_adapter import ResearchConfig, ResearchAdapter
 
-        cfg = CacheConfig(
-            sketch_name="think",
+        cfg = ResearchConfig(
+            kv_compressor="think",
             compression_ratio=0.9,
-            sketch_kwargs={"key_channel_compression_ratio": 0.5, "window_size": 2},
+            kv_compressor_kwargs={"key_channel_compression_ratio": 0.5, "window_size": 2},
         )
         adapter = object.__new__(ResearchAdapter)
         adapter._cache_cfg = cfg
-        sketch = adapter._build_sketch(cfg)
+        sketch = adapter._build_kv_compressor(cfg)
         self.assertIsInstance(sketch, ThinKSketch)
         self.assertEqual(sketch.key_channel_compression_ratio, 0.5)
         self.assertEqual(sketch.window_size, 2)

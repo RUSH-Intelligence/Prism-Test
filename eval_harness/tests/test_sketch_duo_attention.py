@@ -584,16 +584,16 @@ class TestRegistryWiring(unittest.TestCase):
             sketch.compression_ratio = 0.3
 
     def test_build_sketch_ignores_adapter_compression_ratio(self):
-        from eval_harness.research_adapter import CacheConfig, ResearchAdapter
+        from eval_harness.research_adapter import ResearchConfig, ResearchAdapter
 
-        cfg = CacheConfig(
-            sketch_name="duo_attention",
+        cfg = ResearchConfig(
+            kv_compressor="duo_attention",
             compression_ratio=0.4,
-            sketch_kwargs={"head_compression_ratio": 0.5},
+            kv_compressor_kwargs={"head_compression_ratio": 0.5},
         )
         adapter = object.__new__(ResearchAdapter)
         adapter._cache_cfg = cfg
-        sketch = adapter._build_sketch(cfg)
+        sketch = adapter._build_kv_compressor(cfg)
         self.assertIsInstance(sketch, DuoAttentionSketch)
         self.assertAlmostEqual(sketch.head_compression_ratio, 0.5)
         with self.assertRaises(AssertionError):

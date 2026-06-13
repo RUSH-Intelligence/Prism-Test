@@ -330,27 +330,27 @@ class TestChunkKVRegistry(unittest.TestCase):
         self.assertAlmostEqual(sketch.compression_ratio, 0.4)
 
     def test_build_sketch_injects_adapter_ratio(self):
-        from eval_harness.research_adapter import CacheConfig, ResearchAdapter
+        from eval_harness.research_adapter import ResearchConfig, ResearchAdapter
 
         adapter = object.__new__(ResearchAdapter)
-        cfg = CacheConfig(
-            sketch_name="chunkkv", compression_ratio=0.4, sketch_kwargs={"chunk_length": 8}
+        cfg = ResearchConfig(
+            kv_compressor="chunkkv", compression_ratio=0.4, kv_compressor_kwargs={"chunk_length": 8}
         )
-        sketch = adapter._build_sketch(cfg)
+        sketch = adapter._build_kv_compressor(cfg)
         self.assertIsInstance(sketch, ChunkKVSketch)
         self.assertEqual(sketch.chunk_length, 8)
         self.assertAlmostEqual(sketch.compression_ratio, 0.4)
 
     def test_build_sketch_kwargs_ratio_overrides_adapter_ratio(self):
-        from eval_harness.research_adapter import CacheConfig, ResearchAdapter
+        from eval_harness.research_adapter import ResearchConfig, ResearchAdapter
 
         adapter = object.__new__(ResearchAdapter)
-        cfg = CacheConfig(
-            sketch_name="chunkkv",
+        cfg = ResearchConfig(
+            kv_compressor="chunkkv",
             compression_ratio=0.4,
-            sketch_kwargs={"compression_ratio": 0.6},
+            kv_compressor_kwargs={"compression_ratio": 0.6},
         )
-        sketch = adapter._build_sketch(cfg)
+        sketch = adapter._build_kv_compressor(cfg)
         self.assertAlmostEqual(sketch.compression_ratio, 0.6)
 
 

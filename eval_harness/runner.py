@@ -133,16 +133,17 @@ class EvalRunner:
 
             self.adapter = RAGAdapter()
         elif self.config.backend == "research":
-            from .research_adapter import ResearchAdapter, CacheConfig
+            from .research_adapter import ResearchAdapter, ResearchConfig
 
             llm_kw = dict(self.config.llm_kwargs or {})
             # Research backend depends on consistent ALL_ATTENTION_FUNCTIONS
             # dispatch; SDPA is the most reliable parity path.
             llm_kw.setdefault("attn_implementation", "sdpa")
 
-            # Pull cache_config dict out of llm_kwargs and convert to CacheConfig
-            cache_kw = llm_kw.pop("cache_config", {}) or {}
-            cache_cfg = CacheConfig(**cache_kw) if cache_kw else CacheConfig()
+            # Pull the research_config dict out of llm_kwargs (the three-door
+            # configuration) and convert it to a ResearchConfig.
+            research_kw = llm_kw.pop("research_config", {}) or {}
+            research_cfg = ResearchConfig(**research_kw) if research_kw else ResearchConfig()
 
             self.adapter = ResearchAdapter(
                 model=self.config.model,
@@ -150,7 +151,7 @@ class EvalRunner:
                 max_model_len=self.config.max_model_len,
                 trust_remote_code=self.config.trust_remote_code,
                 seed=self.config.seed,
-                cache_config=cache_cfg,
+                research_config=research_cfg,
                 **llm_kw,
             )
         elif self.config.backend == "hf":

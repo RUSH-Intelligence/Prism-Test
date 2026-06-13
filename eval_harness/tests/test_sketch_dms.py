@@ -16,7 +16,7 @@ from types import SimpleNamespace
 import torch
 from torch import nn
 
-from eval_harness.research_adapter import CacheConfig, ResearchAdapter
+from eval_harness.research_adapter import ResearchConfig, ResearchAdapter
 from eval_harness.kv_compression.attention_patch import attention_patch
 from eval_harness.kv_compression.base import KVCompressor
 from eval_harness.kv_compression.compressors.dms_sketch import DMSSketch
@@ -484,14 +484,14 @@ class TestDMSRegistryAndBuild(unittest.TestCase):
         self.assertEqual(sketch.threshold, -2.0)
 
     def test_build_sketch_does_not_inject_adapter_compression_ratio(self):
-        cfg = CacheConfig(
-            sketch_name="dms",
+        cfg = ResearchConfig(
+            kv_compressor="dms",
             compression_ratio=0.4,
-            sketch_kwargs={"press": "knorm", "threshold": -2.0, "sliding_window_size": 64},
+            kv_compressor_kwargs={"press": "knorm", "threshold": -2.0, "sliding_window_size": 64},
         )
         adapter = object.__new__(ResearchAdapter)
         adapter._cache_cfg = cfg
-        sketch = adapter._build_sketch(cfg)
+        sketch = adapter._build_kv_compressor(cfg)
         self.assertIsInstance(sketch, DMSSketch)
         self.assertIsInstance(sketch.press, KnormSketch)
         self.assertEqual(sketch.sliding_window_size, 64)

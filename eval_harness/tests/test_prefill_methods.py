@@ -2040,47 +2040,51 @@ class _FakeCache:
 
 
 class TestResearchAdapterPrefillMethodWiring(unittest.TestCase):
-    """Test that CacheConfig.prefill_method is wired correctly."""
+    """Test that ResearchConfig.attention_method (door 2) is wired correctly.
 
-    def test_build_prefill_method_none(self):
-        from eval_harness.research_adapter import CacheConfig, ResearchAdapter
+    The resolver tries the new ``attention_methods`` registry first (DCA),
+    then falls back to the legacy ``prefill_methods`` registry (reattention).
+    ``none`` resolves to ``None`` (no method installed).
+    """
 
-        cfg = CacheConfig(prefill_method="none")
-        method = ResearchAdapter._build_prefill_method(cfg)
-        self.assertIsInstance(method, PrefillMethod)
-        self.assertEqual(type(method), PrefillMethod)
+    def test_build_attention_method_none(self):
+        from eval_harness.research_adapter import ResearchConfig, ResearchAdapter
 
-    def test_build_prefill_method_reattention(self):
+        cfg = ResearchConfig(attention_method="none")
+        self.assertIsNone(ResearchAdapter._build_attention_method(cfg))
+
+    def test_build_attention_method_reattention(self):
         from eval_harness.prefill_methods.reattention import ReAttentionMethod
-        from eval_harness.research_adapter import CacheConfig, ResearchAdapter
+        from eval_harness.research_adapter import ResearchConfig, ResearchAdapter
 
-        cfg = CacheConfig(
-            prefill_method="reattention",
-            prefill_method_kwargs={"global_size": 16, "mid_size": 4},
+        cfg = ResearchConfig(
+            attention_method="reattention",
+            attention_method_kwargs={"global_size": 16, "mid_size": 4},
         )
-        method = ResearchAdapter._build_prefill_method(cfg)
+        method = ResearchAdapter._build_attention_method(cfg)
         self.assertIsInstance(method, ReAttentionMethod)
         self.assertEqual(method.global_size, 16)
         self.assertEqual(method.mid_size, 4)
 
-    def test_build_prefill_method_dca(self):
-        from eval_harness.prefill_methods.dca import DCAMethod
-        from eval_harness.research_adapter import CacheConfig, ResearchAdapter
+    def test_build_attention_method_dca(self):
+        from eval_harness.attention_methods.dca import DCAMethod
+        from eval_harness.research_adapter import ResearchConfig, ResearchAdapter
 
-        cfg = CacheConfig(
-            prefill_method="dca",
-            prefill_method_kwargs={"chunk_size": 4096},
+        cfg = ResearchConfig(
+            attention_method="dca",
+            attention_method_kwargs={"chunk_size": 4096},
+            attention_phase="both",
         )
-        method = ResearchAdapter._build_prefill_method(cfg)
+        method = ResearchAdapter._build_attention_method(cfg)
         self.assertIsInstance(method, DCAMethod)
         self.assertEqual(method.chunk_size, 4096)
 
-    def test_unknown_prefill_method_raises(self):
-        from eval_harness.research_adapter import CacheConfig, ResearchAdapter
+    def test_unknown_attention_method_raises(self):
+        from eval_harness.research_adapter import ResearchConfig, ResearchAdapter
 
-        cfg = CacheConfig(prefill_method="nonexistent_xyz")
+        cfg = ResearchConfig(attention_method="nonexistent_xyz")
         with self.assertRaises(ValueError):
-            ResearchAdapter._build_prefill_method(cfg)
+            ResearchAdapter._build_attention_method(cfg)
 
 
 class TestPrefillMethodContextManager(unittest.TestCase):

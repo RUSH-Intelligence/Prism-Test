@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from eval_harness.research_adapter import CacheConfig, ResearchAdapter
+from eval_harness.research_adapter import ResearchConfig, ResearchAdapter
 from eval_harness.kv_compression import (
     DecodingSketch,
     KnormSketch,
@@ -43,42 +43,42 @@ class TestSketchRegistry(unittest.TestCase):
 
 
 class TestBuildSketchViaRegistry(unittest.TestCase):
-    def _shell(self, cfg: CacheConfig):
+    def _shell(self, cfg: ResearchConfig):
         adapter = object.__new__(ResearchAdapter)
         adapter._cache_cfg = cfg
         return adapter
 
     def test_registry_name_with_adapter_compression_ratio(self):
-        cfg = CacheConfig(sketch_name="reattention", compression_ratio=0.4)
-        sketch = self._shell(cfg)._build_sketch(cfg)
+        cfg = ResearchConfig(kv_compressor="reattention", compression_ratio=0.4)
+        sketch = self._shell(cfg)._build_kv_compressor(cfg)
         self.assertIsInstance(sketch, ReAttentionSketch)
         self.assertAlmostEqual(sketch.compression_ratio, 0.4)
 
     def test_sketch_kwargs_pass_through_and_override(self):
-        cfg = CacheConfig(
-            sketch_name="random",
+        cfg = ResearchConfig(
+            kv_compressor="random",
             compression_ratio=0.4,
-            sketch_kwargs={"compression_ratio": 0.6, "seed": 3},
+            kv_compressor_kwargs={"compression_ratio": 0.6, "seed": 3},
         )
-        sketch = self._shell(cfg)._build_sketch(cfg)
+        sketch = self._shell(cfg)._build_kv_compressor(cfg)
         self.assertIsInstance(sketch, RandomSketch)
         self.assertAlmostEqual(sketch.compression_ratio, 0.6)
         self.assertEqual(sketch.seed, 3)
 
     def test_composite_names_still_special_cased(self):
-        cfg = CacheConfig(sketch_name="decoding_knorm", compression_interval=9)
-        sketch = self._shell(cfg)._build_sketch(cfg)
+        cfg = ResearchConfig(kv_compressor="decoding_knorm", compression_interval=9)
+        sketch = self._shell(cfg)._build_kv_compressor(cfg)
         self.assertIsInstance(sketch, DecodingSketch)
         self.assertEqual(sketch.compression_interval, 9)
 
     def test_none_returns_no_sketch(self):
-        cfg = CacheConfig(sketch_name="none")
-        self.assertIsNone(self._shell(cfg)._build_sketch(cfg))
+        cfg = ResearchConfig(kv_compressor="none")
+        self.assertIsNone(self._shell(cfg)._build_kv_compressor(cfg))
 
     def test_unexpected_kwarg_raises_type_error(self):
-        cfg = CacheConfig(sketch_name="knorm", sketch_kwargs={"window_size": 5})
+        cfg = ResearchConfig(kv_compressor="knorm", kv_compressor_kwargs={"window_size": 5})
         with self.assertRaises(TypeError):
-            self._shell(cfg)._build_sketch(cfg)
+            self._shell(cfg)._build_kv_compressor(cfg)
 
 
 if __name__ == "__main__":

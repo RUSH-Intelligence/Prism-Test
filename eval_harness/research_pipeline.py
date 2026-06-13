@@ -24,6 +24,7 @@ class SketchTextGenerationPipeline(Pipeline):
         answer_prefix: Optional[str] = None,
         sketch: Optional[KVCompressor] = None,
         prefill_method: Optional[PrefillMethod] = None,
+        positional_method=None,
         max_new_tokens: int = 50,
         max_context_length: Optional[int] = None,
         prefill_chunk_size: Optional[int] = None,
@@ -47,6 +48,7 @@ class SketchTextGenerationPipeline(Pipeline):
         forward_kwargs = {
             "sketch": sketch,
             "prefill_method": prefill_method,
+            "positional_method": positional_method,
             "max_new_tokens": max_new_tokens,
             "prefill_chunk_size": prefill_chunk_size,
             "cache": cache,
@@ -97,6 +99,7 @@ class SketchTextGenerationPipeline(Pipeline):
         max_new_tokens: int = 50,
         sketch: Optional[KVCompressor] = None,
         prefill_method: Optional[PrefillMethod] = None,
+        positional_method=None,
         prefill_chunk_size: Optional[int] = None,
         cache: Optional[Cache] = None,
         cache_adapter: Optional[CacheAdapter] = None,
@@ -116,6 +119,15 @@ class SketchTextGenerationPipeline(Pipeline):
             and type(prefill_method) is not PrefillMethod  # not the base no-op
         )
 
+        # Door 1 (positional) wraps the rotary embedding for the WHOLE run
+        # (prefill + decode), so it is the outermost context.  An attention
+        # method that computes its own RoPE (DCA) overrides it for its layers.
+        positional_ctx = (
+            positional_method(self.model)
+            if positional_method is not None
+            else contextlib.nullcontext()
+        )
+
         perform_prefill_compression = sketch is not None and not isinstance(sketch, DecodingSketch)
 
         # Hook ordering: prefill_method hooks install FIRST (outermost context
@@ -130,7 +142,7 @@ class SketchTextGenerationPipeline(Pipeline):
         # Methods that intercept the attention computation (e.g. DCA, which
         # replaces self_attn.forward) must remain active during decode; methods
         # that only prune on prefill (e.g. ReAttention) no-op on decode steps.
-        with method_ctx:
+        with positional_ctx, method_ctx:
             if use_prefill_method:
                 prefill_method.on_prefill_start(context_length)
             with sketch_ctx:

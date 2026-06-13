@@ -448,19 +448,19 @@ class TestRegistryAndWiring(unittest.TestCase):
         self.assertNotIn("compression_ratio", {f.name for f in fields(PerLayerCompressionSketch)})
 
     def test_build_sketch_via_adapter_sketch_kwargs(self):
-        from eval_harness.research_adapter import CacheConfig, ResearchAdapter
+        from eval_harness.research_adapter import ResearchConfig, ResearchAdapter
 
-        cfg = CacheConfig(
-            sketch_name="per_layer_compression",
+        cfg = ResearchConfig(
+            kv_compressor="per_layer_compression",
             compression_ratio=0.9,  # must be ignored (not a field)
-            sketch_kwargs={"press": "knorm", "compression_ratios": [0.1, 0.2]},
+            kv_compressor_kwargs={"press": "knorm", "compression_ratios": [0.1, 0.2]},
         )
         adapter = object.__new__(ResearchAdapter)
         adapter._cache_cfg = cfg
         logger = logging.getLogger(LOGGER_NAME)
         logger.disabled = True
         try:
-            sketch = adapter._build_sketch(cfg)
+            sketch = adapter._build_kv_compressor(cfg)
         finally:
             logger.disabled = False
 
