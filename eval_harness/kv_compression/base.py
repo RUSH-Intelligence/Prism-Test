@@ -89,10 +89,12 @@ def _is_non_full_attention_layer(layer: nn.Module) -> bool:
     For mixed-attention families (Gemma3, Qwen3.5) we only hook full-softmax
     layers; this flags sliding/linear (or any non-full typed) layer to skip.
     """
-    attn = getattr(layer, "self_attn", None)
-    if attn is None:
-        return False
-
+    # Decoder-layer-level type hints first. These are present even when the
+    # layer has NO ``self_attn`` submodule (e.g. Qwen3.5 linear-attention
+    # layers expose ``layer_type="linear_attention"`` and no ``self_attn``), so
+    # they MUST be checked before any ``self_attn`` access — otherwise a linear
+    # layer is misclassified as full-attention and the install loop crashes on
+    # ``layer.self_attn`` (AttributeError).
     for attr in ("layer_type", "attention_type"):
         val = getattr(layer, attr, None)
         if isinstance(val, str):
@@ -102,6 +104,13 @@ def _is_non_full_attention_layer(layer: nn.Module) -> bool:
             if any(token in lowered for token in ("sliding", "linear")):
                 return True
             return True
+
+    attn = getattr(layer, "self_attn", None)
+    if attn is None:
+        # No ``self_attn`` submodule and no type hint: we cannot install a
+        # KV-cache hook on it, so treat it as non-full (skip) rather than let a
+        # later ``layer.self_attn`` access raise.
+        return True
 
     is_sliding = getattr(attn, "is_sliding", None)
     if is_sliding is not None:
