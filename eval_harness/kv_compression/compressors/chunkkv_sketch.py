@@ -74,6 +74,7 @@ class ChunkKVSketch(KVCompressor):
     compression_ratio: Optional[float] = None
 
     def __post_init__(self):
+        super().__post_init__()
         pending_ratio = self.__dict__.pop("_pending_compression_ratio", None)
         if self.press is None:
             self.press = KnormSketch()

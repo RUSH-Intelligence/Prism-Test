@@ -94,6 +94,7 @@ class PerLayerCompressionSketch(KVCompressor):
     press_kwargs: Optional[Dict[str, Any]] = None
 
     def __post_init__(self):
+        super().__post_init__()
         logger.warning(
             "Per layer compression wrapper is an experimental feature and only works with flash attention. "
             "Please make sure that the model uses flash attention."

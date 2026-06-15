@@ -57,6 +57,7 @@ class ChunkSketch(KVCompressor):
     chunk_length: int = 1024
 
     def __post_init__(self):
+        super().__post_init__()
         assert isinstance(self.press, ScorerKVCompressor), "ChunkSketch requires a ScorerKVCompressor as input"
 
     def post_init_from_model(self, model: PreTrainedModel):

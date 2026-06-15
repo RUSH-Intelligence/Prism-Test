@@ -95,6 +95,7 @@ class DMSSketch(KVCompressor):
     compression_ratios: dict[int, float] = field(default_factory=dict, init=False, repr=False)
 
     def __post_init__(self):
+        super().__post_init__()
         if isinstance(self.press, str):
             self.press = get_kv_compressor(self.press)
         assert isinstance(self.press, ScorerKVCompressor), "DMSSketch requires a ScorerKVCompressor as press"

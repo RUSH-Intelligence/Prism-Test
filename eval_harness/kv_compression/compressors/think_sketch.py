@@ -89,6 +89,7 @@ class ThinKSketch(KVCompressor):
     window_size: int = 32
 
     def __post_init__(self):
+        super().__post_init__()
         assert 0 <= self.key_channel_compression_ratio < 1, (
             "key_channel_compression_ratio must be in [0, 1)"
         )

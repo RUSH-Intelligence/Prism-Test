@@ -151,6 +151,7 @@ class RidgeSketch(KVCompressor):
     eps: float = 1e-8
 
     def __post_init__(self):
+        super().__post_init__()
         if self.compression_ratio is not None:
             assert 0.0 <= self.compression_ratio < 1.0, "compression_ratio must be in [0, 1)"
         assert self.ridge_lambda > 0, "ridge_lambda must be > 0"

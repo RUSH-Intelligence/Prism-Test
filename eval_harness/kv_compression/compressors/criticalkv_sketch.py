@@ -166,6 +166,7 @@ class CriticalAdaKVSketch(KVCompressor):
     first_stage_ratio: float = 0.5
 
     def __post_init__(self):
+        super().__post_init__()
         assert 0 <= self.alpha_safeguard <= 1, "alpha_safeguard should be in 0, 1]"
         assert isinstance(self.press, ScorerKVCompressor), "CriticalAdaKVSketch requires a ScorerKVCompressor as input"
         if getattr(self.press, "use_vnorm", False):

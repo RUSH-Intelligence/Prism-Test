@@ -58,6 +58,7 @@ class AdaKVSketch(KVCompressor):
     alpha_safeguard: float = 0.20
 
     def __post_init__(self):
+        super().__post_init__()
         assert isinstance(self.press, ScorerKVCompressor), "AdaKVSketch requires a ScorerKVCompressor as input"
         assert 0 <= self.alpha_safeguard <= 1, "alpha_safeguard should be in [0, 1]"
 

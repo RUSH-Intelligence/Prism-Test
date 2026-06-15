@@ -72,6 +72,7 @@ class BlockSketch(KVCompressor):
     block_size: int = 128
 
     def __post_init__(self):
+        super().__post_init__()
         assert isinstance(self.sketch, ScorerKVCompressor), "BlockSketch requires a ScorerKVCompressor"
         assert self.block_size >= 1, "block_size must be a positive integer"
 

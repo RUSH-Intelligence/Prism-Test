@@ -70,6 +70,7 @@ class KeyRerotationSketch(KVCompressor):
     press: ScorerKVCompressor
 
     def __post_init__(self):
+        super().__post_init__()
         assert isinstance(self.press, ScorerKVCompressor)
         logger.warning(
             "KeyRerotationSketch compacts kept keys to positions 0..n_kept-1, but "

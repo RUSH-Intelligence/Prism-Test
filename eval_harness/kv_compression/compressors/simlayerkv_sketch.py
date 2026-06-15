@@ -117,6 +117,7 @@ class SimLayerKVSketch(KVCompressor):
     n_initial: int = 4
 
     def __post_init__(self):
+        super().__post_init__()
         assert 0.0 <= self.lazy_threshold <= 1.0, "lazy_threshold should be in [0, 1]"
         self.compression_ratios: list[float] = []
         self._last_layer_idx: Optional[int] = None

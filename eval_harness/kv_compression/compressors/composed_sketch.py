@@ -81,6 +81,7 @@ class ComposedSketch(KVCompressor):
     presses: list[SketchSpec]
 
     def __post_init__(self):
+        super().__post_init__()
         self.compression_ratio = None
         self.presses = [_resolve_member(press) for press in self.presses]
 

@@ -24,6 +24,7 @@ class DecodingSketch(KVCompressor):
     hidden_states_buffer_size: int = 256
 
     def __post_init__(self):
+        super().__post_init__()
         assert isinstance(
             self.base_sketch, (ScorerKVCompressor, AdaKVSketch)
         ), "DecodingSketch requires a ScorerKVCompressor or AdaKVSketch as input"

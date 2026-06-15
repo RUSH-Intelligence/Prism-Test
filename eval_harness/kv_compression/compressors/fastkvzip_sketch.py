@@ -234,6 +234,7 @@ class FastKVzipSketch(KVCompressor):
     gates: Optional[list[nn.Module]] = None
 
     def __post_init__(self):
+        super().__post_init__()
         assert 0 <= self.compression_ratio < 1, "Compression ratio must be between 0 and 1"
         self.score_val: dict[int, torch.Tensor] = {}
         self._scored_modules: list[nn.Module] = []

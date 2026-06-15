@@ -152,6 +152,7 @@ class KVzipSketch(KVCompressor):
     tokenizer: Optional[PreTrainedTokenizerBase] = None
 
     def __post_init__(self):
+        super().__post_init__()
         assert 0 <= self.compression_ratio < 1, "Compression ratio must be between 0 and 1"
         logger.warning(
             "KVzipSketch requires multiple forward passes for chunked context reconstruction, "
