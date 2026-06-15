@@ -163,7 +163,9 @@ documents params, replicated upstream quirks, and deviations: scorers `knorm`, `
 `reattention`, `streaming_llm`, `keydiff`, `lagkv`, `cur`, `leverage`, `non_causal_attention`,
 `compactor`, `ridge`, `random_sketch_press` (research-fork; dead-code bug replicated ⇒ ≡ `ridge`),
 `expected_attention`, `expected_attention_stats`, `snapkv`, `pyramidkv`, `tova`,
-`observed_attention`, `qfilter`, `kvzap`, `finch`, `think` (key-channel zeroing), `simlayerkv`;
+`observed_attention`, `h2o` (Heavy Hitter Oracle, arXiv:2306.14048 — raw accumulated-attention
+sum + recent-window force-keep; like `observed_attention` it needs `attn_implementation: eager`),
+`qfilter`, `kvzap`, `finch`, `think` (key-channel zeroing), `simlayerkv`;
 masking-based `adakv`, `critical_adakv`, `dms`, `duo_attention`, `kvzip`, `fastkvzip`; wrappers
 `criticalkv`, `block`, `chunk`, `chunkkv`, `composed`, `key_rerotation`, `per_layer_compression`.
 One non-kvpress coreset method: `balancekv` (faithful port of github.com/ksheth96/BalanceKV,

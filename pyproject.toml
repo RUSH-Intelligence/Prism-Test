@@ -38,6 +38,8 @@ dependencies = [
     # Config / CLI / IO
     "pyyaml>=6.0",
     "tqdm>=4.66",
+    # Writing the LongBench result sheet (scripts/longbench_to_xlsx.py).
+    "openpyxl>=3.1",
 
     # Embeddings
     "sentence-transformers",
