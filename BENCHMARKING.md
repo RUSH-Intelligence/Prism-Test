@@ -119,9 +119,9 @@ There are three layers, from least to most invasive. **Use the smallest one that
 
 (A fourth option — Layer 0, a new context-extension method — is covered in [Research backend architecture](#research-backend-architecture): for a RoPE frequency/position change subclass `PositionalMethod` (Door 1, register with `@register_positional_method`); for an attention-math change subclass `AttentionMethod` (Door 2, register with `@register_attention_method`). The legacy `PrefillMethod` + `@register_prefill_method` slot still backs the faithful `reattention`/`reattention_exact` ports.)
 
-### Layer 1 — a KV-cache compression sketch
+### Layer 1 — a KV-cache compressor
 
-Use this when your method is "decide which tokens to keep / drop / rescore *after* the keys and values exist." Sketches run as a `forward_hook` on each attention layer at the end of prefill.
+Use this when your method is "decide which tokens to keep / drop / rescore *after* the keys and values exist." KV compressors run as a `forward_hook` on each attention layer at the end of prefill.
 
 1. Subclass [`KVCompressor`](eval_harness/kv_compression/base.py) and implement `compress`:
 
@@ -134,7 +134,7 @@ Use this when your method is "decide which tokens to keep / drop / rescore *afte
            ...
    ```
 
-2. Decorate the class with `@register_kv_compressor("my_sketch")` ([eval_harness/kv_compression/registry.py](eval_harness/kv_compression/registry.py)) and drop the file into [eval_harness/kv_compression/compressors/](eval_harness/kv_compression/compressors/) — sketch modules are auto-discovered on first lookup, so adding a sketch never requires editing shared files. `ResearchAdapter._build_kv_compressor` ([eval_harness/research_adapter.py](eval_harness/research_adapter.py)) resolves `kv_compressor` through the registry and passes `kv_compressor_kwargs` to the constructor; the adapter-level `compression_ratio` is injected as a default **only when the class declares a `compression_ratio` dataclass field** (sketches that expose it as a property — `think`, `simlayerkv`, `key_rerotation`, `dms` — must be configured via `kv_compressor_kwargs` or programmatically). Composite sketches whose arguments can't be expressed as flat config kwargs (`DecodingSketch`, `PrefillDecodingSketch`) remain named special cases in `_build_kv_compressor` instead of registry entries.
+2. Decorate the class with `@register_kv_compressor("my_sketch")` ([eval_harness/kv_compression/registry.py](eval_harness/kv_compression/registry.py)) and drop the file into [eval_harness/kv_compression/compressors/](eval_harness/kv_compression/compressors/) — compressor modules are auto-discovered on first lookup, so adding a compressor never requires editing shared files. `ResearchAdapter._build_kv_compressor` ([eval_harness/research_adapter.py](eval_harness/research_adapter.py)) resolves `kv_compressor` through the registry and passes `kv_compressor_kwargs` to the constructor; the adapter-level `compression_ratio` is injected as a default **only when the class declares a `compression_ratio` dataclass field** (sketches that expose it as a property — `think`, `simlayerkv`, `key_rerotation`, `dms` — must be configured via `kv_compressor_kwargs` or programmatically). Composite sketches whose arguments can't be expressed as flat config kwargs (`DecodingSketch`, `PrefillDecodingSketch`) remain named special cases in `_build_kv_compressor` instead of registry entries.
 
 3. Select it in YAML:
 

@@ -7,12 +7,12 @@ of a context manager (the same mechanism the legacy ``PrefillMethod`` DCA path
 used), and is gated by an explicit :class:`AttentionPhase` so that **one**
 attention implementation can serve prefill, decode, or both with no duplication.
 
-This is the renamed/generalised successor to
-``eval_harness.prefill_methods`` — the ``prefill_forward_hook`` *prune* sub-style
-of the old ``PrefillMethod`` is **not** an attention method (it is KV compression
-that happens to fire at prefill time) and moves to Door 3
-(:mod:`eval_harness.kv_compression`).  What stays here is the *forward
-replacement* sub-style: DCA and reattention_exact.
+This is the renamed/generalised successor to ``eval_harness.prefill_methods``.
+Both faithful ReAttention ports live here as legacy ``PrefillMethod`` subclasses
+on the same method slot: ``reattention`` (a prefill-only ``prefill_forward_hook``
+that prunes the cache) and ``reattention_exact`` (a full ``self_attn.forward``
+replacement).  Generic post-attention cache pruning that is *not* tied to a
+specific attention method belongs in Door 3 (:mod:`eval_harness.kv_compression`).
 
 Pipeline position (outer → inner)::
 

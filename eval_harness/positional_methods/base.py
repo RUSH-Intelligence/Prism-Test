@@ -39,7 +39,7 @@ from __future__ import annotations
 import logging
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Generator, Optional, Set, Tuple
+from typing import Any, ClassVar, Generator, Optional, Set, Tuple
 
 import torch
 
@@ -51,6 +51,14 @@ class PositionalMethod:
     """Base class for Door-1 positional methods (identity by default)."""
 
     mscale: float = 1.0
+
+    # Whether :meth:`compute_inv_freq` actually varies with ``seq_len``.  The
+    # shipped methods (NTK, YaRN) ignore ``seq_len`` — their frequencies are a
+    # function of the config alone — so the interceptor computes the result
+    # once and reuses it for every rotary forward (decode runs one forward per
+    # token).  A method whose frequencies depend on the running length (e.g. a
+    # *dynamic* NTK) must set this ``True`` so the cache keys on ``seq_len``.
+    inv_freq_depends_on_seq_len: ClassVar[bool] = False
 
     # ------------------------------------------------------------------
     # Override points
@@ -113,21 +121,35 @@ class PositionalMethod:
         original_inv_freq = getattr(rotary, "inv_freq", None)
         method = self
 
+        # Cache the (inv_freq, swap) decision so per-token decode forwards don't
+        # redo compute_inv_freq (recover_base_and_dim's .item() GPU syncs) and
+        # torch.equal on every call.  Keyed on seq_len only when the method's
+        # frequencies actually depend on it; otherwise a single shared entry.
+        _SEQ_LEN_AGNOSTIC = object()
+        freq_cache: dict = {}
+
+        def _resolve_swap(seq_len: int):
+            key = seq_len if method.inv_freq_depends_on_seq_len else _SEQ_LEN_AGNOSTIC
+            if key not in freq_cache:
+                new_inv_freq = (
+                    method.compute_inv_freq(original_inv_freq, seq_len)
+                    if original_inv_freq is not None
+                    else None
+                )
+                swap = (
+                    new_inv_freq is not None
+                    and original_inv_freq is not None
+                    and new_inv_freq is not original_inv_freq
+                    and not torch.equal(new_inv_freq, original_inv_freq)
+                )
+                freq_cache[key] = (new_inv_freq if swap else None, swap)
+            return freq_cache[key]
+
         def wrapped(x: torch.Tensor, position_ids: torch.Tensor, **kw: Any):
             seq_len = _infer_seq_len(position_ids)
             position_ids = method.remap_position_ids(position_ids, seq_len)
 
-            new_inv_freq = (
-                method.compute_inv_freq(original_inv_freq, seq_len)
-                if original_inv_freq is not None
-                else None
-            )
-            swap = (
-                new_inv_freq is not None
-                and original_inv_freq is not None
-                and new_inv_freq is not original_inv_freq
-                and not torch.equal(new_inv_freq, original_inv_freq)
-            )
+            new_inv_freq, swap = _resolve_swap(seq_len)
             if swap:
                 rotary.inv_freq = new_inv_freq
                 try:

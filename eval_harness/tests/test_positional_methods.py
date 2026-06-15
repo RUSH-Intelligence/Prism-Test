@@ -184,5 +184,46 @@ class TestInterceptorIdentity(unittest.TestCase):
         self.assertTrue(torch.isfinite(out).all())
 
 
+class TestInterceptorFrequencyCache(unittest.TestCase):
+    """The interceptor caches the compute_inv_freq result so per-token decode
+    forwards don't redo the (GPU-syncing) frequency rebuild on every call."""
+
+    def _count_calls(self, method):
+        real = method.compute_inv_freq
+        seq_lens: list[int] = []
+
+        def counting(original_inv_freq, seq_len):
+            seq_lens.append(seq_len)
+            return real(original_inv_freq, seq_len)
+
+        method.compute_inv_freq = counting  # instance attr shadows the bound method
+        return seq_lens
+
+    def _run_forwards(self, model, method, lengths):
+        with torch.no_grad(), method(model):
+            for length in lengths:
+                ids = torch.randint(0, 256, (1, length))
+                pos = torch.arange(length).unsqueeze(0)
+                model(input_ids=ids, position_ids=pos)
+
+    def test_seq_len_agnostic_method_computes_inv_freq_once(self):
+        # NTK ignores seq_len (inv_freq_depends_on_seq_len=False), so even across
+        # forwards with different lengths the frequency is computed exactly once.
+        method = get_positional_method("ntk", factor=8.0)
+        calls = self._count_calls(method)
+        self._run_forwards(_build_tiny_model(), method, (8, 16, 24))
+        self.assertEqual(len(calls), 1)
+
+    def test_seq_len_dependent_method_recomputes_per_distinct_length(self):
+        # A method that opts into seq_len dependence keys the cache on seq_len:
+        # recompute per distinct length, but a repeated length is still cached.
+        method = get_positional_method("ntk", factor=8.0)
+        method.inv_freq_depends_on_seq_len = True
+        calls = self._count_calls(method)
+        self._run_forwards(_build_tiny_model(), method, (8, 16, 16, 24))
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(sorted(set(calls)), [8, 16, 24])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -21,6 +21,16 @@ class PrefillDecodingSketch(KVCompressor):
         if self.decoding_sketch is not None:
             self.decoding_sketch.post_init_from_model(model)
 
+    def set_phase(self, phase) -> None:
+        # The pipeline sets the phase on this wrapper; forward it to the inner
+        # sketches so they don't fall back to the cache_position heuristic
+        # (which misclassifies non-first chunked-prefill chunks as decode).
+        super().set_phase(phase)
+        if self.prefilling_sketch is not None:
+            self.prefilling_sketch.set_phase(phase)
+        if self.decoding_sketch is not None:
+            self.decoding_sketch.set_phase(phase)
+
     def compress(
         self,
         module: nn.Module,

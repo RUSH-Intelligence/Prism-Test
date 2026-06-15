@@ -46,10 +46,13 @@ model: meta-llama/Meta-Llama-3-8B
 # Runtime
 tensor_parallel_size: 1        # vLLM-only; ignored by the research backend (single-GPU .to("cuda"))
 dtype: bfloat16
-max_model_len: 18000           # pipeline truncation cap for ruler16k (used because
+max_model_len: 16384           # pipeline truncation cap for ruler16k (used because
                                # research_config.max_context_length below is null).
-                               # Raise for longer benchmarks (e.g. 66000 for ruler64k)
-                               # and bump positional factor to match.
+                               # Matches the YaRN target window (factor 2.0 x 8192
+                               # native = 16384); inputs past it would land beyond
+                               # what YaRN was tuned to stretch.  Raise for longer
+                               # benchmarks (e.g. 66000 for ruler64k) and bump the
+                               # positional factor to match.
 gpu_memory_utilization: 0.9    # vLLM-only; ignored by the research backend
 trust_remote_code: true
 enable_prefix_caching: true    # vLLM-only; ignored by the research backend

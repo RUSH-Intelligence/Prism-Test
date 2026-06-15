@@ -1,9 +1,9 @@
 # ============================================================================
-# KV-compression baseline — research backend, sketch ONLY (no prefill method)
+# KV-compression baseline — research backend, KV compressor ONLY (no attention method)
 # ============================================================================
-# Runs the model through ResearchAdapter with a KV-compression sketch
+# Runs the model through ResearchAdapter with a KV compressor (Door 3)
 # installed as a post-attention forward hook, and NO context-extension
-# prefill method.  Default: knorm (KVPress-style key-norm scoring) pruning
+# attention method.  Default: knorm (KVPress-style key-norm scoring) pruning
 # 50% of the prefill KV cache.
 #
 #   python -m eval_harness.cli run --config_file ./evaluate/evaluate_kv.yaml

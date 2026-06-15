@@ -35,8 +35,10 @@ class ResearchConfig:
     * **Door 1 — positional** (``positional_method``): RoPE frequency / position
       remap — ``yarn`` | ``ntk`` | ``linear_pi``.
     * **Door 2 — attention** (``attention_method``): attention-math replacement —
-      ``dca`` | ``reattention_exact``.  ``attention_phase`` (prefill | decode |
-      both) gates when it is active.
+      ``dca`` | ``reattention`` | ``reattention_exact``.  ``attention_phase``
+      (prefill | decode | both) gates when a native ``AttentionMethod`` (``dca``)
+      is active; the legacy faithful ports (``reattention``, ``reattention_exact``)
+      manage their own phases and ignore it.
     * **Door 3 — KV compression** (``kv_compressor``): post-attention cache
       rewrite — any registered compressor (``knorm``, ``random``, ``snapkv``, …).
       ``compression_schedule`` (streaming | post_prefill | decode) gates when it
@@ -154,7 +156,26 @@ class ResearchAdapter(HFAdapter):
             method = get_attention_method(name, **kw)
             method.phase = AttentionPhase.coerce(cfg.attention_phase)
             return method
-        # Faithful reattention methods (legacy PrefillMethod subclasses).
+        # Faithful reattention methods (legacy PrefillMethod subclasses).  These
+        # manage their own phases internally — reattention's prune hook is
+        # prefill-only by construction; reattention_exact's decode behaviour is
+        # driven by recall_option, not attention_phase — so a non-default
+        # attention_phase is a silent no-op.  Warn rather than mislead.
+        #
+        # TODO(door-2): migrate reattention / reattention_exact onto the native
+        # AttentionMethod interface so they honour attention_phase like DCA,
+        # removing this legacy carve-out.  Must re-verify the byte-for-byte
+        # equivalence the PR review proved (150/150 generations); for plain
+        # `reattention`, honouring phase=decode also means adding prune-during-
+        # decode behaviour that does not exist today.  Do this as its own change.
+        if AttentionPhase.coerce(cfg.attention_phase) is not AttentionPhase.BOTH:
+            logger.warning(
+                "attention_phase=%r is ignored for legacy attention method %r "
+                "(reattention/reattention_exact manage their own phases); "
+                "the setting has no effect.",
+                cfg.attention_phase,
+                name,
+            )
         return get_prefill_method(name, **kw)
 
     def _build_kv_compressor(self, cfg: ResearchConfig) -> Optional[KVCompressor]:

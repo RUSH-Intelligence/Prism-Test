@@ -83,6 +83,35 @@ class TestResearchAdapterSketchSelection(unittest.TestCase):
             adapter._build_kv_compressor(adapter._cache_cfg)
 
 
+class TestPrefillDecodingSketchPhase(unittest.TestCase):
+    """set_phase on the wrapper must propagate to both inner sketches, or they
+    fall back to the cache_position heuristic (which misreads non-first
+    chunked-prefill chunks as decode)."""
+
+    def _build(self):
+        return PrefillDecodingSketch(
+            prefilling_sketch=KnormSketch(compression_ratio=0.5),
+            decoding_sketch=DecodingSketch(
+                base_sketch=KnormSketch(compression_ratio=0.5)
+            ),
+        )
+
+    def test_set_phase_propagates_to_inner_sketches(self):
+        wrapper = self._build()
+        wrapper.set_phase("decode")
+        self.assertEqual(wrapper._explicit_phase, "decode")
+        self.assertEqual(wrapper.prefilling_sketch._explicit_phase, "decode")
+        self.assertEqual(wrapper.decoding_sketch._explicit_phase, "decode")
+
+    def test_set_phase_none_resets_inner_sketches(self):
+        wrapper = self._build()
+        wrapper.set_phase("prefill")
+        wrapper.set_phase(None)
+        self.assertIsNone(wrapper._explicit_phase)
+        self.assertIsNone(wrapper.prefilling_sketch._explicit_phase)
+        self.assertIsNone(wrapper.decoding_sketch._explicit_phase)
+
+
 class TestResearchAdapterGenerate(unittest.TestCase):
     def test_generate_uses_pipeline_and_returns_answers(self):
         adapter = object.__new__(ResearchAdapter)

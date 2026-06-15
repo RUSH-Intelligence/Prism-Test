@@ -1,11 +1,11 @@
-"""Base class for prefill attention methods.
+"""Base class for the legacy faithful Door-2 attention methods (ReAttention).
 
 Architecture Note — RoPE State of Q/K/V
 ----------------------------------------
 In the current Prism-Test research backend, Q and K arrive at the
 attention hook **already RoPE-rotated** by the model's own layers.  The
 KV cache stores **rotated** K/V.  There is no identity-RoPE interceptor
-in the current code (``research_adapter.py:55`` deletes ``rope_method``).
+in the current code (``ResearchAdapter`` deletes ``rope_method``).
 
 This means prefill methods that need position-agnostic access to K (like
 ReAttention) must either:

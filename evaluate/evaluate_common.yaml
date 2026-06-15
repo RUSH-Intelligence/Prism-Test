@@ -9,7 +9,7 @@
 #
 # ---------------------------------------------------------------------------
 # COMPATIBILITY MATRIX (attention_method x kv_compressor) — not every combination
-# is sound; the pipeline installs prefill_method (outer) then sketch (inner),
+# is sound; the pipeline installs attention_method (outer) then kv_compressor (inner),
 # so post-attention hooks fire method-first:
 #
 #   attention_method    | kv_compressor allowed?

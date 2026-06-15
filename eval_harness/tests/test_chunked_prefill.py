@@ -191,10 +191,12 @@ class TestStreamingCompressionBounded(unittest.TestCase):
             KnormSketch(compression_ratio=0.5, schedule=["streaming"]),
             chunk_size=self.CHUNK,
         )
-        # Repeated eviction converges near the chunk size; the bug would leave
-        # 0.5*CHUNK + 4*CHUNK = 180.  A threshold of 2*CHUNK separates the two.
-        self.assertLess(seq_len, 2 * self.CHUNK)
-        self.assertGreater(seq_len, 0)
+        # Each fire halves a cache that never exceeds prev+CHUNK <= 2*CHUNK, so
+        # the post-prefill length is bounded by CHUNK and converges up toward it
+        # (20 -> 30 -> 35 -> 37 -> 38 here).  The single-fire bug would instead
+        # leave 0.5*CHUNK + 4*CHUNK = 180.  Bound tightly to [CHUNK//2, CHUNK].
+        self.assertLessEqual(seq_len, self.CHUNK)
+        self.assertGreater(seq_len, self.CHUNK // 2)
         # Decode still completes (positions stay consistent after eviction).
         self.assertIsInstance(answers[0], str)
 
