@@ -30,6 +30,10 @@ dependencies = [
     "numpy>=1.26",
     "scipy>=1.11",
     "pyarrow",
+    # LongBench task-specific metrics: ROUGE-L (summarization) and jieba
+    # (Chinese segmentation). Pure-Python, imported lazily by the scorer.
+    "rouge>=1.0",
+    "jieba>=0.42",
 
     # Config / CLI / IO
     "pyyaml>=6.0",

@@ -166,6 +166,11 @@ documents params, replicated upstream quirks, and deviations: scorers `knorm`, `
 `observed_attention`, `qfilter`, `kvzap`, `finch`, `think` (key-channel zeroing), `simlayerkv`;
 masking-based `adakv`, `critical_adakv`, `dms`, `duo_attention`, `kvzip`, `fastkvzip`; wrappers
 `criticalkv`, `block`, `chunk`, `chunkkv`, `composed`, `key_rerotation`, `per_layer_compression`.
+One non-kvpress coreset method: `balancekv` (faithful port of github.com/ksheth96/BalanceKV,
+arXiv:2502.07861) — a discrepancy-theory self-balancing walk that selects a balanced
+`[sink | middle-coreset | window]` token subset and **reweights surviving values**; knobs are
+`itrs` (halvings; `compression_ratio` maps to it) + `gamma`/`temp`/`beta`/`block_size`/`n_sink`/
+`window_size`, `post_prefill` schedule.
 
 Constraints to keep in mind when wiring runs or reviewing changes:
 

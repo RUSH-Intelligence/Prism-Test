@@ -5,7 +5,12 @@ from typing import Dict, List
 import pandas as pd
 
 from .base import Benchmark, BenchmarkInfo
-from .common import parse_answers, token_f1_any
+from .common import parse_answers
+from .longbench_metrics import (
+    FIRST_LINE_TASKS,
+    base_task_name,
+    metric_for_task,
+)
 from .registry import register_benchmark
 
 
@@ -44,14 +49,51 @@ class LongBenchBenchmark(Benchmark):
             frames.append(sdf)
         return pd.concat(frames, ignore_index=True)
 
+    # Upstream LongBench-E length buckets: <4k, 4k-8k, >=8k.
     _LENGTH_BUCKETS = [(0, 4000, "0-4k"), (4000, 8000, "4-8k"), (8000, float("inf"), "8k+")]
 
+    @staticmethod
+    def _row_all_classes(row) -> List[str]:
+        ac = row.get("all_classes", None)
+        if ac is None:
+            return []
+        # pandas may store this as an ndarray; coerce to a plain list of str.
+        if hasattr(ac, "tolist"):
+            ac = ac.tolist()
+        if isinstance(ac, (list, tuple)):
+            return [str(c) for c in ac]
+        return []
+
+    def _score_row(self, row) -> float:
+        """Official per-task scoring: max over ground truths, first-line trim."""
+        task = base_task_name(str(row.get("task", "")))
+        metric = metric_for_task(task)
+        if metric is None:
+            return 0.0
+
+        prediction = str(row.get("predicted_answer", "") or "")
+        if task in FIRST_LINE_TASKS:
+            prediction = prediction.lstrip("\n").split("\n")[0]
+
+        ground_truths = parse_answers(row.get("answers", row.get("answer", [])))
+        all_classes = self._row_all_classes(row)
+
+        score = 0.0
+        for gt in ground_truths:
+            score = max(score, metric(prediction, gt, all_classes=all_classes))
+        return score
+
     def _score_rows(self, rows: pd.DataFrame) -> float:
-        vals = [
-            token_f1_any(row.get("predicted_answer", ""), parse_answers(row.get("answers", row.get("answer", []))))
-            for _, row in rows.iterrows()
-        ]
+        vals = [self._score_row(row) for _, row in rows.iterrows()]
         return round((sum(vals) / len(vals)) * 100, 2) if vals else 0.0
+
+    def _length_bucket_scores(self, tdf: pd.DataFrame) -> Dict[str, float]:
+        bucket_scores: Dict[str, float] = {}
+        for lo, hi, label in self._LENGTH_BUCKETS:
+            subset = tdf[(tdf["length"] >= lo) & (tdf["length"] < hi)]
+            if len(subset) > 0:
+                bucket_scores[label] = self._score_rows(subset)
+        return bucket_scores
 
     def score(self, df: pd.DataFrame) -> Dict[str, object]:
         if len(df) == 0:
@@ -64,12 +106,9 @@ class LongBenchBenchmark(Benchmark):
             task = str(task)
             task_scores[task] = self._score_rows(tdf)
 
-            if "length" in tdf.columns:
-                bucket_scores: Dict[str, float] = {}
-                for lo, hi, label in self._LENGTH_BUCKETS:
-                    subset = tdf[(tdf["length"] > lo) & (tdf["length"] <= hi)]
-                    if len(subset) > 0:
-                        bucket_scores[label] = self._score_rows(subset)
+            # Length-bucketed reporting is only meaningful for LongBench-E subsets.
+            if task.endswith("_e") and "length" in tdf.columns:
+                bucket_scores = self._length_bucket_scores(tdf)
                 if bucket_scores:
                     task_scores_by_length[task] = bucket_scores
 
