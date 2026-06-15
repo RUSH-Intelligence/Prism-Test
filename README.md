@@ -42,8 +42,8 @@ Prism-Test gives you all four with a single config file.
 
 - **Four backends, one runner.** `vllm` for production throughput, `hf` for clean prefill/decode debugging, `research` for compression experiments, `rag` for retrieval baselines.
 - **Per-context batching.** The runner groups by shared context so a 1M-token document is prefilled once and reused across all of its questions.
-- **Pluggable context-extension methods.** The `research` backend installs post-attention prune hooks (ReAttention) and replaces `self_attn.forward` (DCA); there is no identity-RoPE swap, so HF's `DynamicCache` stores RoPE-rotated K/V. Methods that need position-agnostic K recover it on the fly — ReAttention un-rotates the cached K, DCA re-rotates keys at cyclic positions — which is the foundation for sparse selection and context extension.
-- **Pluggable sketches.** A registry (`@register_sketch`, auto-discovered) of ~36 KV-compression baselines — mostly faithful kvpress 0.5.1 ports (`snapkv`, `pyramidkv`, `tova`, `expected_attention`, `streaming_llm`, `adakv`, `duo_attention`, `kvzip`, `qfilter`, wrappers like `chunk`/`composed`/`per_layer_compression`, ...) alongside `knorm`, `reattention`, `random`, and decoding-time variants — compressing the KV cache during prefill or decode. List them with `from eval_harness.sketch import available_sketches`; see [BENCHMARKING.md](BENCHMARKING.md#layer-1--a-kv-cache-compression-sketch) for the full roster and per-sketch constraints.
+- **Three pluggable doors.** The `research` backend exposes three independent extension points, installed as nested context managers (positional → attention → KV): **Door 1 — positional** (RoPE frequency/position: YaRN, NTK, Linear-PI; wraps the shared `rotary_emb`), **Door 2 — attention** (the attention math: DCA replaces `self_attn.forward`, ReAttention prunes via a post-attention hook), and **Door 3 — KV compression** (below). There is no identity-RoPE swap, so HF's `DynamicCache` stores RoPE-rotated K/V; methods that need position-agnostic K recover it on the fly (ReAttention un-rotates cached K, DCA re-rotates keys at cyclic positions).
+- **Pluggable KV compressors (Door 3).** A registry (`@register_kv_compressor`, auto-discovered) of ~36 KV-compression baselines — mostly faithful kvpress 0.5.1 ports (`snapkv`, `pyramidkv`, `tova`, `expected_attention`, `streaming_llm`, `adakv`, `duo_attention`, `kvzip`, `qfilter`, wrappers like `chunk`/`composed`/`per_layer_compression`, ...) alongside `knorm`, `reattention`, `random`, and decoding-time variants — compressing the KV cache during prefill or decode (`compression_schedule` ∈ streaming | post_prefill | decode). List them with `from eval_harness.kv_compression import available_kv_compressors`; see [BENCHMARKING.md](BENCHMARKING.md#layer-1--a-kv-cache-compression-sketch) for the full roster and per-compressor constraints.
 - **A standalone benchmark registry.** Drop a file into [eval_harness/benchmarks/](eval_harness/benchmarks/), decorate with `@register_benchmark`, and it's runnable from the CLI.
 - **Deterministic runs.** Seeded RNG, `temperature=0.0` by default, configs persisted alongside outputs.
 - **Tested without GPUs.** Unit tests bypass model loading via `object.__new__` + fake modules; CI is cheap.
@@ -60,16 +60,20 @@ Prism-Test/
 │   ├── runner.py               # dataset → adapter → groupby(context) → score
 │   ├── vllm_adapter.py         # vLLM backend
 │   ├── hf_adapter.py           # HuggingFace backend (clean prefill/decode)
-│   ├── research_adapter.py     # HF subclass: wires prefill_methods (context extension) + sketches (KV compression) into SketchTextGenerationPipeline
-│   ├── prefill_methods/        # context-extension methods: base.py, registry.py, reattention.py, reattention_exact.py, dca.py
+│   ├── research_adapter.py     # HF subclass: builds the three doors (positional/attention/KV) and runs them through ResearchGenerationPipeline
+│   ├── research_pipeline.py    # ResearchGenerationPipeline: chunked prefill + decode; installs the doors as nested context managers
+│   ├── positional_methods/     # DOOR 1 (RoPE freq/position): base.py, registry.py, yarn.py, ntk.py, linear_pi.py
+│   ├── attention_methods/      # DOOR 2 (attention math): base.py, registry.py, dca.py + legacy reattention.py, reattention_exact.py
 │   ├── kernels/                # Triton einsum-topk + bitonic merge (ReAttention), flash-attn-with-LSE (DCA)
 │   ├── rag_adapter.py          # OnePassRAG backend wrapper
 │   ├── rag/                    # LanceDB + llm-embedder + Ollama
-│   ├── sketch/                 # KV-cache compression sketches
+│   ├── mlp_methods/            # DOOR 4 (reserved seam only — MoE/activation sparsity; not implemented)
+│   ├── kv_compression/         # DOOR 3 (KV compression)
 │   │   ├── attention_patch.py  # global masking patch (adakv/dms/duo_attention/kvzip/fastkvzip)
 │   │   ├── cache_adapter.py
-│   │   ├── pipeline.py
-│   │   └── sketches/           # @register_sketch registry: knorm, snapkv, pyramidkv, tova, ... (~36 baselines)
+│   │   ├── base.py             # KVCompressor / ScorerKVCompressor
+│   │   ├── registry.py
+│   │   └── compressors/        # @register_kv_compressor registry: knorm, snapkv, pyramidkv, tova, ... (~36 baselines)
 │   ├── benchmarks/             # one module per benchmark
 │   │   ├── base.py
 │   │   ├── registry.py         # get_benchmark(), @register_benchmark
@@ -89,7 +93,7 @@ Prism-Test/
 │   ├── 250K/{Easy,Medium}/
 │   └── 1M/{Easy,Medium}/
 ├── results/                    # per-run output directories
-├── evaluate/                   # ready-made run configs: evaluate_{vllm,hf,kv,dca,reattention,common}.yaml
+├── evaluate/                   # ready-made run configs: evaluate_{vllm,hf,kv,positional,dca,reattention,common}.yaml
 ├── run_eval.py                 # thin wrapper over CliEntryPoint
 ├── pyproject.toml              # project metadata + loose dep constraints
 ├── uv.lock                     # uv-native pinned lock (reproducible installs)
@@ -236,7 +240,7 @@ For **picking the right backend, controlling experimental conditions, plugging i
 | ----------- | ----------------------------------------------------- | --------------------------------------------------------- |
 | `vllm`      | Production-quality numbers; large-batch eval.         | Best throughput; prefix caching across same-context Qs.   |
 | `hf`        | Small-context debugging; profiling.                   | Clean `_prefill`/`_decode` split; native FA2 if present.  |
-| `research`  | Sparse attention, KV sketches, custom kernels.        | Post-attention prune hooks (ReAttention) + full `self_attn.forward` replacement (DCA) for context extension + KV eviction; single full-context prefill pass; cache stores rotated K/V. |
+| `research`  | Sparse attention, KV compression, custom kernels.     | Three doors — positional (YaRN/NTK/Linear-PI), attention (DCA / ReAttention), KV compression (~36 baselines); chunked or single-pass prefill; cache stores rotated K/V. |
 | `rag`       | Retrieval baselines.                                  | OnePassRAG (LanceDB + llm-embedder + Ollama llama3.1).    |
 
 Backend selection criteria, tradeoffs, and the research-backend architecture live in [BENCHMARKING.md](BENCHMARKING.md#pick-a-backend).
@@ -283,13 +287,14 @@ The test suite is intentionally GPU-free.
 python -m unittest discover eval_harness/tests -v
 ```
 
-Tests bypass model loading via `object.__new__(Adapter)` plus fake `nn.Module` doubles — so they exercise the prefill/decode plumbing, sketch wiring, and benchmark loaders without ever touching CUDA or downloading weights.
+Tests bypass model loading via `object.__new__(Adapter)` plus fake `nn.Module` doubles — so they exercise the prefill/decode plumbing, three-door wiring, and benchmark loaders without ever touching CUDA or downloading weights.
 
 Highlights:
 
 - [test_hf_adapter.py](eval_harness/tests/test_hf_adapter.py) — prefill/decode boundaries, position ID accounting
-- [test_research_adapter.py](eval_harness/tests/test_research_adapter.py) — sketch selection, pipeline wiring, generation through `SketchTextGenerationPipeline`
-- [test_prefill_methods.py](eval_harness/tests/test_prefill_methods.py) — `prefill_method` wiring into the research adapter and post-attention `prefill_forward_hook` ordering (ReAttention prune, DCA `self_attn.forward` replacement)
+- [test_research_adapter.py](eval_harness/tests/test_research_adapter.py) — door selection, pipeline wiring, generation through `ResearchGenerationPipeline`
+- [test_prefill_methods.py](eval_harness/tests/test_prefill_methods.py) — attention-method (Door 2) wiring into the research adapter and post-attention `prefill_forward_hook` ordering (ReAttention prune, DCA `self_attn.forward` replacement)
+- [test_three_doors_integration.py](eval_harness/tests/test_three_doors_integration.py) / [test_positional_methods.py](eval_harness/tests/test_positional_methods.py) / [test_chunked_prefill.py](eval_harness/tests/test_chunked_prefill.py) — three-door composition, Door 1 RoPE math, chunked-prefill equivalence
 - [test_cache_adapter.py](eval_harness/tests/test_cache_adapter.py) — `DynamicCache` checkpoint/restore semantics over rotated K/V
 - `test_benchmarks_*.py` — registry, RULER, LongBench, Prism-1M loaders
 
@@ -302,7 +307,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Quick notes:
 - Pre-commit hooks live in [.pre-commit-config.yaml](.pre-commit-config.yaml); install with `pre-commit install`.
 - Keep unit tests GPU-free.
 - New benchmarks go in [eval_harness/benchmarks/](eval_harness/benchmarks/) and are auto-discovered.
-- For new sketches, follow the `BaseSketch` interface in [eval_harness/sketch/sketches/base_sketch.py](eval_harness/sketch/sketches/base_sketch.py).
+- For new KV compressors, follow the `KVCompressor` interface in [eval_harness/kv_compression/base.py](eval_harness/kv_compression/base.py).
 
 ---
 

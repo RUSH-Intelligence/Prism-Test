@@ -8,10 +8,10 @@ __all__ = [
     "HFAdapter",
     "HFGenerateConfig",
     "ResearchAdapter",
-    "CacheConfig",
-    "SketchTextGenerationPipeline",
-    "BaseSketch",
-    "ScorerSketch",
+    "ResearchConfig",
+    "ResearchGenerationPipeline",
+    "KVCompressor",
+    "ScorerKVCompressor",
     "KnormSketch",
     "RandomSketch",
     "DecodingSketch",
@@ -29,32 +29,32 @@ def __getattr__(name: str):
     if name == "HFGenerateConfig":
         from .hf_adapter import HFGenerateConfig
         return HFGenerateConfig
-    if name in ("ResearchAdapter", "CacheConfig"):
-        from .research_adapter import ResearchAdapter, CacheConfig
-        return ResearchAdapter if name == "ResearchAdapter" else CacheConfig
+    if name in ("ResearchAdapter", "ResearchConfig"):
+        from .research_adapter import ResearchAdapter, ResearchConfig
+        return ResearchAdapter if name == "ResearchAdapter" else ResearchConfig
     if name in (
-        "SketchTextGenerationPipeline",
-        "BaseSketch",
-        "ScorerSketch",
+        "ResearchGenerationPipeline",
+        "KVCompressor",
+        "ScorerKVCompressor",
         "KnormSketch",
         "RandomSketch",
         "DecodingSketch",
         "PrefillDecodingSketch",
     ):
-        from .sketch import (
-            BaseSketch,
+        from .kv_compression import (
+            KVCompressor,
             DecodingSketch,
             KnormSketch,
             PrefillDecodingSketch,
             RandomSketch,
-            ScorerSketch,
-            SketchTextGenerationPipeline,
+            ScorerKVCompressor,
         )
+        from .research_pipeline import ResearchGenerationPipeline
 
         mapping = {
-            "SketchTextGenerationPipeline": SketchTextGenerationPipeline,
-            "BaseSketch": BaseSketch,
-            "ScorerSketch": ScorerSketch,
+            "ResearchGenerationPipeline": ResearchGenerationPipeline,
+            "KVCompressor": KVCompressor,
+            "ScorerKVCompressor": ScorerKVCompressor,
             "KnormSketch": KnormSketch,
             "RandomSketch": RandomSketch,
             "DecodingSketch": DecodingSketch,

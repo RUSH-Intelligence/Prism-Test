@@ -16,16 +16,16 @@ from types import SimpleNamespace
 import torch
 from torch import nn
 
-from eval_harness.research_adapter import CacheConfig, ResearchAdapter
-from eval_harness.sketch.attention_patch import attention_patch
-from eval_harness.sketch.sketches.base_sketch import BaseSketch
-from eval_harness.sketch.sketches.dms_sketch import DMSSketch
-from eval_harness.sketch.sketches.knorm_sketch import KnormSketch
-from eval_harness.sketch.sketches.random_sketch import RandomSketch
-from eval_harness.sketch.sketches.registry import (
-    available_sketches,
-    get_sketch,
-    get_sketch_class,
+from eval_harness.research_adapter import ResearchConfig, ResearchAdapter
+from eval_harness.kv_compression.attention_patch import attention_patch
+from eval_harness.kv_compression.base import KVCompressor
+from eval_harness.kv_compression.compressors.dms_sketch import DMSSketch
+from eval_harness.kv_compression.compressors.knorm_sketch import KnormSketch
+from eval_harness.kv_compression.compressors.random_sketch import RandomSketch
+from eval_harness.kv_compression.registry import (
+    available_kv_compressors,
+    get_kv_compressor,
+    get_kv_compressor_class,
 )
 
 
@@ -100,10 +100,10 @@ class TestDMSConstruction(unittest.TestCase):
 
     def test_press_must_be_scorer(self):
         with self.assertRaises(AssertionError):
-            DMSSketch(press=BaseSketch(), threshold=0.0)
+            DMSSketch(press=KVCompressor(), threshold=0.0)
 
     def test_decoding_true_warns_about_pipeline_gate(self):
-        with self.assertLogs("eval_harness.sketch.sketches.dms_sketch", level="WARNING") as cm:
+        with self.assertLogs("eval_harness.kv_compression.compressors.dms_sketch", level="WARNING") as cm:
             DMSSketch(press=KnormSketch(), threshold=0.0, decoding=True)
         self.assertTrue(any("decode" in line.lower() for line in cm.output))
 
@@ -474,24 +474,24 @@ class TestDMSContextManager(unittest.TestCase):
 
 class TestDMSRegistryAndBuild(unittest.TestCase):
     def test_registry_resolution(self):
-        self.assertIn("dms", available_sketches())
-        self.assertIs(get_sketch_class("dms"), DMSSketch)
+        self.assertIn("dms", available_kv_compressors())
+        self.assertIs(get_kv_compressor_class("dms"), DMSSketch)
 
-    def test_get_sketch_with_kwargs(self):
-        sketch = get_sketch("dms", press="knorm", threshold=-2.0, sliding_window_size=64)
+    def test_get_kv_compressor_with_kwargs(self):
+        sketch = get_kv_compressor("dms", press="knorm", threshold=-2.0, sliding_window_size=64)
         self.assertIsInstance(sketch, DMSSketch)
         self.assertIsInstance(sketch.press, KnormSketch)
         self.assertEqual(sketch.threshold, -2.0)
 
     def test_build_sketch_does_not_inject_adapter_compression_ratio(self):
-        cfg = CacheConfig(
-            sketch_name="dms",
+        cfg = ResearchConfig(
+            kv_compressor="dms",
             compression_ratio=0.4,
-            sketch_kwargs={"press": "knorm", "threshold": -2.0, "sliding_window_size": 64},
+            kv_compressor_kwargs={"press": "knorm", "threshold": -2.0, "sliding_window_size": 64},
         )
         adapter = object.__new__(ResearchAdapter)
         adapter._cache_cfg = cfg
-        sketch = adapter._build_sketch(cfg)
+        sketch = adapter._build_kv_compressor(cfg)
         self.assertIsInstance(sketch, DMSSketch)
         self.assertIsInstance(sketch.press, KnormSketch)
         self.assertEqual(sketch.sliding_window_size, 64)

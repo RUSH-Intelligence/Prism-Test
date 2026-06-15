@@ -17,13 +17,13 @@ from unittest.mock import patch
 import torch
 from torch import nn
 
-from eval_harness.sketch.sketches.random_sketch import RandomSketch
-from eval_harness.sketch.sketches.registry import (
-    available_sketches,
-    get_sketch,
-    get_sketch_class,
+from eval_harness.kv_compression.compressors.random_sketch import RandomSketch
+from eval_harness.kv_compression.registry import (
+    available_kv_compressors,
+    get_kv_compressor,
+    get_kv_compressor_class,
 )
-from eval_harness.sketch.sketches.ridge_sketch import (
+from eval_harness.kv_compression.compressors.ridge_sketch import (
     RandomSketchRidgeSketch,
     RidgeSketch,
 )
@@ -57,18 +57,18 @@ def _rand_inputs(B=1, H_kv=2, T=80, D=8, hidden_dim=32, seed=0):
 
 class TestRandomSketchPressRegistry(unittest.TestCase):
     def test_registered_under_assigned_name(self):
-        self.assertIn("random_sketch_press", available_sketches())
-        self.assertIs(get_sketch_class("random_sketch_press"), RandomSketchRidgeSketch)
+        self.assertIn("random_sketch_press", available_kv_compressors())
+        self.assertIs(get_kv_compressor_class("random_sketch_press"), RandomSketchRidgeSketch)
 
     def test_distinct_from_ridge_and_upstream_random_press_port(self):
-        cls = get_sketch_class("random_sketch_press")
+        cls = get_kv_compressor_class("random_sketch_press")
         self.assertTrue(issubclass(cls, RidgeSketch))
         self.assertIsNot(cls, RidgeSketch)
         self.assertIsNot(cls, RandomSketch)
-        self.assertIs(get_sketch_class("random"), RandomSketch)
+        self.assertIs(get_kv_compressor_class("random"), RandomSketch)
 
-    def test_get_sketch_accepts_compression_ratio_kwarg(self):
-        sketch = get_sketch("random_sketch_press", compression_ratio=0.4)
+    def test_get_kv_compressor_accepts_compression_ratio_kwarg(self):
+        sketch = get_kv_compressor("random_sketch_press", compression_ratio=0.4)
         self.assertIsInstance(sketch, RandomSketchRidgeSketch)
         self.assertAlmostEqual(sketch.compression_ratio, 0.4)
 

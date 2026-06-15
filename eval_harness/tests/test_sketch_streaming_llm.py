@@ -12,8 +12,8 @@ from types import SimpleNamespace
 
 import torch
 
-from eval_harness.sketch.sketches.registry import get_sketch, get_sketch_class
-from eval_harness.sketch.sketches.streaming_llm_sketch import StreamingLLMSketch
+from eval_harness.kv_compression.registry import get_kv_compressor, get_kv_compressor_class
+from eval_harness.kv_compression.compressors.streaming_llm_sketch import StreamingLLMSketch
 
 
 def _fake_module(head_dim: int = 4, **extra) -> SimpleNamespace:
@@ -168,10 +168,10 @@ class TestStreamingLLMReferenceOracle(unittest.TestCase):
 
 class TestStreamingLLMRegistry(unittest.TestCase):
     def test_registry_resolution(self):
-        self.assertIs(get_sketch_class("streaming_llm"), StreamingLLMSketch)
+        self.assertIs(get_kv_compressor_class("streaming_llm"), StreamingLLMSketch)
 
-    def test_get_sketch_sets_fields(self):
-        sketch = get_sketch("streaming_llm", compression_ratio=0.5, n_sink=2)
+    def test_get_kv_compressor_sets_fields(self):
+        sketch = get_kv_compressor("streaming_llm", compression_ratio=0.5, n_sink=2)
         self.assertIsInstance(sketch, StreamingLLMSketch)
         self.assertAlmostEqual(sketch.compression_ratio, 0.5)
         self.assertEqual(sketch.n_sink, 2)

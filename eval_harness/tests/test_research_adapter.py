@@ -4,9 +4,9 @@ import unittest
 from unittest.mock import patch
 
 from eval_harness.hf_adapter import HFGenerateConfig
-from eval_harness.prefill_methods.base import PrefillMethod
-from eval_harness.research_adapter import CacheConfig, ResearchAdapter
-from eval_harness.sketch import (
+from eval_harness.attention_methods._method_base import PrefillMethod
+from eval_harness.research_adapter import ResearchConfig, ResearchAdapter
+from eval_harness.kv_compression import (
     DecodingSketch,
     KnormSketch,
     PrefillDecodingSketch,
@@ -42,7 +42,7 @@ class _HybridLikeCache:
 
 
 class TestResearchAdapterSketchSelection(unittest.TestCase):
-    def _shell(self, cfg: CacheConfig):
+    def _shell(self, cfg: ResearchConfig):
         adapter = object.__new__(ResearchAdapter)
         adapter._cache_cfg = cfg
         adapter._max_context_length = cfg.max_context_length
@@ -51,45 +51,75 @@ class TestResearchAdapterSketchSelection(unittest.TestCase):
         return adapter
 
     def test_build_none_sketch(self):
-        adapter = self._shell(CacheConfig(sketch_name="none"))
-        self.assertIsNone(adapter._build_sketch(adapter._cache_cfg))
+        adapter = self._shell(ResearchConfig(kv_compressor="none"))
+        self.assertIsNone(adapter._build_kv_compressor(adapter._cache_cfg))
 
     def test_build_knorm_sketch(self):
-        adapter = self._shell(CacheConfig(sketch_name="knorm", compression_ratio=0.3))
-        sketch = adapter._build_sketch(adapter._cache_cfg)
+        adapter = self._shell(ResearchConfig(kv_compressor="knorm", compression_ratio=0.3))
+        sketch = adapter._build_kv_compressor(adapter._cache_cfg)
         self.assertIsInstance(sketch, KnormSketch)
         self.assertAlmostEqual(sketch.compression_ratio, 0.3)
 
     def test_build_random_sketch(self):
-        adapter = self._shell(CacheConfig(sketch_name="random", compression_ratio=0.2))
-        self.assertIsInstance(adapter._build_sketch(adapter._cache_cfg), RandomSketch)
+        adapter = self._shell(ResearchConfig(kv_compressor="random", compression_ratio=0.2))
+        self.assertIsInstance(adapter._build_kv_compressor(adapter._cache_cfg), RandomSketch)
 
     def test_build_decoding_sketch(self):
-        cfg = CacheConfig(sketch_name="decoding_knorm", compression_interval=7, target_size=123)
+        cfg = ResearchConfig(kv_compressor="decoding_knorm", compression_interval=7, target_size=123)
         adapter = self._shell(cfg)
-        sketch = adapter._build_sketch(cfg)
+        sketch = adapter._build_kv_compressor(cfg)
         self.assertIsInstance(sketch, DecodingSketch)
         self.assertEqual(sketch.compression_interval, 7)
         self.assertEqual(sketch.target_size, 123)
 
     def test_build_prefill_decoding_sketch(self):
-        cfg = CacheConfig(sketch_name="prefill_decoding_knorm")
+        cfg = ResearchConfig(kv_compressor="prefill_decoding_knorm")
         adapter = self._shell(cfg)
-        self.assertIsInstance(adapter._build_sketch(cfg), PrefillDecodingSketch)
+        self.assertIsInstance(adapter._build_kv_compressor(cfg), PrefillDecodingSketch)
 
     def test_unknown_sketch_raises(self):
-        adapter = self._shell(CacheConfig(sketch_name="unknown_x"))
+        adapter = self._shell(ResearchConfig(kv_compressor="unknown_x"))
         with self.assertRaises(ValueError):
-            adapter._build_sketch(adapter._cache_cfg)
+            adapter._build_kv_compressor(adapter._cache_cfg)
+
+
+class TestPrefillDecodingSketchPhase(unittest.TestCase):
+    """set_phase on the wrapper must propagate to both inner sketches, or they
+    fall back to the cache_position heuristic (which misreads non-first
+    chunked-prefill chunks as decode)."""
+
+    def _build(self):
+        return PrefillDecodingSketch(
+            prefilling_sketch=KnormSketch(compression_ratio=0.5),
+            decoding_sketch=DecodingSketch(
+                base_sketch=KnormSketch(compression_ratio=0.5)
+            ),
+        )
+
+    def test_set_phase_propagates_to_inner_sketches(self):
+        wrapper = self._build()
+        wrapper.set_phase("decode")
+        self.assertEqual(wrapper._explicit_phase, "decode")
+        self.assertEqual(wrapper.prefilling_sketch._explicit_phase, "decode")
+        self.assertEqual(wrapper.decoding_sketch._explicit_phase, "decode")
+
+    def test_set_phase_none_resets_inner_sketches(self):
+        wrapper = self._build()
+        wrapper.set_phase("prefill")
+        wrapper.set_phase(None)
+        self.assertIsNone(wrapper._explicit_phase)
+        self.assertIsNone(wrapper.prefilling_sketch._explicit_phase)
+        self.assertIsNone(wrapper.decoding_sketch._explicit_phase)
 
 
 class TestResearchAdapterGenerate(unittest.TestCase):
     def test_generate_uses_pipeline_and_returns_answers(self):
         adapter = object.__new__(ResearchAdapter)
-        adapter._cache_cfg = CacheConfig(log_cache_seq_len=False)
+        adapter._cfg = ResearchConfig(log_cache_seq_len=False)
         adapter._max_context_length = 4096
-        adapter._sketch = None
-        adapter._prefill_method = PrefillMethod()
+        adapter._positional_method = None
+        adapter._attention_method = None
+        adapter._kv_compressor = None
         adapter._pipe = _FakePipe()
         adapter._cache_adapter = _FakeCacheAdapter()
 
@@ -107,7 +137,7 @@ class TestResearchAdapterGenerate(unittest.TestCase):
 
 
 class TestResearchAdapterInitRopeScaling(unittest.TestCase):
-    @patch("eval_harness.research_adapter.SketchTextGenerationPipeline")
+    @patch("eval_harness.research_adapter.ResearchGenerationPipeline")
     @patch("eval_harness.research_adapter.HFAdapter.__init__", autospec=True)
     @patch("eval_harness.research_adapter.create_cache_adapter")
     def test_init_builds_cache_adapter_and_pipeline(
@@ -121,8 +151,8 @@ class TestResearchAdapterInitRopeScaling(unittest.TestCase):
 
         mock_hf_init.side_effect = _hf_init
 
-        cfg = CacheConfig(max_context_length=65536)
-        adapter = ResearchAdapter(model="dummy/model", cache_config=cfg)
+        cfg = ResearchConfig(max_context_length=65536)
+        adapter = ResearchAdapter(model="dummy/model", research_config=cfg)
 
         self.assertTrue(mock_create_cache_adapter.called)
         self.assertIsNotNone(adapter._cache_adapter)

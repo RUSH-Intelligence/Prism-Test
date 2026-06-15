@@ -15,9 +15,9 @@ from typing import Optional
 
 import torch
 
-from eval_harness.sketch.sketches.key_rerotation_sketch import KeyRerotationSketch
-from eval_harness.sketch.sketches.knorm_sketch import KnormSketch
-from eval_harness.sketch.sketches.scorer_sketch import ScorerSketch
+from eval_harness.kv_compression.compressors.key_rerotation_sketch import KeyRerotationSketch
+from eval_harness.kv_compression.compressors.knorm_sketch import KnormSketch
+from eval_harness.kv_compression.base import ScorerKVCompressor
 
 
 # ----------------------------------------------------------------------
@@ -84,7 +84,7 @@ def _fake_module(head_dim: int = 4, inv_freq: Optional[torch.Tensor] = None, lay
 
 
 @dataclass
-class _FixedScoreSketch(ScorerSketch):
+class _FixedScoreSketch(ScorerKVCompressor):
     """Stub scorer returning a fixed [B, H_kv, S] score tensor."""
 
     fixed_scores: Optional[torch.Tensor] = None
@@ -94,7 +94,7 @@ class _FixedScoreSketch(ScorerSketch):
 
 
 @dataclass
-class _RecordingScorer(ScorerSketch):
+class _RecordingScorer(ScorerKVCompressor):
     """Stub scorer recording the keys shape it receives; seeded random scores."""
 
     seed: int = 0
@@ -107,7 +107,7 @@ class _RecordingScorer(ScorerSketch):
 
 
 @dataclass
-class _PostInitRecorder(ScorerSketch):
+class _PostInitRecorder(ScorerKVCompressor):
     saw_model: Optional[object] = None
 
     def post_init_from_model(self, model):
@@ -415,15 +415,15 @@ class TestProxyAndRegistry(unittest.TestCase):
         self.assertIs(inner.saw_model, sentinel)
 
     def test_registered_as_key_rerotation(self):
-        from eval_harness.sketch.sketches.registry import (
-            available_sketches,
-            get_sketch,
-            get_sketch_class,
+        from eval_harness.kv_compression.registry import (
+            available_kv_compressors,
+            get_kv_compressor,
+            get_kv_compressor_class,
         )
 
-        self.assertIn("key_rerotation", available_sketches())
-        self.assertIs(get_sketch_class("key_rerotation"), KeyRerotationSketch)
-        sketch = get_sketch("key_rerotation", press=KnormSketch(compression_ratio=0.4))
+        self.assertIn("key_rerotation", available_kv_compressors())
+        self.assertIs(get_kv_compressor_class("key_rerotation"), KeyRerotationSketch)
+        sketch = get_kv_compressor("key_rerotation", press=KnormSketch(compression_ratio=0.4))
         self.assertIsInstance(sketch, KeyRerotationSketch)
         self.assertAlmostEqual(sketch.compression_ratio, 0.4)
 

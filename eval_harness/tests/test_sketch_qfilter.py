@@ -11,13 +11,13 @@ from unittest.mock import patch
 import torch
 from torch import nn
 
-from eval_harness.sketch.sketches.qfilter_sketch import QFilters, QFilterSketch
-from eval_harness.sketch.sketches.registry import available_sketches, get_sketch, get_sketch_class
+from eval_harness.kv_compression.compressors.qfilter_sketch import QFilters, QFilterSketch
+from eval_harness.kv_compression.registry import available_kv_compressors, get_kv_compressor, get_kv_compressor_class
 
 
 class _FakeAttnModule(nn.Module):
     """Minimal fake: QFilterSketch only reads ``layer_idx`` and (via the
-    inherited ScorerSketch gather) ``head_dim`` — no q_proj, no GQA fields."""
+    inherited ScorerKVCompressor gather) ``head_dim`` — no q_proj, no GQA fields."""
 
     def __init__(self, head_dim=4, layer_idx=0):
         super().__init__()
@@ -41,11 +41,11 @@ def _fake_model(name_or_path, dtype=torch.float32):
 
 class TestQFilterRegistry(unittest.TestCase):
     def test_registered_name_resolves(self):
-        self.assertIn("qfilter", available_sketches())
-        self.assertIs(get_sketch_class("qfilter"), QFilterSketch)
+        self.assertIn("qfilter", available_kv_compressors())
+        self.assertIs(get_kv_compressor_class("qfilter"), QFilterSketch)
 
-    def test_get_sketch_instantiates_with_kwargs(self):
-        sketch = get_sketch("qfilter", compression_ratio=0.3)
+    def test_get_kv_compressor_instantiates_with_kwargs(self):
+        sketch = get_kv_compressor("qfilter", compression_ratio=0.3)
         self.assertIsInstance(sketch, QFilterSketch)
         self.assertAlmostEqual(sketch.compression_ratio, 0.3)
         self.assertIsNone(sketch.q_filters)

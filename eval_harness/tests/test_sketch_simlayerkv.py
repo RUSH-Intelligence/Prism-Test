@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import torch
 from torch import nn
 
-from eval_harness.sketch.sketches.simlayerkv_sketch import SimLayerKVSketch
+from eval_harness.kv_compression.compressors.simlayerkv_sketch import SimLayerKVSketch
 
 
 # ======================================================================
@@ -105,7 +105,7 @@ def _position_keys(H_kv, S, D, offset=0.0):
     return t.view(1, 1, S, 1).expand(1, H_kv, S, D).clone()
 
 
-LOGGER_NAME = "eval_harness.sketch.sketches.simlayerkv_sketch"
+LOGGER_NAME = "eval_harness.kv_compression.compressors.simlayerkv_sketch"
 
 
 # ======================================================================
@@ -398,25 +398,25 @@ class TestFlashAssertion(unittest.TestCase):
 
 class TestRegistryWiring(unittest.TestCase):
     def test_registry_resolution(self):
-        from eval_harness.sketch.sketches.registry import get_sketch, get_sketch_class
+        from eval_harness.kv_compression.registry import get_kv_compressor, get_kv_compressor_class
 
-        self.assertIs(get_sketch_class("simlayerkv"), SimLayerKVSketch)
-        sketch = get_sketch("simlayerkv", lazy_threshold=0.8, n_recent=128)
+        self.assertIs(get_kv_compressor_class("simlayerkv"), SimLayerKVSketch)
+        sketch = get_kv_compressor("simlayerkv", lazy_threshold=0.8, n_recent=128)
         self.assertIsInstance(sketch, SimLayerKVSketch)
         self.assertAlmostEqual(sketch.lazy_threshold, 0.8)
         self.assertEqual(sketch.n_recent, 128)
 
     def test_build_sketch_does_not_inject_compression_ratio(self):
-        from eval_harness.research_adapter import CacheConfig, ResearchAdapter
+        from eval_harness.research_adapter import ResearchConfig, ResearchAdapter
 
-        cfg = CacheConfig(
-            sketch_name="simlayerkv",
+        cfg = ResearchConfig(
+            kv_compressor="simlayerkv",
             compression_ratio=0.4,
-            sketch_kwargs={"lazy_threshold": 0.8},
+            kv_compressor_kwargs={"lazy_threshold": 0.8},
         )
         adapter = object.__new__(ResearchAdapter)
         adapter._cache_cfg = cfg
-        sketch = adapter._build_sketch(cfg)
+        sketch = adapter._build_kv_compressor(cfg)
         self.assertIsInstance(sketch, SimLayerKVSketch)
         self.assertAlmostEqual(sketch.lazy_threshold, 0.8)
         # compression_ratio is a read-only property, not a dataclass field, so

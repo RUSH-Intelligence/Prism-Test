@@ -2,7 +2,7 @@
 
 DuoAttention performs no physical pruning: compression is virtual via
 ``module.masked_key_indices`` consumed by the globally patched attention
-functions (``eval_harness/sketch/attention_patch.py``). This sketch is the
+functions (``eval_harness/kv_compression/attention_patch.py``). This sketch is the
 first consumer of that machinery in Prism-Test, so the wrapper itself is
 tested here too (kvpress math re-implemented inline as reference oracles,
 plus a CPU equivalence oracle on a tiny config-built Llama — no hub access).
@@ -23,8 +23,8 @@ import numpy as np
 import torch
 from torch import nn
 
-from eval_harness.sketch.attention_patch import attention_patch, search_hyperplane
-from eval_harness.sketch.sketches.duo_attention_sketch import PATTERNS_DICT, DuoAttentionSketch
+from eval_harness.kv_compression.attention_patch import attention_patch, search_hyperplane
+from eval_harness.kv_compression.compressors.duo_attention_sketch import PATTERNS_DICT, DuoAttentionSketch
 
 
 # ======================================================================
@@ -564,10 +564,10 @@ class TestPatternLoading(unittest.TestCase):
 
 class TestRegistryWiring(unittest.TestCase):
     def test_registry_resolution(self):
-        from eval_harness.sketch.sketches.registry import get_sketch, get_sketch_class
+        from eval_harness.kv_compression.registry import get_kv_compressor, get_kv_compressor_class
 
-        self.assertIs(get_sketch_class("duo_attention"), DuoAttentionSketch)
-        sketch = get_sketch("duo_attention", head_compression_ratio=0.5)
+        self.assertIs(get_kv_compressor_class("duo_attention"), DuoAttentionSketch)
+        sketch = get_kv_compressor("duo_attention", head_compression_ratio=0.5)
         self.assertIsInstance(sketch, DuoAttentionSketch)
         self.assertAlmostEqual(sketch.head_compression_ratio, 0.5)
 
@@ -584,16 +584,16 @@ class TestRegistryWiring(unittest.TestCase):
             sketch.compression_ratio = 0.3
 
     def test_build_sketch_ignores_adapter_compression_ratio(self):
-        from eval_harness.research_adapter import CacheConfig, ResearchAdapter
+        from eval_harness.research_adapter import ResearchConfig, ResearchAdapter
 
-        cfg = CacheConfig(
-            sketch_name="duo_attention",
+        cfg = ResearchConfig(
+            kv_compressor="duo_attention",
             compression_ratio=0.4,
-            sketch_kwargs={"head_compression_ratio": 0.5},
+            kv_compressor_kwargs={"head_compression_ratio": 0.5},
         )
         adapter = object.__new__(ResearchAdapter)
         adapter._cache_cfg = cfg
-        sketch = adapter._build_sketch(cfg)
+        sketch = adapter._build_kv_compressor(cfg)
         self.assertIsInstance(sketch, DuoAttentionSketch)
         self.assertAlmostEqual(sketch.head_compression_ratio, 0.5)
         with self.assertRaises(AssertionError):

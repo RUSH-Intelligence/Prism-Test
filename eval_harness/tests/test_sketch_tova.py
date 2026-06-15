@@ -14,7 +14,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from eval_harness.sketch.sketches.tova_sketch import TOVASketch
+from eval_harness.kv_compression.compressors.tova_sketch import TOVASketch
 
 
 class _FakeTOVAAttn(nn.Module):
@@ -397,15 +397,15 @@ class TestTOVAForwardHook(unittest.TestCase):
 
 class TestTOVARegistry(unittest.TestCase):
     def test_registered_as_tova(self):
-        from eval_harness.sketch.sketches.registry import (
-            available_sketches,
-            get_sketch,
-            get_sketch_class,
+        from eval_harness.kv_compression.registry import (
+            available_kv_compressors,
+            get_kv_compressor,
+            get_kv_compressor_class,
         )
 
-        self.assertIn("tova", available_sketches())
-        self.assertIs(get_sketch_class("tova"), TOVASketch)
-        sketch = get_sketch("tova", compression_ratio=0.25)
+        self.assertIn("tova", available_kv_compressors())
+        self.assertIs(get_kv_compressor_class("tova"), TOVASketch)
+        sketch = get_kv_compressor("tova", compression_ratio=0.25)
         self.assertIsInstance(sketch, TOVASketch)
         self.assertAlmostEqual(sketch.compression_ratio, 0.25)
 

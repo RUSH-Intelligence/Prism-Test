@@ -1,9 +1,9 @@
 # ============================================================================
-# KV-compression baseline — research backend, sketch ONLY (no prefill method)
+# KV-compression baseline — research backend, KV compressor ONLY (no attention method)
 # ============================================================================
-# Runs the model through ResearchAdapter with a KV-compression sketch
+# Runs the model through ResearchAdapter with a KV compressor (Door 3)
 # installed as a post-attention forward hook, and NO context-extension
-# prefill method.  Default: knorm (KVPress-style key-norm scoring) pruning
+# attention method.  Default: knorm (KVPress-style key-norm scoring) pruning
 # 50% of the prefill KV cache.
 #
 #   python -m eval_harness.cli run --config_file ./evaluate/evaluate_kv.yaml
@@ -34,7 +34,7 @@ model: meta-llama/Llama-3.1-8B-Instruct
 tensor_parallel_size: 1        # vLLM-only; ignored by the research backend (single-GPU .to("cuda"))
 dtype: bfloat16
 max_model_len: 18000           # pipeline truncation cap (used because
-                               # cache_config.max_context_length below is null)
+                               # research_config.max_context_length below is null)
 gpu_memory_utilization: 0.9    # vLLM-only; ignored by the research backend
 trust_remote_code: true
 enable_prefix_caching: true    # vLLM-only; ignored by the research backend
@@ -61,10 +61,10 @@ llm_kwargs:
   # is the research backend's validated parity path.
   attn_implementation: sdpa
 
-  # This dict becomes research_adapter.CacheConfig (runner.py:144-145).
-  cache_config:
+  # This dict becomes research_adapter.ResearchConfig (runner.py:144-145).
+  research_config:
     # --- KV-compression sketch ---------------------------------------------
-    # Available sketches (research_adapter._build_sketch):
+    # Available sketches (research_adapter._build_kv_compressor):
     #   none                   — compression off (no sketch hooks installed)
     #   knorm                  — prune lowest-scoring keys by key-norm
     #                            (score = -||k||; large-norm keys evicted),
@@ -75,7 +75,7 @@ llm_kwargs:
     #                            (uses compression_interval/target_size/
     #                            hidden_states_buffer_size below)
     #   prefill_decoding_knorm — knorm at prefill + periodic knorm at decode
-    sketch_name: knorm
+    kv_compressor: knorm
     compression_ratio: 0.5          # fraction of the cache PRUNED (must be in
                                     # [0, 1); kept = 1 - ratio).  0.0 = no-op.
     compression_interval: 512       # decoding-sketches only: compress every N steps
@@ -86,5 +86,5 @@ llm_kwargs:
                                     # compression is visible in the run log
 
     # --- Prefill method: OFF (this file isolates KV compression) -----------
-    prefill_method: none
-    prefill_method_kwargs: {}
+    attention_method: none
+    attention_method_kwargs: {}

@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import torch
 from torch import nn
 
-from eval_harness.sketch.sketches.think_sketch import ThinKSketch
+from eval_harness.kv_compression.compressors.think_sketch import ThinKSketch
 
 
 def _rotate_half_ref(x: torch.Tensor) -> torch.Tensor:
@@ -247,7 +247,11 @@ class TestThinKSketch(unittest.TestCase):
         with self.assertRaises(AttributeError):
             sketch.compression_ratio = 0.5
         field_names = {f.name for f in dataclasses.fields(ThinKSketch)}
-        self.assertEqual(field_names, {"key_channel_compression_ratio", "window_size"})
+        # The KVCompressor base contributes the schedule/operation model; ThinK's
+        # OWN fields remain exactly these two, and compression_ratio stays a
+        # computed property (never a field).
+        base_fields = {"schedule", "operation", "decode_interval"}
+        self.assertEqual(field_names - base_fields, {"key_channel_compression_ratio", "window_size"})
         self.assertNotIn("compression_ratio", field_names)
 
     def test_fused_qkv_proj_path_matches_q_slice(self):
@@ -322,25 +326,25 @@ class TestThinKForwardHook(unittest.TestCase):
 
 class TestThinKRegistry(unittest.TestCase):
     def test_registered_name_resolves(self):
-        from eval_harness.sketch.sketches.registry import get_sketch, get_sketch_class
+        from eval_harness.kv_compression.registry import get_kv_compressor, get_kv_compressor_class
 
-        self.assertIs(get_sketch_class("think"), ThinKSketch)
-        sketch = get_sketch("think", key_channel_compression_ratio=0.5, window_size=2)
+        self.assertIs(get_kv_compressor_class("think"), ThinKSketch)
+        sketch = get_kv_compressor("think", key_channel_compression_ratio=0.5, window_size=2)
         self.assertIsInstance(sketch, ThinKSketch)
         self.assertEqual(sketch.key_channel_compression_ratio, 0.5)
         self.assertEqual(sketch.window_size, 2)
 
     def test_build_sketch_does_not_inject_adapter_ratio(self):
-        from eval_harness.research_adapter import CacheConfig, ResearchAdapter
+        from eval_harness.research_adapter import ResearchConfig, ResearchAdapter
 
-        cfg = CacheConfig(
-            sketch_name="think",
+        cfg = ResearchConfig(
+            kv_compressor="think",
             compression_ratio=0.9,
-            sketch_kwargs={"key_channel_compression_ratio": 0.5, "window_size": 2},
+            kv_compressor_kwargs={"key_channel_compression_ratio": 0.5, "window_size": 2},
         )
         adapter = object.__new__(ResearchAdapter)
         adapter._cache_cfg = cfg
-        sketch = adapter._build_sketch(cfg)
+        sketch = adapter._build_kv_compressor(cfg)
         self.assertIsInstance(sketch, ThinKSketch)
         self.assertEqual(sketch.key_channel_compression_ratio, 0.5)
         self.assertEqual(sketch.window_size, 2)

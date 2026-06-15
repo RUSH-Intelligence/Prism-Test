@@ -2,7 +2,7 @@
 # DCA (Dual Chunk Attention / ChunkLlama) baseline — STANDALONE
 # (no KV-compression sketch, no other method)
 # ============================================================================
-# Runs the faithful ChunkLlama port (`prefill_method: dca`) by itself, with
+# Runs the faithful ChunkLlama port (`attention_method: dca`) by itself, with
 # the reference defaults for an 8K-pretrained Llama-3:
 #   chunk_size = pretraining_length * 3/4 = 6144
 #   local_window = pretraining_length / 8 = 1024
@@ -47,7 +47,7 @@ dtype: bfloat16                # same dtype as the ReAttention baseline run (con
                                # torch.bfloat16 (run_chunkllama_100k.py:19), so this already
                                # matches the upstream repo exactly.
 max_model_len: 18000           # pipeline truncation cap for ruler16k (research_adapter.py:64 —
-                               # used because cache_config.max_context_length below is null).
+                               # used because research_config.max_context_length below is null).
                                # Raise for longer benchmarks (e.g. 66000 for ruler64k).
 gpu_memory_utilization: 0.9    # vLLM-only; ignored by the research backend
 trust_remote_code: true
@@ -78,11 +78,11 @@ llm_kwargs:
   # model-level impl never reaches the attention math.
   attn_implementation: flash_attention_2
 
-  # This dict becomes research_adapter.CacheConfig (runner.py:144-145).
-  cache_config:
+  # This dict becomes research_adapter.ResearchConfig (runner.py:144-145).
+  research_config:
     # --- KV-compression sketch: OFF (this file is the pure baseline) --------
-    sketch_name: none               # "none" = no sketch hooks installed
-    compression_ratio: 0.0          # unused while sketch_name is none
+    kv_compressor: none               # "none" = no sketch hooks installed
+    compression_ratio: 0.0          # unused while kv_compressor is none
     max_context_length: null        # null -> fall back to max_model_len above
     log_cache_seq_len: false        # true logs cache lengths (full context here — never pruned)
 
@@ -95,8 +95,8 @@ llm_kwargs:
     # component outputs are LSE-merged (kernels/dca_flash.py) for prefill
     # chunks and 1-token decode steps; multi-token question blocks use an
     # exact single-softmax decode branch instead (dca.py:394).
-    prefill_method: dca        # aliases: dual_chunk_attention, chunkllama
-    prefill_method_kwargs:
+    attention_method: dca        # aliases: dual_chunk_attention, chunkllama
+    attention_method_kwargs:
       chunk_size: 6144         # reference default: pretraining_length * 3/4
       local_window: 1024       # reference default: pretraining_length / 8;
                                # chunk_len = chunk_size - local_window = 5120

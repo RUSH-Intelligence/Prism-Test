@@ -19,12 +19,12 @@ from torch import nn
 from transformers import DynamicCache
 from transformers.models.llama.modeling_llama import rotate_half
 
-import eval_harness.sketch.sketches.kvzip_sketch as kvzip_module
-from eval_harness.sketch.cache_adapter import StandardCacheAdapter
-from eval_harness.sketch.sketches.kvzip_sketch import KVzipSketch, _get_prerope_query_states
-from eval_harness.sketch.sketches.registry import available_sketches, get_sketch, get_sketch_class
+import eval_harness.kv_compression.compressors.kvzip_sketch as kvzip_module
+from eval_harness.kv_compression.cache_adapter import StandardCacheAdapter
+from eval_harness.kv_compression.compressors.kvzip_sketch import KVzipSketch, _get_prerope_query_states
+from eval_harness.kv_compression.registry import available_kv_compressors, get_kv_compressor, get_kv_compressor_class
 
-logging.getLogger("eval_harness.sketch.sketches.kvzip_sketch").setLevel(logging.ERROR)
+logging.getLogger("eval_harness.kv_compression.compressors.kvzip_sketch").setLevel(logging.ERROR)
 
 
 def _rope_pos_emb(positions, dim, base=10000.0):
@@ -237,14 +237,14 @@ def _post_model(n_layers, attn_implementation="sdpa"):
 
 class TestKVzipRegistry(unittest.TestCase):
     def test_registered_name_resolves(self):
-        self.assertIn("kvzip", available_sketches())
-        self.assertIs(get_sketch_class("kvzip"), KVzipSketch)
+        self.assertIn("kvzip", available_kv_compressors())
+        self.assertIs(get_kv_compressor_class("kvzip"), KVzipSketch)
 
     def test_distinct_from_kvzap(self):
-        self.assertIsNot(get_sketch_class("kvzip"), get_sketch_class("kvzap"))
+        self.assertIsNot(get_kv_compressor_class("kvzip"), get_kv_compressor_class("kvzap"))
 
-    def test_get_sketch_instantiates_with_kwargs(self):
-        sketch = get_sketch("kvzip", compression_ratio=0.4, layerwise=True, n_sink=2)
+    def test_get_kv_compressor_instantiates_with_kwargs(self):
+        sketch = get_kv_compressor("kvzip", compression_ratio=0.4, layerwise=True, n_sink=2)
         self.assertIsInstance(sketch, KVzipSketch)
         self.assertAlmostEqual(sketch.compression_ratio, 0.4)
         self.assertTrue(sketch.layerwise)
@@ -254,7 +254,7 @@ class TestKVzipRegistry(unittest.TestCase):
 
     def test_unknown_name_raises(self):
         with self.assertRaises(ValueError):
-            get_sketch_class("kvzip_does_not_exist")
+            get_kv_compressor_class("kvzip_does_not_exist")
 
     def test_ratio_validation(self):
         with self.assertRaises(AssertionError):
@@ -623,7 +623,7 @@ class TestAttentionPatchEndToEnd(unittest.TestCase):
     """First-consumer pin of the globally patched ALL_ATTENTION_FUNCTIONS sdpa entry."""
 
     def _patched_sdpa(self):
-        import eval_harness.sketch  # noqa: F401  (applies patch_attention_functions at import)
+        import eval_harness.kv_compression  # noqa: F401  (applies patch_attention_functions at import)
         from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 
         return ALL_ATTENTION_FUNCTIONS["sdpa"]

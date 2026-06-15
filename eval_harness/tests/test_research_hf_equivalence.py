@@ -4,8 +4,8 @@ import unittest
 from unittest.mock import patch
 
 from eval_harness.hf_adapter import HFGenerateConfig
-from eval_harness.prefill_methods.base import PrefillMethod
-from eval_harness.research_adapter import CacheConfig, ResearchAdapter
+from eval_harness.attention_methods._method_base import PrefillMethod
+from eval_harness.research_adapter import ResearchConfig, ResearchAdapter
 
 
 class _FakePipe:
@@ -19,7 +19,7 @@ class _FakeCacheAdapter:
 
 
 class TestResearchAdapterContract(unittest.TestCase):
-    @patch("eval_harness.research_adapter.SketchTextGenerationPipeline")
+    @patch("eval_harness.research_adapter.ResearchGenerationPipeline")
     @patch("eval_harness.research_adapter.HFAdapter.__init__", autospec=True)
     @patch("eval_harness.research_adapter.create_cache_adapter")
     def test_init_builds_pipe_and_sketch(self, mock_create_cache_adapter, mock_hf_init, mock_pipe):
@@ -31,18 +31,19 @@ class TestResearchAdapterContract(unittest.TestCase):
 
         mock_hf_init.side_effect = _hf_init
 
-        cfg = CacheConfig(sketch_name="knorm", compression_ratio=0.5, max_context_length=8192)
-        adapter = ResearchAdapter(model="dummy/model", cache_config=cfg)
+        cfg = ResearchConfig(kv_compressor="knorm", compression_ratio=0.5, max_context_length=8192)
+        adapter = ResearchAdapter(model="dummy/model", research_config=cfg)
 
-        self.assertIsNotNone(adapter._sketch)
+        self.assertIsNotNone(adapter._kv_compressor)
         self.assertEqual(adapter._max_context_length, 8192)
         self.assertTrue(mock_pipe.called)
 
     def test_generate_returns_one_answer_per_prompt(self):
         adapter = object.__new__(ResearchAdapter)
-        adapter._cache_cfg = CacheConfig()
-        adapter._sketch = None
-        adapter._prefill_method = PrefillMethod()
+        adapter._cfg = ResearchConfig()
+        adapter._positional_method = None
+        adapter._attention_method = None
+        adapter._kv_compressor = None
         adapter._max_context_length = 2048
         adapter._pipe = _FakePipe()
         adapter._cache_adapter = _FakeCacheAdapter()

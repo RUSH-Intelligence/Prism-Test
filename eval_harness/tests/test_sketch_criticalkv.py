@@ -13,14 +13,14 @@ from types import SimpleNamespace
 import torch
 from torch import nn
 
-from eval_harness.sketch.attention_patch import attention_patch
-from eval_harness.sketch.sketches.criticalkv_sketch import (
+from eval_harness.kv_compression.attention_patch import attention_patch
+from eval_harness.kv_compression.compressors.criticalkv_sketch import (
     CriticalAdaKVSketch,
     CriticalKVSketch,
 )
-from eval_harness.sketch.sketches.knorm_sketch import KnormSketch
-from eval_harness.sketch.sketches.registry import get_sketch_class
-from eval_harness.sketch.sketches.scorer_sketch import ScorerSketch
+from eval_harness.kv_compression.compressors.knorm_sketch import KnormSketch
+from eval_harness.kv_compression.registry import get_kv_compressor_class
+from eval_harness.kv_compression.base import ScorerKVCompressor
 
 
 class _FakeAttnModule(nn.Module):
@@ -48,7 +48,7 @@ class _FakeAttnModule(nn.Module):
         )
 
 
-class _StubScorer(ScorerSketch):
+class _StubScorer(ScorerKVCompressor):
     """Returns a fixed (cloned) score tensor and counts score() calls."""
 
     def __init__(self, scores: torch.Tensor, compression_ratio: float = 0.5):
@@ -165,8 +165,8 @@ def _unit_value_module(num_kv_heads=2):
 
 class TestRegistryAndConstruction(unittest.TestCase):
     def test_registered_names(self):
-        self.assertIs(get_sketch_class("criticalkv"), CriticalKVSketch)
-        self.assertIs(get_sketch_class("critical_adakv"), CriticalAdaKVSketch)
+        self.assertIs(get_kv_compressor_class("criticalkv"), CriticalKVSketch)
+        self.assertIs(get_kv_compressor_class("critical_adakv"), CriticalAdaKVSketch)
 
     def test_non_scorer_press_raises(self):
         with self.assertRaises(AssertionError):

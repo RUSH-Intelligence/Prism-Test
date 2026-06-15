@@ -17,19 +17,19 @@ from torch import nn
 from torch.nn import functional as F
 from transformers import DynamicCache
 
-from eval_harness.sketch.sketches.block_sketch import BlockSketch
-from eval_harness.sketch.sketches.knorm_sketch import KnormSketch
-from eval_harness.sketch.sketches.registry import (
-    available_sketches,
-    get_sketch,
-    get_sketch_class,
+from eval_harness.kv_compression.compressors.block_sketch import BlockSketch
+from eval_harness.kv_compression.compressors.knorm_sketch import KnormSketch
+from eval_harness.kv_compression.registry import (
+    available_kv_compressors,
+    get_kv_compressor,
+    get_kv_compressor_class,
 )
-from eval_harness.sketch.sketches.scorer_sketch import ScorerSketch
+from eval_harness.kv_compression.base import ScorerKVCompressor
 
 
 class _FakeAttnModule(nn.Module):
     """Minimal attention module: BlockSketch.compress reads nothing from the
-    module (head_dim comes from keys.shape), but the plain ScorerSketch path
+    module (head_dim comes from keys.shape), but the plain ScorerKVCompressor path
     uses ``head_dim`` and the forward hook uses ``layer_idx``."""
 
     def __init__(self, num_heads=4, num_kv_heads=2, head_dim=8, layer_idx=0):
@@ -40,7 +40,7 @@ class _FakeAttnModule(nn.Module):
         self.layer_idx = layer_idx
 
 
-class _KeyDiffScorer(ScorerSketch):
+class _KeyDiffScorer(ScorerKVCompressor):
     """In-test transcription of kvpress KeyDiffPress.score
     (keydiff_press.py:46-47) — a set-dependent scorer."""
 
@@ -49,7 +49,7 @@ class _KeyDiffScorer(ScorerSketch):
         return -F.cosine_similarity(keys, anchor, dim=-1)
 
 
-class _QueueScorer(ScorerSketch):
+class _QueueScorer(ScorerKVCompressor):
     """Probe scorer: captures every score() input and returns pre-rigged
     score tensors from a queue (raises IndexError if called too often)."""
 
@@ -69,7 +69,7 @@ class _QueueScorer(ScorerSketch):
         return self.queue.pop(0)
 
 
-class _RecordingScorer(ScorerSketch):
+class _RecordingScorer(ScorerKVCompressor):
     def post_init_from_model(self, model):
         self.seen_model = model
 
@@ -116,11 +116,11 @@ def _recover_indices(full, subset):
 
 class TestBlockSketchRegistry(unittest.TestCase):
     def test_registered_name(self):
-        self.assertIn("block", available_sketches())
-        self.assertIs(get_sketch_class("block"), BlockSketch)
+        self.assertIn("block", available_kv_compressors())
+        self.assertIs(get_kv_compressor_class("block"), BlockSketch)
 
-    def test_get_sketch_instantiates_with_kwargs(self):
-        sketch = get_sketch(
+    def test_get_kv_compressor_instantiates_with_kwargs(self):
+        sketch = get_kv_compressor(
             "block", sketch=KnormSketch(compression_ratio=0.5), block_size=4
         )
         self.assertIsInstance(sketch, BlockSketch)

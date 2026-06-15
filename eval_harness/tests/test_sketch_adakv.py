@@ -14,12 +14,12 @@ import torch
 from torch import nn
 from transformers import DynamicCache
 
-from eval_harness.sketch.attention_patch import attention_patch, search_hyperplane
-from eval_harness.sketch.sketches.adakv_sketch import AdaKVSketch
-from eval_harness.sketch.sketches.decoding_sketch import DecodingSketch
-from eval_harness.sketch.sketches.knorm_sketch import KnormSketch
-from eval_harness.sketch.sketches.registry import get_sketch_class
-from eval_harness.sketch.sketches.scorer_sketch import ScorerSketch
+from eval_harness.kv_compression.attention_patch import attention_patch, search_hyperplane
+from eval_harness.kv_compression.compressors.adakv_sketch import AdaKVSketch
+from eval_harness.kv_compression.compressors.decoding_sketch import DecodingSketch
+from eval_harness.kv_compression.compressors.knorm_sketch import KnormSketch
+from eval_harness.kv_compression.registry import get_kv_compressor_class
+from eval_harness.kv_compression.base import ScorerKVCompressor
 
 
 class _FakeAttnModule(nn.Module):
@@ -33,7 +33,7 @@ class _FakeAttnModule(nn.Module):
         self.config = SimpleNamespace(_attn_implementation=attn_implementation)
 
 
-class _StubScorer(ScorerSketch):
+class _StubScorer(ScorerKVCompressor):
     """Returns a fixed (cloned) score tensor and counts score() calls."""
 
     def __init__(self, scores: torch.Tensor, compression_ratio: float = 0.5):
@@ -63,7 +63,7 @@ def _masked_set(module):
 
 class TestAdaKVRegistryAndConstruction(unittest.TestCase):
     def test_registered_name(self):
-        self.assertIs(get_sketch_class("adakv"), AdaKVSketch)
+        self.assertIs(get_kv_compressor_class("adakv"), AdaKVSketch)
 
     def test_alpha_out_of_bounds_raises(self):
         with self.assertRaises(AssertionError):

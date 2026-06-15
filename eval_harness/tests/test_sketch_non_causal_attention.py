@@ -20,10 +20,10 @@ import torch
 from torch import nn
 from transformers import LlamaConfig, LlamaForCausalLM
 
-from eval_harness.sketch.cache_adapter import create_cache_adapter
-from eval_harness.sketch.pipeline import SketchTextGenerationPipeline
-from eval_harness.sketch.sketches.non_causal_attention_sketch import NonCausalAttnSketch
-from eval_harness.sketch.sketches.registry import get_sketch, get_sketch_class
+from eval_harness.kv_compression.cache_adapter import create_cache_adapter
+from eval_harness.research_pipeline import ResearchGenerationPipeline
+from eval_harness.kv_compression.compressors.non_causal_attention_sketch import NonCausalAttnSketch
+from eval_harness.kv_compression.registry import get_kv_compressor, get_kv_compressor_class
 
 
 # ======================================================================
@@ -167,10 +167,10 @@ def _score_reference(q_raw, keys, values, cos, sin, chunk_size):
 
 class TestRegistry(unittest.TestCase):
     def test_registered_name_resolves(self):
-        self.assertIs(get_sketch_class("non_causal_attention"), NonCausalAttnSketch)
+        self.assertIs(get_kv_compressor_class("non_causal_attention"), NonCausalAttnSketch)
 
     def test_instantiation_with_kwargs(self):
-        sketch = get_sketch("non_causal_attention", compression_ratio=0.25, chunk_size=64)
+        sketch = get_kv_compressor("non_causal_attention", compression_ratio=0.25, chunk_size=64)
         self.assertIsInstance(sketch, NonCausalAttnSketch)
         self.assertAlmostEqual(sketch.compression_ratio, 0.25)
         self.assertEqual(sketch.chunk_size, 64)
@@ -366,7 +366,7 @@ class TestGQA(unittest.TestCase):
 
 class TestRoPEParity(unittest.TestCase):
     def test_inline_rotation_matches_repo_helper(self):
-        from eval_harness.prefill_methods.base import apply_rotary_pos_emb, build_cos_sin
+        from eval_harness.attention_methods._method_base import apply_rotary_pos_emb, build_cos_sin
 
         torch.manual_seed(6)
         B, H, S, d = 1, 2, 12, 4
@@ -380,7 +380,7 @@ class TestRoPEParity(unittest.TestCase):
         torch.testing.assert_close(manual, helper, atol=1e-6, rtol=1e-6)
 
     def test_score_on_rotated_cache_matches_full_transcription(self):
-        from eval_harness.prefill_methods.base import apply_rotary_pos_emb, build_cos_sin
+        from eval_harness.attention_methods._method_base import apply_rotary_pos_emb, build_cos_sin
 
         torch.manual_seed(7)
         B, H, S, d = 1, 2, 12, 4
@@ -615,7 +615,7 @@ def _build_model(num_hidden_layers: int = 2) -> LlamaForCausalLM:
 class TestPipelineIntegration(unittest.TestCase):
     def test_prefill_compression_uniform_layers_then_decode(self):
         model = _build_model(num_hidden_layers=2)
-        pipe = object.__new__(SketchTextGenerationPipeline)
+        pipe = object.__new__(ResearchGenerationPipeline)
         pipe.model = model
         pipe.tokenizer = _StubTokenizer()
 
@@ -631,8 +631,8 @@ class TestPipelineIntegration(unittest.TestCase):
         answers = pipe._forward(
             inputs,
             max_new_tokens=5,
-            sketch=sketch,
-            prefill_method=None,
+            kv_compressor=sketch,
+            attention_method=None,
             cache=cache,
             cache_adapter=cache_adapter,
         )

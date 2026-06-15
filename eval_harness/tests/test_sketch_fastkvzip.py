@@ -14,12 +14,12 @@ from unittest.mock import patch
 import torch
 from torch import nn
 
-from eval_harness.sketch.sketches.fastkvzip_sketch import (
+from eval_harness.kv_compression.compressors.fastkvzip_sketch import (
     FastKVzipGate,
     FastKVzipSketch,
     load_fastkvzip,
 )
-from eval_harness.sketch.sketches.registry import available_sketches, get_sketch, get_sketch_class
+from eval_harness.kv_compression.registry import available_kv_compressors, get_kv_compressor, get_kv_compressor_class
 
 
 class _FakeAttnModule(nn.Module):
@@ -139,11 +139,11 @@ def _run_prefill(sketch, module, hidden):
 
 class TestFastKVzipRegistry(unittest.TestCase):
     def test_registered_name_resolves(self):
-        self.assertIn("fastkvzip", available_sketches())
-        self.assertIs(get_sketch_class("fastkvzip"), FastKVzipSketch)
+        self.assertIn("fastkvzip", available_kv_compressors())
+        self.assertIs(get_kv_compressor_class("fastkvzip"), FastKVzipSketch)
 
-    def test_get_sketch_instantiates_with_kwargs(self):
-        sketch = get_sketch("fastkvzip", compression_ratio=0.3, layerwise=True, n_sink=8)
+    def test_get_kv_compressor_instantiates_with_kwargs(self):
+        sketch = get_kv_compressor("fastkvzip", compression_ratio=0.3, layerwise=True, n_sink=8)
         self.assertIsInstance(sketch, FastKVzipSketch)
         self.assertAlmostEqual(sketch.compression_ratio, 0.3)
         self.assertTrue(sketch.layerwise)
@@ -413,7 +413,7 @@ class TestFastKVzipGateLoading(unittest.TestCase):
         sketch = FastKVzipSketch(compression_ratio=0.5)
         model = SimpleNamespace(config=SimpleNamespace(name_or_path="no/such-model"), device="cpu")
         with patch(
-            "eval_harness.sketch.sketches.fastkvzip_sketch.get_gate_weight",
+            "eval_harness.kv_compression.compressors.fastkvzip_sketch.get_gate_weight",
             side_effect=OSError("404"),
         ):
             with self.assertRaisesRegex(RuntimeError, "not released"):
@@ -423,7 +423,7 @@ class TestFastKVzipGateLoading(unittest.TestCase):
         reference_gates = [_seeded_gate(seed=i, nhead=2, ngroup=3, output_dim=4, sink=2) for i in range(2)]
         weights = [g.state_dict() for g in reference_gates]
         with patch(
-            "eval_harness.sketch.sketches.fastkvzip_sketch.get_gate_weight",
+            "eval_harness.kv_compression.compressors.fastkvzip_sketch.get_gate_weight",
             return_value=(weights, "qwen3-8b/q3_dim4_sink2.pt"),
         ):
             gates = load_fastkvzip(model_name="Qwen/Qwen3-8B", device="cpu")

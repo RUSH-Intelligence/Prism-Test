@@ -30,13 +30,13 @@ import unittest
 import torch
 from torch import nn
 
-from eval_harness.prefill_methods.base import (
+from eval_harness.attention_methods._method_base import (
     PrefillMethod,
     apply_rotary_pos_emb,
     build_cos_sin,
 )
-from eval_harness.prefill_methods.reattention_exact import ReAttentionExactMethod
-from eval_harness.prefill_methods.registry import (
+from eval_harness.attention_methods.reattention_exact import ReAttentionExactMethod
+from eval_harness.attention_methods._method_registry import (
     ensure_methods_loaded,
     get_prefill_method,
 )
@@ -1062,10 +1062,10 @@ def _build_model(num_hidden_layers):
 
 
 def _pipe_forward(model, method, ctx=300, questions=1, qlen=8, mnt=4):
-    from eval_harness.sketch.cache_adapter import create_cache_adapter
-    from eval_harness.sketch.pipeline import SketchTextGenerationPipeline
+    from eval_harness.kv_compression.cache_adapter import create_cache_adapter
+    from eval_harness.research_pipeline import ResearchGenerationPipeline
 
-    pipe = object.__new__(SketchTextGenerationPipeline)
+    pipe = object.__new__(ResearchGenerationPipeline)
     pipe.model = model
     pipe.tokenizer = _StubTokenizer()
     ca = create_cache_adapter(model)
@@ -1075,8 +1075,8 @@ def _pipe_forward(model, method, ctx=300, questions=1, qlen=8, mnt=4):
         "context_ids": torch.randint(0, 256, (1, ctx)),
         "questions_ids": [torch.randint(0, 256, (1, qlen)) for _ in range(questions)],
     }
-    answers = pipe._forward(inputs, max_new_tokens=mnt, sketch=None,
-                            prefill_method=method, cache=cache, cache_adapter=ca)
+    answers = pipe._forward(inputs, max_new_tokens=mnt, kv_compressor=None,
+                            attention_method=method, cache=cache, cache_adapter=ca)
     lens = [int(layer.keys.shape[2]) for layer in cache.layers]
     return answers, lens
 
@@ -1135,7 +1135,7 @@ class TestExactOversizeViewWarning(unittest.TestCase):
     produced positionally-OOD prefill on beyond-native contexts (the
     2026-06-11 0%-RULER incident); the method must warn loudly, once."""
 
-    _LOGGER = "eval_harness.prefill_methods.reattention_exact"
+    _LOGGER = "eval_harness.attention_methods.reattention_exact"
 
     def _drive(self, max_trained_pos):
         method = _make_method(pe_original=False, recall_clip=-1)

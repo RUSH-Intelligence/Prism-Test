@@ -16,12 +16,12 @@ from unittest.mock import patch
 import torch
 from torch import nn
 
-from eval_harness.sketch.sketches.registry import (
-    available_sketches,
-    get_sketch,
-    get_sketch_class,
+from eval_harness.kv_compression.registry import (
+    available_kv_compressors,
+    get_kv_compressor,
+    get_kv_compressor_class,
 )
-from eval_harness.sketch.sketches.ridge_sketch import RidgeSketch
+from eval_harness.kv_compression.compressors.ridge_sketch import RidgeSketch
 
 
 class _FakeAttnModule(nn.Module):
@@ -118,11 +118,11 @@ def _rand_inputs(B=1, H_kv=2, T=80, D=8, hidden_dim=32, seed=0):
 
 class TestRidgeRegistry(unittest.TestCase):
     def test_registered_under_assigned_name(self):
-        self.assertIn("ridge", available_sketches())
-        self.assertIs(get_sketch_class("ridge"), RidgeSketch)
+        self.assertIn("ridge", available_kv_compressors())
+        self.assertIs(get_kv_compressor_class("ridge"), RidgeSketch)
 
-    def test_get_sketch_accepts_compression_ratio_kwarg(self):
-        sketch = get_sketch("ridge", compression_ratio=0.3)
+    def test_get_kv_compressor_accepts_compression_ratio_kwarg(self):
+        sketch = get_kv_compressor("ridge", compression_ratio=0.3)
         self.assertIsInstance(sketch, RidgeSketch)
         self.assertAlmostEqual(sketch.compression_ratio, 0.3)
 

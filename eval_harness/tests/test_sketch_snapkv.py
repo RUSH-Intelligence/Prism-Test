@@ -14,7 +14,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from eval_harness.sketch.sketches.snapkv_sketch import SnapKVSketch
+from eval_harness.kv_compression.compressors.snapkv_sketch import SnapKVSketch
 
 
 class _FakeSnapKVAttn(nn.Module):
@@ -404,15 +404,15 @@ class TestSnapKVForwardHook(unittest.TestCase):
 
 class TestSnapKVRegistry(unittest.TestCase):
     def test_registered_as_snapkv(self):
-        from eval_harness.sketch.sketches.registry import (
-            available_sketches,
-            get_sketch,
-            get_sketch_class,
+        from eval_harness.kv_compression.registry import (
+            available_kv_compressors,
+            get_kv_compressor,
+            get_kv_compressor_class,
         )
 
-        self.assertIn("snapkv", available_sketches())
-        self.assertIs(get_sketch_class("snapkv"), SnapKVSketch)
-        sketch = get_sketch("snapkv", compression_ratio=0.25, window_size=8, kernel_size=3)
+        self.assertIn("snapkv", available_kv_compressors())
+        self.assertIs(get_kv_compressor_class("snapkv"), SnapKVSketch)
+        sketch = get_kv_compressor("snapkv", compression_ratio=0.25, window_size=8, kernel_size=3)
         self.assertIsInstance(sketch, SnapKVSketch)
         self.assertAlmostEqual(sketch.compression_ratio, 0.25)
         self.assertEqual(sketch.window_size, 8)
