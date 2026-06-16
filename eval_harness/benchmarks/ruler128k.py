@@ -8,6 +8,10 @@ import pandas as pd
 from .base import Benchmark, BenchmarkInfo
 from .common import parse_answers
 from .registry import register_benchmark
+# ruler128k reuses ruler64k's _collect_rows_for_context_length, so the
+# query-AGNOSTIC prompt split (strip chat template; separate context / question /
+# answer_prefix) applies here identically — no 128k-specific loader logic exists.
+# This is why the query-agnostic fix touches only ruler64k.py in the diff.
 from .ruler64k import RULER_SUBSETS, _collect_rows_for_context_length
 
 
@@ -23,6 +27,7 @@ class Ruler128KBenchmark(Benchmark):
 
     def load(self, subsets: List[str] | None = None) -> pd.DataFrame:
         subsets = self.resolve_subsets(subsets)
+        # Same query-agnostic split as ruler64k, only the context bucket differs.
         return _collect_rows_for_context_length(subsets, context_length=131072)
 
     def score(self, df: pd.DataFrame) -> Dict[str, object]:
