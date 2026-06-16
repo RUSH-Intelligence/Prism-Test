@@ -54,6 +54,23 @@ class EvalRunner:
         torch.manual_seed(seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
+        # Best-effort run-to-run reproducibility. warn_only=True so ops without a
+        # deterministic kernel (e.g. some scatter/topk paths in compressors) log
+        # a warning instead of raising. Pair with CUBLAS_WORKSPACE_CONFIG=:4096:8
+        # in the environment — without it, cuBLAS GEMM choice is not pinned.
+        torch.use_deterministic_algorithms(True, warn_only=True)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        # Pin the SDPA backend so runs are reproducible AND comparable to kvpress
+        # baselines. The mem-efficient backend is nondeterministic on some shapes
+        # and is what use_deterministic_algorithms would silently route AWAY from
+        # under warn_only=True, leaving us with an unannounced backend swap vs
+        # the published numbers. Disable it; keep flash + math (both
+        # deterministic). flash is preferred when available, math is the fallback.
+        if torch.cuda.is_available():
+            torch.backends.cuda.enable_mem_efficient_sdp(False)
+            torch.backends.cuda.enable_flash_sdp(True)
+            torch.backends.cuda.enable_math_sdp(True)
 
     def _build_prompt(self, context: str, question: str, answer_prefix: str) -> str:
         # Match sparse-attention-hub request assembly for RULER benchmarks.

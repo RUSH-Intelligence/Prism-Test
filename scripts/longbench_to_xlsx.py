@@ -139,13 +139,24 @@ def main() -> None:
 
     sheet = args.sheet or f"LongBench-{model.split('/')[-1]}"
     xlsx = Path(args.xlsx)
-    wb = openpyxl.load_workbook(xlsx)
+    if xlsx.exists():
+        wb = openpyxl.load_workbook(xlsx)
+        action = "updated"
+    else:
+        # Fresh workbook — drop the empty default sheet so the LongBench tab is first.
+        wb = openpyxl.Workbook()
+        default = wb.active
+        if default is not None and default.max_row == 1 and default.max_column == 1 \
+                and default.cell(1, 1).value is None:
+            wb.remove(default)
+        action = "created"
     write_sheet(wb, sheet, model, subsets, ratios, results)
+    xlsx.parent.mkdir(parents=True, exist_ok=True)
     wb.save(xlsx)
 
     filled = len(results)
     total = 1 + len(METHOD_ORDER) * len(ratios)
-    print(f"Wrote sheet '{sheet}' to {xlsx} ({filled}/{total} cells with data).")
+    print(f"Wrote sheet '{sheet}' to {xlsx} ({action}; {filled}/{total} cells with data).")
     missing = [f"{lbl}@{ratio}" for ratio in ratios for lbl in METHOD_ORDER
                if (lbl, ratio) not in results]
     if (("Full", None) not in results):

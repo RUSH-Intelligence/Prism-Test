@@ -9,10 +9,13 @@ silently mis-scores summarization, classification, retrieval, count and code
 tasks, and breaks Chinese tasks entirely (whitespace tokenization on CJK text).
 
 Deviations from upstream:
-  - ``code_sim_score`` reimplements ``fuzzywuzzy.fuzz.ratio`` via the stdlib
-    ``difflib`` so the common dependency-free path is used; this matches
-    ``fuzzywuzzy``'s own pure-Python fallback (used whenever the optional
-    ``python-Levenshtein`` C backend is absent, which is the default install).
+  - ``code_sim_score`` calls ``fuzzywuzzy.fuzz.ratio`` (the upstream choice).
+    With ``python-Levenshtein`` installed (declared in ``pyproject.toml``),
+    fuzzywuzzy uses its fast C backend, matching the path most published
+    LongBench numbers were measured on. If ``fuzzywuzzy`` is missing entirely,
+    we fall back to a pure-Python ``difflib`` shim that produces the same
+    score as fuzzywuzzy's own ``difflib`` fallback path (used when neither
+    ``python-Levenshtein`` nor ``rapidfuzz`` is installed).
   - ``rouge`` (ROUGE-L) and ``jieba`` (CJK segmentation) are imported lazily so
     the framework still imports on nodes that only run the dependency-free
     benchmarks; a clear error is raised only when a ROUGE/Chinese task is scored
@@ -25,6 +28,13 @@ import re
 import string
 from collections import Counter
 from typing import Callable, Dict, List
+
+try:
+    from fuzzywuzzy import fuzz as _fuzz  # uses python-Levenshtein backend if present
+    _HAS_FUZZ = True
+except ImportError:  # pragma: no cover
+    _fuzz = None
+    _HAS_FUZZ = False
 
 
 # --- normalization helpers (verbatim from upstream) -------------------------
@@ -119,7 +129,10 @@ def retrieval_zh_score(prediction: str, ground_truth: str, **kwargs) -> float:
 
 
 def _fuzz_ratio(s1: str, s2: str) -> int:
-    """Pure-Python equivalent of ``fuzzywuzzy.fuzz.ratio`` (difflib backend)."""
+    """``fuzzywuzzy.fuzz.ratio`` if available (matches upstream LongBench),
+    else a difflib fallback equivalent to fuzzywuzzy's own pure-Python path."""
+    if _HAS_FUZZ:
+        return int(_fuzz.ratio(s1, s2))
     if not s1 and not s2:
         return 100
     matcher = difflib.SequenceMatcher(None, s1, s2)

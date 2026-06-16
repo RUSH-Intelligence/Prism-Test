@@ -34,6 +34,12 @@ dependencies = [
     # (Chinese segmentation). Pure-Python, imported lazily by the scorer.
     "rouge>=1.0",
     "jieba>=0.42",
+    # LongBench code tasks (lcc, repobench-p) score via fuzzywuzzy.fuzz.ratio.
+    # python-Levenshtein wires up fuzzywuzzy's fast C backend so our numbers
+    # match the path most published LongBench results were measured on (with
+    # only the pure-Python difflib fallback, lcc/repobench-p drift ~1-2 pts).
+    "fuzzywuzzy>=0.18",
+    "python-Levenshtein>=0.20",
 
     # Config / CLI / IO
     "pyyaml>=6.0",

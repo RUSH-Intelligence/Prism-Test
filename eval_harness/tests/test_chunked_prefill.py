@@ -210,5 +210,88 @@ class TestStreamingCompressionBounded(unittest.TestCase):
         self.assertEqual(seq_len, self.CONTEXT_LEN // 2)
 
 
+class TestPostPrefillFinalChunkOnly(unittest.TestCase):
+    """``POST_PREFILL`` must fire ONLY after the full prefill cache exists.
+
+    With chunked prefill the hook is invoked after every layer of every chunk.
+    Without gating, a POST_PREFILL compressor would prune incrementally — each
+    chunk seeing a cache already shrunk by prior chunks, scoring against fewer
+    keys, and producing a final cache that differs from the single-pass result.
+    The pipeline's per-chunk ``set_prefill_is_final`` toggle restores byte
+    identity by suppressing POST_PREFILL on every chunk except the last.
+    """
+
+    CONTEXT_LEN = 200
+
+    def _post_prefill_kv(self, sketch, chunk_size):
+        model = _build_model()
+        pipe = _make_pipeline(model)
+        torch.manual_seed(5)
+        inputs = {
+            "context_ids": torch.randint(0, 256, (1, self.CONTEXT_LEN)),
+            "questions_ids": [torch.randint(0, 256, (1, 6))],
+        }
+        adapter = create_cache_adapter(model)
+        cache = adapter.initialize_cache(None)
+        with torch.no_grad():
+            pipe._forward(
+                inputs,
+                max_new_tokens=3,
+                kv_compressor=sketch,
+                attention_method=None,
+                positional_method=None,
+                prefill_chunk_size=chunk_size,
+                cache=cache,
+                cache_adapter=adapter,
+            )
+        return adapter.get_seq_length(cache), _cache_kv(cache)
+
+    def test_post_prefill_chunked_matches_single_pass(self):
+        """Chunked POST_PREFILL must produce the same cache as single-pass."""
+        single_len, single_kv = self._post_prefill_kv(
+            KnormSketch(compression_ratio=0.4, schedule=["post_prefill"]),
+            chunk_size=None,
+        )
+        self.assertEqual(single_len, int(self.CONTEXT_LEN * 0.6))
+
+        for chunk_size in (37, 64, 100):
+            chunked_len, chunked_kv = self._post_prefill_kv(
+                KnormSketch(compression_ratio=0.4, schedule=["post_prefill"]),
+                chunk_size=chunk_size,
+            )
+            self.assertEqual(
+                chunked_len, single_len,
+                f"post-prefill length differs at chunk={chunk_size}: "
+                f"{chunked_len} vs {single_len}",
+            )
+            for li, ((k1, v1), (k2, v2)) in enumerate(zip(single_kv, chunked_kv)):
+                self.assertEqual(k1.shape, k2.shape, f"chunk={chunk_size} layer={li}")
+                self.assertTrue(
+                    torch.allclose(k1, k2, atol=1e-6, rtol=1e-5),
+                    f"keys differ chunk={chunk_size} layer={li}",
+                )
+                self.assertTrue(
+                    torch.allclose(v1, v2, atol=1e-6, rtol=1e-5),
+                    f"values differ chunk={chunk_size} layer={li}",
+                )
+
+    def test_streaming_still_fires_per_chunk(self):
+        """Sanity: STREAMING must NOT be affected by the POST_PREFILL gate —
+        it still evicts after every chunk, leaving a much smaller final cache
+        than the equivalent POST_PREFILL run."""
+        # streaming at 50% across 5 chunks of 40 converges near CHUNK (per the
+        # existing test); post_prefill at 50% leaves exactly CONTEXT/2 = 100.
+        streaming_len, _ = self._post_prefill_kv(
+            KnormSketch(compression_ratio=0.5, schedule=["streaming"]),
+            chunk_size=40,
+        )
+        post_len, _ = self._post_prefill_kv(
+            KnormSketch(compression_ratio=0.5, schedule=["post_prefill"]),
+            chunk_size=40,
+        )
+        self.assertLessEqual(streaming_len, 40)
+        self.assertEqual(post_len, self.CONTEXT_LEN // 2)
+
+
 if __name__ == "__main__":
     unittest.main()

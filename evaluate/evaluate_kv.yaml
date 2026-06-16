@@ -33,14 +33,20 @@ model: meta-llama/Llama-3.1-8B-Instruct
 # Runtime
 tensor_parallel_size: 1        # vLLM-only; ignored by the research backend (single-GPU .to("cuda"))
 dtype: bfloat16
-max_model_len: 18000           # pipeline truncation cap (used because
-                               # research_config.max_context_length below is null)
+max_model_len: 131072          # pipeline truncation cap (used because
+                               # research_config.max_context_length below is null).
+                               # Set to Llama-3.1-8B's full trained context (128k)
+                               # so LongBench (~47k max) runs untruncated with
+                               # large headroom for longer benchmarks.
 gpu_memory_utilization: 0.9    # vLLM-only; ignored by the research backend
 trust_remote_code: true
 enable_prefix_caching: true    # vLLM-only; ignored by the research backend
 
 # Generation
-max_new_tokens: 128
+max_new_tokens: null           # null = let the benchmark's per-task value win
+                               # (LongBench: 128 for QA, 512 for summarization,
+                               # 64 for code completion). A global cap silently
+                               # truncates summaries → bogus low scores.
 temperature: 0.0               # greedy
 top_p: 1.0
 system_prompt: null

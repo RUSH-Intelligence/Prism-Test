@@ -1,11 +1,23 @@
 import contextlib
 import logging
+import re
 from typing import Optional
 
 import torch
 from transformers import AutoModelForCausalLM, Cache, Pipeline
 from transformers.pipelines import PIPELINE_REGISTRY
 from transformers.pipelines.base import GenericTensor
+
+# Llama-3.1-Instruct's default chat template ALWAYS emits a system header with
+# "Cutting Knowledge Date / Today Date", even when no system message is passed
+# and even when an empty system message is passed. Official LongBench / kvpress
+# eval scripts use raw concatenation (no system block) — leaving the auto block
+# in shifts every cell's numbers vs the published baselines. Strip it.
+_AUTO_SYSTEM_BLOCK_RE = re.compile(
+    r"(<\|begin_of_text\|>)"
+    r"<\|start_header_id\|>system<\|end_header_id\|>\n\n"
+    r"Cutting Knowledge Date:[^<]*?<\|eot_id\|>"
+)
 
 from eval_harness.attention_methods._method_base import PrefillMethod
 from eval_harness.kv_compression.cache_adapter import CacheAdapter, create_cache_adapter
@@ -76,6 +88,7 @@ class ResearchGenerationPipeline(Pipeline):
                 tokenize=False,
                 enable_thinking=enable_thinking,
             )
+            context = _AUTO_SYSTEM_BLOCK_RE.sub(r"\1", context)
             context, question_suffix = context.split(separator)
 
         questions = [question + question_suffix + answer_prefix for question in questions]
@@ -85,9 +98,22 @@ class ResearchGenerationPipeline(Pipeline):
             self.tokenizer.encode(question, return_tensors="pt", add_special_tokens=False) for question in questions
         ]
 
+        # Truncation guard. Official LongBench truncates the *middle* of the
+        # context so the question (which sits at the end of the prompt) is
+        # preserved. Our path uses head-only truncation, which would chop the
+        # question off if the prompt overflows. LongBench tops out around 47k
+        # tokens and the default cap is 131k, so this should never fire — but if
+        # it ever does, log it LOUDLY (per row) and surface the gap so the
+        # operator can either raise max_model_len or implement middle truncation.
         if context_ids.shape[1] > max_context_length:
+            longest_question = max((q.shape[1] for q in question_ids), default=0)
+            overflow = context_ids.shape[1] - max_context_length
             logger.warning(
-                f"Context length has been truncated from {context_ids.shape[1]} to {max_context_length} tokens."
+                "LONGBENCH TRUNCATION TRIGGERED: context=%d tokens > cap=%d (overflow=%d). "
+                "Question (%d tokens) will still be appended AFTER truncation, but the "
+                "head-only strategy here diverges from official LongBench middle-truncation. "
+                "Raise max_model_len or implement middle truncation if scores look low.",
+                context_ids.shape[1], max_context_length, overflow, longest_question,
             )
             context_ids = context_ids[:, :max_context_length]
 
@@ -156,6 +182,7 @@ class ResearchGenerationPipeline(Pipeline):
                     context_ids=context_ids,
                     cache=cache,
                     prefill_chunk_size=prefill_chunk_size,
+                    kv_compressor=kv_compressor,
                 )
                 cache_adapter.maybe_slice_prefill(cache)
 
@@ -196,6 +223,7 @@ class ResearchGenerationPipeline(Pipeline):
         context_ids: torch.Tensor,
         cache: Cache,
         prefill_chunk_size: Optional[int] = None,
+        kv_compressor: Optional[KVCompressor] = None,
     ) -> None:
         """Prefill the context into ``cache``.
 
@@ -221,6 +249,11 @@ class ResearchGenerationPipeline(Pipeline):
             first.
         """
         context_length = context_ids.shape[1]
+        # Reset the per-call "final chunk" flag so a prior chunked prefill that
+        # crashed mid-loop can't leak a stale ``False`` into this call's
+        # POST_PREFILL gate.  The chunked branch below overrides this per chunk.
+        if kv_compressor is not None:
+            kv_compressor.set_prefill_is_final(True)
         if prefill_chunk_size is None or prefill_chunk_size >= context_length:
             self.model.model(
                 input_ids=context_ids,
@@ -246,6 +279,12 @@ class ResearchGenerationPipeline(Pipeline):
             position_ids = torch.arange(start, end, device=device).unsqueeze(0)
             past_len = cache.get_seq_length()
             cache_position = torch.arange(past_len, past_len + (end - start), device=device)
+            # Gate POST_PREFILL on "is this the final chunk?".  STREAMING
+            # ignores the flag and still fires every chunk.  Single-pass
+            # prefill never enters this loop, so its default ``True`` stands
+            # and POST_PREFILL behavior is unchanged.
+            if kv_compressor is not None:
+                kv_compressor.set_prefill_is_final(end == context_length)
             self.model.model(
                 input_ids=context_ids[:, start:end],
                 past_key_values=cache,

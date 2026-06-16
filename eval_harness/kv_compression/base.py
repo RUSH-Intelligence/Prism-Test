@@ -210,6 +210,12 @@ class KVCompressor:
         # Prefill/decode phase declared explicitly by the pipeline (see
         # set_phase).  ``None`` falls back to the cache_position heuristic.
         self._explicit_phase = None
+        # Tracks whether the *current* prefill forward is the final chunk of a
+        # chunked prefill (see set_prefill_is_final).  POST_PREFILL is gated on
+        # this so it only fires after the cache reaches full N, preserving
+        # single-pass semantics under chunked prefill.  Single-pass leaves this
+        # True (default), so existing behavior is unchanged.
+        self._prefill_is_final = True
 
     # ------------------------------------------------------------------
     # Schedule predicates
@@ -244,6 +250,22 @@ class KVCompressor:
         firing after the first chunk.  An explicit phase removes the guesswork.
         """
         self._explicit_phase = phase
+
+    def set_prefill_is_final(self, is_final: bool) -> None:
+        """Declare whether the *next* prefill forward is the final chunk.
+
+        Gates ``POST_PREFILL`` so it only fires after the cache reaches its
+        full length.  ``STREAMING`` ignores this flag and fires on every
+        prefill chunk regardless.  Single-pass prefill never touches the flag
+        and leaves it at its default ``True`` — POST_PREFILL then fires once,
+        matching the original (pre-chunked) semantics exactly.
+
+        The pipeline toggles this per chunk in ``_run_prefill`` so a
+        ``POST_PREFILL`` compressor (e.g. H2O) sees a chunked prefill as
+        byte-identical to single-pass: intermediate chunks are no-ops, the
+        compressor fires once after the final chunk over the full cache.
+        """
+        self._prefill_is_final = bool(is_final)
 
     def _resolve_is_decode(self, module: nn.Module, kwargs: dict, q_len: int) -> bool:
         """Decode-vs-prefill: the pipeline's explicit phase wins; else heuristic."""
@@ -312,10 +334,20 @@ class KVCompressor:
         q_len = hidden_states.shape[1]
 
         is_decode = self._resolve_is_decode(module, kwargs, q_len)
-        if is_decode and not self.fires_on_decode:
-            return output
-        if not is_decode and not self.fires_on_prefill:
-            return output
+        if is_decode:
+            if not self.fires_on_decode:
+                return output
+        else:
+            # STREAMING fires on every prefill forward (incl. each chunk);
+            # POST_PREFILL fires only when the cache has reached full length,
+            # i.e. single-pass prefill or the FINAL chunk of chunked prefill.
+            fires_streaming = CompressionSchedule.STREAMING in self.schedule
+            fires_post = (
+                CompressionSchedule.POST_PREFILL in self.schedule
+                and self._prefill_is_final
+            )
+            if not (fires_streaming or fires_post):
+                return output
 
         keys, values = extract_keys_and_values(cache, module.layer_idx)
         keys, values = self.compress(
