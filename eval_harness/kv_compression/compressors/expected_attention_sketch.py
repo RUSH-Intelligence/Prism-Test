@@ -26,10 +26,16 @@ def _get_prerope_query_states(module: nn.Module, hidden_states: torch.Tensor) ->
         query_states = qkv_proj(hidden_states)[..., : num_heads * head_dim]
     elif hasattr(module, "q_proj"):
         query_states = module.q_proj(hidden_states)
+        # Qwen3.5 gated attention fuses [query | gate] per head into q_proj
+        # (output dim = num_heads * head_dim * 2). Slice off the gate to recover
+        # the pre-RoPE query, matching Qwen3_5Attention.forward's
+        # torch.chunk(q_proj(x).view(*, -1, head_dim * 2), 2, dim=-1).
+        if query_states.shape[-1] == num_heads * head_dim * 2:
+            query_states = query_states.view(bsz, q_len, num_heads, head_dim * 2)[..., :head_dim]
     else:
         raise NotImplementedError(f"Sketch not yet implemented for {module.__class__}.")
 
-    query_states = query_states.view(bsz, q_len, num_heads, head_dim).transpose(1, 2)
+    query_states = query_states.reshape(bsz, q_len, num_heads, head_dim).transpose(1, 2)
 
     q_norm = getattr(module, "q_norm", None)
     if q_norm is not None:
@@ -163,13 +169,21 @@ class ExpectedAttentionSketch(ScorerKVCompressor):
         head_dim = module.head_dim
         cos, sin = module.rotary_emb(mu, position_ids)
         cos, sin = cos[0], sin[0]
-        Id = torch.eye(head_dim, device=cos.device, dtype=cos.dtype)
-        P = torch.zeros((head_dim, head_dim), device=cos.device, dtype=cos.dtype)
-        P[head_dim // 2 :, : head_dim // 2], P[: head_dim // 2, head_dim // 2 :] = torch.eye(head_dim // 2), -torch.eye(
-            head_dim // 2
-        )
-        R = cos.unsqueeze(1) * Id + sin.unsqueeze(1) * P
-        R = R.mean(dim=0).to(mu.device)
+        # Partial rotary (Qwen3.5): cos/sin span only rotary_dim = head_dim *
+        # partial_rotary_factor channels. Build the averaged RoPE rotation on the
+        # rotary block and embed it into a full head_dim rotation with an identity
+        # passthrough block, mirroring the model's apply_rotary_pos_emb. Reduces to
+        # a full rotation when rotary_dim == head_dim.
+        rotary_dim = cos.shape[-1]
+        half = rotary_dim // 2
+        Id = torch.eye(rotary_dim, device=cos.device, dtype=cos.dtype)
+        P = torch.zeros((rotary_dim, rotary_dim), device=cos.device, dtype=cos.dtype)
+        P[half:, :half] = torch.eye(half, device=cos.device, dtype=cos.dtype)
+        P[:half, half:] = -torch.eye(half, device=cos.device, dtype=cos.dtype)
+        R_rot = (cos.unsqueeze(1) * Id + sin.unsqueeze(1) * P).mean(dim=0)
+        R = torch.eye(head_dim, device=cos.device, dtype=cos.dtype)
+        R[:rotary_dim, :rotary_dim] = R_rot
+        R = R.to(mu.device)
         mu = torch.matmul(mu, R.T)
         if cov is not None:
             cov = torch.matmul(R, torch.matmul(cov, R.T))
