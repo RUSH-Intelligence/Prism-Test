@@ -63,7 +63,12 @@ class PyramidKVSketch(SnapKVSketch):
       ``compression_ratio == 0`` (kvpress installs no such guard).
     - ``uniform_budget`` flag (see above); not present in kvpress.
     - Inherits SnapKV's deviations (duck-typed pre-RoPE query extraction,
-      odd-``kernel_size`` assert, dead ``attentions`` branch).
+      odd-``kernel_size`` assert, dead ``attentions`` branch) and its Qwen3.5
+      hybrid handling: the inherited ``compute_window_attention`` /
+      ``_get_prerope_query_states`` slice off the gated-``q_proj`` output gate
+      and apply partial rotary, both reducing to full-head behavior on
+      non-hybrid models. No pyramidkv-specific change is needed for the query
+      reprojection (only ``get_layer_budget`` differs from SnapKV).
 
     Quirks kept for kvpress parity: budgets use Python ``round()`` (banker's
     rounding, e.g. ``round(62.5) == 62``), not ``int()`` truncation; the

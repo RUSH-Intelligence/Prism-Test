@@ -94,7 +94,10 @@ class ExpectedAttentionSketch(ScorerKVCompressor):
     - ``get_prerope_query_states`` is inlined here with duck-typing
       (``qkv_proj`` presence for Phi3-style fused projections, ``q_proj``
       otherwise, ``getattr(module, "q_norm", None)`` for qk-norm families)
-      instead of isinstance checks against transformers attention classes.
+      instead of isinstance checks against transformers attention classes. It
+      also slices off the per-head output gate when ``q_proj`` emits
+      ``num_heads * head_dim * 2`` features (Qwen3.5 gated attention); the slice
+      is guarded on that width, so non-gated families are unaffected.
 
     Notes
     -----
@@ -103,8 +106,12 @@ class ExpectedAttentionSketch(ScorerKVCompressor):
       ``S <= n_sink`` raise an AssertionError; if ``n_kept < n_sink`` topk
       ties on the max-padded sinks drop some sinks arbitrarily; kept K/V are
       stored in descending-score (not positional) order.
-    - Requires even ``head_dim`` and full-width rotary (no partial-rotary
-      models), as upstream.
+    - Partial rotary (``rotary_dim < head_dim``, e.g. Qwen3.5) is supported:
+      ``apply_avg_rope`` builds the averaged rotation matrix on the rotary block
+      only and embeds it in a ``head_dim`` identity (the passthrough channels),
+      reducing exactly to the full-head rotation when ``rotary_dim == head_dim``
+      (Llama/Qwen3/Gemma3). Requires even ``head_dim`` (and even ``rotary_dim``),
+      as upstream.
     - Do not compose with the DCA prefill method: DCA stores keys rotated at
       cyclic positions ``pos % chunk_len``, which mismatches the
       absolute-future-position frame of the averaged rotation matrix.

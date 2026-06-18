@@ -100,6 +100,13 @@ class CompactorSketch(ScorerKVCompressor):
     - ``get_prerope_query_states``/``get_prerope_key_states`` are inlined
       with duck-typing (``qkv_proj``/``q_proj``/``k_proj``, optional
       ``q_norm``/``k_norm``) instead of isinstance checks.
+    - Qwen3.5 hybrid attention is handled in the query reprojection: when
+      ``q_proj`` emits ``num_heads * head_dim * 2`` features the per-head output
+      gate is sliced off, and ``_non_causal_scores`` rotates only the first
+      ``rotary_dim`` channels (partial rotary), passing the rest through. Both
+      reduce to the prior full-head behavior when ``rotary_dim == head_dim`` and
+      the gate is absent, so non-hybrid models (Llama/Qwen3/Gemma3) are
+      unaffected.
     - ``phi``: optional injected sketch matrix used verbatim (no 1/sqrt(k)
       scaling) for deterministic tests; upstream draws a fresh
       ``torch.randn`` every call, so scores are nondeterministic run-to-run.

@@ -82,6 +82,14 @@ class SnapKVSketch(ScorerKVCompressor):
       presence for Phi3-style fused projections, ``getattr(module, "q_norm",
       None)`` for qk-norm families) instead of isinstance checks against
       transformers attention classes.
+    - Qwen3.5 hybrid attention is handled in the query reprojection: when
+      ``q_proj`` emits ``num_heads * head_dim * 2`` features the per-head output
+      gate is sliced off (recovering the query the model actually uses), and
+      ``compute_window_attention`` rotates only the first ``rotary_dim`` channels
+      (partial rotary), passing the rest through. Both reduce to the prior
+      full-head behavior on non-hybrid models -- the gate slice is guarded on the
+      doubled width, and ``rotary_dim == head_dim`` leaves no passthrough -- so
+      Llama/Qwen3/Gemma3 are unaffected. Inherited unchanged by PyramidKVSketch.
     - ``kernel_size`` is asserted odd in ``__post_init__``: an even kernel
       makes the pooled length ``k_len - window_size + 1`` and kvpress crashes
       later in the GQA ``view`` with an opaque shape error.
