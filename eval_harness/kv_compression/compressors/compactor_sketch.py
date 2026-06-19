@@ -110,6 +110,12 @@ class CompactorSketch(ScorerKVCompressor):
     - ``phi``: optional injected sketch matrix used verbatim (no 1/sqrt(k)
       scaling) for deterministic tests; upstream draws a fresh
       ``torch.randn`` every call, so scores are nondeterministic run-to-run.
+    - Leverage Cholesky jitter (``_chol_with_jitter``): upstream's absolute
+      jitter ladder (max 1e2) cannot regularize the length-scaled Gram matrix
+      ``G = XᵀX`` at long context, so Compactor fails at RULER-64k on
+      head_dim=128 models (Llama/Ministral) — a real kvpress limitation, not a
+      port bug. A scale-relative jitter fallback runs ONLY after the faithful
+      ladder is exhausted, so inputs that succeed upstream are bit-identical.
     - Empty-interior guard: when sink protection covers the whole sequence,
       uniform zero scores are returned (topk then keeps an arbitrary
       subset); upstream crashes on this input.
@@ -146,7 +152,18 @@ class CompactorSketch(ScorerKVCompressor):
 
     @staticmethod
     def _chol_with_jitter(G: torch.Tensor, jitter: float = 0.0, max_tries: int = 5) -> torch.Tensor:
-        """Cholesky factorization with adaptive jitter (kvpress ``LeverageScorePress.chol_with_jitter``)."""
+        """Cholesky factorization with adaptive jitter (kvpress ``LeverageScorePress.chol_with_jitter``).
+
+        DEVIATION (Prism-Test): upstream raises once the absolute jitter ladder
+        (1e-2 ×10 → max 1e2) is exhausted. That ladder cannot regularize
+        ``G = XᵀX`` whose magnitude scales with sequence length S, so Compactor
+        fails the leverage Cholesky at long context (RULER-64k) on head_dim=128
+        models (Llama/Ministral); upstream kvpress has the same limitation. After
+        the faithful ladder fails we fall back to a jitter scaled to ``G``'s
+        diagonal magnitude. This branch runs ONLY when the upstream ladder would
+        already have raised, so any input that succeeds upstream returns a
+        bit-identical factor here (shorter contexts are unchanged).
+        """
         identity = torch.eye(G.shape[-1], device=G.device, dtype=G.dtype)
         cur = float(jitter)
         for _ in range(max_tries):
@@ -154,7 +171,20 @@ class CompactorSketch(ScorerKVCompressor):
             if bool((info == 0).all()):
                 return L
             cur = max(1e-8, (1e-2 if cur == 0.0 else 10.0 * cur))
-        raise RuntimeError(f"Cholesky failed after {max_tries} tries.")
+        # Scale-relative fallback (only reached after the faithful absolute ladder fails):
+        # regularize relative to G's diagonal magnitude so long-context (large-S) Gram
+        # matrices can be made PSD. Minimal regularization — smallest 10^p that succeeds.
+        scale = G.diagonal(dim1=-2, dim2=-1).abs().mean().clamp_min(1e-12)
+        cur = 1e-6 * float(scale)
+        for _ in range(max_tries + 5):
+            L, info = torch.linalg.cholesky_ex(G + cur * identity, upper=False)
+            if bool((info == 0).all()):
+                return L
+            cur *= 10.0
+        raise RuntimeError(
+            f"Cholesky failed after absolute ({max_tries}) + relative ({max_tries + 5}) "
+            f"jitter tries (G diag scale={float(scale):.3e})."
+        )
 
     def _compute_leverage_scores(self, key_states: torch.Tensor) -> torch.Tensor:
         """Approximate leverage scores on pre-RoPE keys via right Gaussian sketching."""
