@@ -242,6 +242,15 @@ class RidgeSketch(KVCompressor):
             logger.warning("Could not compute queries from q_proj: %s", exc)
             return None
 
+        # Qwen3.5 gated attention fuses [query | gate] per head into q_proj (width
+        # = num_attention_heads * head_dim * 2). Slice off the gate to recover the
+        # query the model uses (torch.chunk(q_proj(x).view(*, -1, 2*D), 2, -1)[0]).
+        # No-op on non-gated models; without it the gate channels are mistaken for
+        # extra heads and pollute the omega = ||Q k|| query gram.
+        n_q_heads = getattr(getattr(module, "config", None), "num_attention_heads", None)
+        if n_q_heads is not None and q.shape[-1] == n_q_heads * D * 2:
+            q = q.view(B, T, n_q_heads, D * 2)[..., :D].reshape(B, T, n_q_heads * D)
+
         if q.shape[-1] % D != 0:
             logger.warning("q_proj output dim %s is not divisible by head_dim %s", q.shape[-1], D)
             return None
