@@ -42,6 +42,9 @@ from eval_harness.kv_compression.compressors.think_sketch import (
 from eval_harness.kv_compression.compressors.kvzip_sketch import (
     _get_prerope_query_states as kvzip_q,
 )
+from eval_harness.kv_compression.compressors.non_causal_attention_sketch import (
+    _get_prerope_query_states as noncausal_q,
+)
 
 HELPERS = [
     ("snapkv", snapkv_q),
@@ -52,6 +55,7 @@ HELPERS = [
     ("simlayerkv", simlayerkv_q),
     ("think", think_q),
     ("kvzip", kvzip_q),
+    ("non_causal_attention", noncausal_q),
 ]
 
 
