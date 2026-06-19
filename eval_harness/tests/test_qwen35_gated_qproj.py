@@ -27,8 +27,32 @@ from eval_harness.kv_compression.compressors.expected_attention_sketch import (
 from eval_harness.kv_compression.compressors.compactor_sketch import (
     _get_prerope_query_states as compactor_q,
 )
+from eval_harness.kv_compression.compressors.finch_sketch import (
+    _get_prerope_query_states as finch_q,
+)
+from eval_harness.kv_compression.compressors.tova_sketch import (
+    _get_prerope_query_states as tova_q,
+)
+from eval_harness.kv_compression.compressors.simlayerkv_sketch import (
+    _get_prerope_query_states as simlayerkv_q,
+)
+from eval_harness.kv_compression.compressors.think_sketch import (
+    _get_prerope_query_states as think_q,
+)
+from eval_harness.kv_compression.compressors.kvzip_sketch import (
+    _get_prerope_query_states as kvzip_q,
+)
 
-HELPERS = [("snapkv", snapkv_q), ("expected_attention", ea_q), ("compactor", compactor_q)]
+HELPERS = [
+    ("snapkv", snapkv_q),
+    ("expected_attention", ea_q),
+    ("compactor", compactor_q),
+    ("finch", finch_q),
+    ("tova", tova_q),
+    ("simlayerkv", simlayerkv_q),
+    ("think", think_q),
+    ("kvzip", kvzip_q),
+]
 
 
 def _make_module(num_heads, head_dim, hidden, gated, q_norm=None):

@@ -31,10 +31,16 @@ def _get_prerope_query_states(module: nn.Module, hidden_states: torch.Tensor) ->
     elif hasattr(module, "q_proj"):
         # Assume Llama-like attention layer
         query_states = module.q_proj(hidden_states)
+        # Qwen3.5 gated attention fuses [query | gate] per head into q_proj
+        # (output dim = num_heads * head_dim * 2). Slice off the gate to recover
+        # the pre-RoPE query, matching Qwen3_5Attention.forward's
+        # torch.chunk(q_proj(x).view(*, -1, head_dim * 2), 2, dim=-1).
+        if query_states.shape[-1] == num_heads * head_dim * 2:
+            query_states = query_states.view(bsz, q_len, num_heads, head_dim * 2)[..., :head_dim]
     else:
         raise NotImplementedError(f"FinchSketch not yet implemented for {module.__class__}.")
 
-    query_states = query_states.view(bsz, q_len, num_heads, head_dim).transpose(1, 2)
+    query_states = query_states.reshape(bsz, q_len, num_heads, head_dim).transpose(1, 2)
 
     q_norm = getattr(module, "q_norm", None)
     if q_norm is not None:
@@ -62,7 +68,14 @@ def _compute_window_attention(
 
     cos, sin = position_embeddings
     cos, sin = cos[:, -window_size:], sin[:, -window_size:]
-    query_states = (query_states * cos.unsqueeze(1)) + (rotate_half(query_states) * sin.unsqueeze(1))
+    # Partial rotary (Qwen3.5: rotary_dim < head_dim) — rotate only the first
+    # rotary_dim channels and pass the rest through; reduces to full RoPE when
+    # rotary_dim == head_dim.
+    rotary_dim = cos.shape[-1]
+    cos_u, sin_u = cos.unsqueeze(1), sin.unsqueeze(1)
+    q_rot, q_pass = query_states[..., :rotary_dim], query_states[..., rotary_dim:]
+    q_rot = (q_rot * cos_u) + (rotate_half(q_rot) * sin_u)
+    query_states = torch.cat([q_rot, q_pass], dim=-1)
 
     key_states = repeat_kv(keys, num_key_value_groups)
     attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(head_dim)
@@ -111,7 +124,13 @@ def _rerotate_keys(module: nn.Module, indices: torch.Tensor, keys: torch.Tensor)
     new_cos, new_sin = _rerotate_cos_sin(keys, module.rotary_emb.inv_freq, indices)
     indices = indices.unsqueeze(-1).expand(-1, -1, -1, module.head_dim)
     keys = keys.gather(2, indices).contiguous()
-    return (keys * new_cos) + (rotate_half(keys) * new_sin)
+    # Partial rotary (Qwen3.5): new_cos/new_sin span only rotary_dim channels;
+    # re-rotate that block and leave the passthrough channels unchanged. Reduces
+    # to full re-rotation when rotary_dim == head_dim.
+    rotary_dim = new_cos.shape[-1]
+    k_rot, k_pass = keys[..., :rotary_dim], keys[..., rotary_dim:]
+    k_rot = (k_rot * new_cos) + (rotate_half(k_rot) * new_sin)
+    return torch.cat([k_rot, k_pass], dim=-1)
 
 
 @register_kv_compressor("finch")
