@@ -27,10 +27,16 @@ def _get_prerope_query_states(module: nn.Module, hidden_states: torch.Tensor) ->
         query_states = qkv_proj(hidden_states)[..., : num_heads * head_dim]
     elif hasattr(module, "q_proj"):
         query_states = module.q_proj(hidden_states)
+        # Qwen3.5 gated attention fuses [query | gate] per head into q_proj
+        # (output dim = num_heads * head_dim * 2). Slice off the gate to recover
+        # the pre-RoPE query, matching Qwen3_5Attention.forward's
+        # torch.chunk(q_proj(x).view(*, -1, head_dim * 2), 2, dim=-1).
+        if query_states.shape[-1] == num_heads * head_dim * 2:
+            query_states = query_states.view(bsz, q_len, num_heads, head_dim * 2)[..., :head_dim]
     else:
         raise NotImplementedError(f"Sketch not yet implemented for {module.__class__}.")
 
-    query_states = query_states.view(bsz, q_len, num_heads, head_dim).transpose(1, 2)
+    query_states = query_states.reshape(bsz, q_len, num_heads, head_dim).transpose(1, 2)
 
     q_norm = getattr(module, "q_norm", None)
     if q_norm is not None:
@@ -76,6 +82,14 @@ class SnapKVSketch(ScorerKVCompressor):
       presence for Phi3-style fused projections, ``getattr(module, "q_norm",
       None)`` for qk-norm families) instead of isinstance checks against
       transformers attention classes.
+    - Qwen3.5 hybrid attention is handled in the query reprojection: when
+      ``q_proj`` emits ``num_heads * head_dim * 2`` features the per-head output
+      gate is sliced off (recovering the query the model actually uses), and
+      ``compute_window_attention`` rotates only the first ``rotary_dim`` channels
+      (partial rotary), passing the rest through. Both reduce to the prior
+      full-head behavior on non-hybrid models -- the gate slice is guarded on the
+      doubled width, and ``rotary_dim == head_dim`` leaves no passthrough -- so
+      Llama/Qwen3/Gemma3 are unaffected. Inherited unchanged by PyramidKVSketch.
     - ``kernel_size`` is asserted odd in ``__post_init__``: an even kernel
       makes the pooled length ``k_len - window_size + 1`` and kvpress crashes
       later in the GQA ``view`` with an opaque shape error.
@@ -120,7 +134,15 @@ class SnapKVSketch(ScorerKVCompressor):
 
         cos, sin = position_embeddings
         cos, sin = cos[:, -window_size:], sin[:, -window_size:]
-        query_states = (query_states * cos.unsqueeze(1)) + (rotate_half(query_states) * sin.unsqueeze(1))
+        # Partial rotary (Qwen3.5: rotary_dim = head_dim * partial_rotary_factor
+        # < head_dim) — rotate only the first rotary_dim channels and leave the
+        # passthrough channels unchanged, mirroring the model's
+        # apply_rotary_pos_emb. Reduces to full RoPE when rotary_dim == head_dim.
+        rotary_dim = cos.shape[-1]
+        cos_u, sin_u = cos.unsqueeze(1), sin.unsqueeze(1)
+        q_rot, q_pass = query_states[..., :rotary_dim], query_states[..., rotary_dim:]
+        q_rot = (q_rot * cos_u) + (rotate_half(q_rot) * sin_u)
+        query_states = torch.cat([q_rot, q_pass], dim=-1)
 
         key_states = repeat_kv(keys, num_key_value_groups)
         attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(head_dim)
