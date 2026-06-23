@@ -26,10 +26,16 @@ def _get_prerope_query_states(module: nn.Module, hidden_states: torch.Tensor) ->
         query_states = qkv_proj(hidden_states)[..., : num_heads * head_dim]
     elif hasattr(module, "q_proj"):
         query_states = module.q_proj(hidden_states)
+        # Qwen3.5 gated attention fuses [query | gate] per head into q_proj
+        # (output dim = num_heads * head_dim * 2). Slice off the gate to recover
+        # the pre-RoPE query, matching Qwen3_5Attention.forward's
+        # torch.chunk(q_proj(x).view(*, -1, head_dim * 2), 2, dim=-1).
+        if query_states.shape[-1] == num_heads * head_dim * 2:
+            query_states = query_states.view(bsz, q_len, num_heads, head_dim * 2)[..., :head_dim]
     else:
         raise NotImplementedError(f"Sketch not yet implemented for {module.__class__}.")
 
-    query_states = query_states.view(bsz, q_len, num_heads, head_dim).transpose(1, 2)
+    query_states = query_states.reshape(bsz, q_len, num_heads, head_dim).transpose(1, 2)
 
     q_norm = getattr(module, "q_norm", None)
     if q_norm is not None:
@@ -88,7 +94,10 @@ class ExpectedAttentionSketch(ScorerKVCompressor):
     - ``get_prerope_query_states`` is inlined here with duck-typing
       (``qkv_proj`` presence for Phi3-style fused projections, ``q_proj``
       otherwise, ``getattr(module, "q_norm", None)`` for qk-norm families)
-      instead of isinstance checks against transformers attention classes.
+      instead of isinstance checks against transformers attention classes. It
+      also slices off the per-head output gate when ``q_proj`` emits
+      ``num_heads * head_dim * 2`` features (Qwen3.5 gated attention); the slice
+      is guarded on that width, so non-gated families are unaffected.
 
     Notes
     -----
@@ -97,8 +106,16 @@ class ExpectedAttentionSketch(ScorerKVCompressor):
       ``S <= n_sink`` raise an AssertionError; if ``n_kept < n_sink`` topk
       ties on the max-padded sinks drop some sinks arbitrarily; kept K/V are
       stored in descending-score (not positional) order.
-    - Requires even ``head_dim`` and full-width rotary (no partial-rotary
-      models), as upstream.
+    - Partial rotary (``rotary_dim < head_dim``, e.g. Qwen3.5) is supported:
+      ``apply_avg_rope`` builds the averaged rotation matrix on the rotary block
+      only and embeds it in a ``head_dim`` identity (the passthrough channels),
+      reducing exactly to the full-head rotation when ``rotary_dim == head_dim``
+      (Llama/Qwen3/Gemma3). Requires even ``head_dim`` (and even ``rotary_dim``),
+      as upstream.
+    - No-RoPE models (e.g. NemotronH attention, which applies no rotary and
+      exposes no ``rotary_emb``) skip ``apply_avg_rope`` entirely — the averaged
+      rotation is the identity, so the un-rotated query statistics score the
+      un-rotated cached keys, matching the model's actual attention.
     - Do not compose with the DCA prefill method: DCA stores keys rotated at
       cyclic positions ``pos % chunk_len``, which mismatches the
       absolute-future-position frame of the averaged rotation matrix.
@@ -159,17 +176,32 @@ class ExpectedAttentionSketch(ScorerKVCompressor):
         cov : torch.Tensor
             The covariance matrix of the queries after RoPE.
         """
+        rotary_emb = getattr(module, "rotary_emb", None)
+        if rotary_emb is None:
+            # No-RoPE model (e.g. NemotronH attention, which applies no rotary):
+            # future positions carry no rotation, so the averaged RoPE matrix is
+            # the identity — use the query mean/covariance unchanged.
+            return mu, cov
+
         position_ids = torch.arange(q_len, q_len + self.n_future_positions).unsqueeze(0).to(mu.device)
         head_dim = module.head_dim
-        cos, sin = module.rotary_emb(mu, position_ids)
+        cos, sin = rotary_emb(mu, position_ids)
         cos, sin = cos[0], sin[0]
-        Id = torch.eye(head_dim, device=cos.device, dtype=cos.dtype)
-        P = torch.zeros((head_dim, head_dim), device=cos.device, dtype=cos.dtype)
-        P[head_dim // 2 :, : head_dim // 2], P[: head_dim // 2, head_dim // 2 :] = torch.eye(head_dim // 2), -torch.eye(
-            head_dim // 2
-        )
-        R = cos.unsqueeze(1) * Id + sin.unsqueeze(1) * P
-        R = R.mean(dim=0).to(mu.device)
+        # Partial rotary (Qwen3.5): cos/sin span only rotary_dim = head_dim *
+        # partial_rotary_factor channels. Build the averaged RoPE rotation on the
+        # rotary block and embed it into a full head_dim rotation with an identity
+        # passthrough block, mirroring the model's apply_rotary_pos_emb. Reduces to
+        # a full rotation when rotary_dim == head_dim.
+        rotary_dim = cos.shape[-1]
+        half = rotary_dim // 2
+        Id = torch.eye(rotary_dim, device=cos.device, dtype=cos.dtype)
+        P = torch.zeros((rotary_dim, rotary_dim), device=cos.device, dtype=cos.dtype)
+        P[half:, :half] = torch.eye(half, device=cos.device, dtype=cos.dtype)
+        P[:half, half:] = -torch.eye(half, device=cos.device, dtype=cos.dtype)
+        R_rot = (cos.unsqueeze(1) * Id + sin.unsqueeze(1) * P).mean(dim=0)
+        R = torch.eye(head_dim, device=cos.device, dtype=cos.dtype)
+        R[:rotary_dim, :rotary_dim] = R_rot
+        R = R.to(mu.device)
         mu = torch.matmul(mu, R.T)
         if cov is not None:
             cov = torch.matmul(R, torch.matmul(cov, R.T))

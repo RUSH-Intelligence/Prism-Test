@@ -139,7 +139,13 @@ class KeyRerotationSketch(KVCompressor):
         new_cos, new_sin = KeyRerotationSketch._rerotate_cos_sin(keys, module.rotary_emb.inv_freq, indices)
         indices = indices.unsqueeze(-1).expand(-1, -1, -1, module.head_dim)
         keys = keys.gather(2, indices).contiguous()
-        return (keys * new_cos) + (rotate_half(keys) * new_sin)
+        # Partial rotary (Qwen3.5): new_cos/new_sin span only rotary_dim channels;
+        # re-rotate that block and leave the passthrough channels unchanged. Reduces
+        # to full re-rotation when rotary_dim == head_dim.
+        rotary_dim = new_cos.shape[-1]
+        k_rot, k_pass = keys[..., :rotary_dim], keys[..., rotary_dim:]
+        k_rot = (k_rot * new_cos) + (rotate_half(k_rot) * new_sin)
+        return torch.cat([k_rot, k_pass], dim=-1)
 
     def compress(
         self,

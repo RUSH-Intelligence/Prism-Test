@@ -63,7 +63,21 @@ class PyramidKVSketch(SnapKVSketch):
       ``compression_ratio == 0`` (kvpress installs no such guard).
     - ``uniform_budget`` flag (see above); not present in kvpress.
     - Inherits SnapKV's deviations (duck-typed pre-RoPE query extraction,
-      odd-``kernel_size`` assert, dead ``attentions`` branch).
+      odd-``kernel_size`` assert, dead ``attentions`` branch) and its Qwen3.5
+      hybrid handling: the inherited ``compute_window_attention`` /
+      ``_get_prerope_query_states`` slice off the gated-``q_proj`` output gate
+      and apply partial rotary, both reducing to full-head behavior on
+      non-hybrid models. No pyramidkv-specific change is needed for the query
+      reprojection (only ``get_layer_budget`` differs from SnapKV).
+
+    On sparse-attention hybrids (NemotronH: only a few full-attention layers
+    among many mamba/mlp blocks), the "global ratio honored exactly" invariant
+    holds only when averaged over ALL ``num_hidden_layers`` indices — the pyramid
+    line is sampled at the attention layers' *absolute* depths
+    (``module.layer_idx``), so the realized compression over the handful of
+    compressed attention layers is somewhat MORE aggressive than the nominal
+    ``compression_ratio``. Budgets remain valid, positive and strictly
+    decreasing with depth.
 
     Quirks kept for kvpress parity: budgets use Python ``round()`` (banker's
     rounding, e.g. ``round(62.5) == 62``), not ``int()`` truncation; the

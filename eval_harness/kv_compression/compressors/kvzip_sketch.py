@@ -44,10 +44,16 @@ def _get_prerope_query_states(module: nn.Module, hidden_states: torch.Tensor) ->
         query_states = qkv_proj(hidden_states)[..., : num_heads * head_dim]
     elif hasattr(module, "q_proj"):
         query_states = module.q_proj(hidden_states)
+        # Qwen3.5 gated attention fuses [query | gate] per head into q_proj
+        # (output dim = num_heads * head_dim * 2). Slice off the gate to recover
+        # the pre-RoPE query, matching Qwen3_5Attention.forward's
+        # torch.chunk(q_proj(x).view(*, -1, head_dim * 2), 2, dim=-1).
+        if query_states.shape[-1] == num_heads * head_dim * 2:
+            query_states = query_states.view(bsz, q_len, num_heads, head_dim * 2)[..., :head_dim]
     else:
         raise NotImplementedError(f"Sketch not yet implemented for {module.__class__}.")
 
-    query_states = query_states.view(bsz, q_len, num_heads, head_dim).transpose(1, 2)
+    query_states = query_states.reshape(bsz, q_len, num_heads, head_dim).transpose(1, 2)
 
     q_norm = getattr(module, "q_norm", None)
     if q_norm is not None:
@@ -407,7 +413,14 @@ class KVzipSketch(KVCompressor):
 
         # Apply RoPE
         cos, sin = kwargs["position_embeddings"]
-        queries = (queries * cos.unsqueeze(1)) + (rotate_half(queries) * sin.unsqueeze(1))
+        # Partial rotary (Qwen3.5: rotary_dim < head_dim) — rotate only the first
+        # rotary_dim channels and pass the rest through; reduces to full RoPE when
+        # rotary_dim == head_dim.
+        rotary_dim = cos.shape[-1]
+        cos_u, sin_u = cos.unsqueeze(1), sin.unsqueeze(1)
+        q_rot, q_pass = queries[..., :rotary_dim], queries[..., rotary_dim:]
+        q_rot = (q_rot * cos_u) + (rotate_half(q_rot) * sin_u)
+        queries = torch.cat([q_rot, q_pass], dim=-1)
         queries = queries.view(bsz, num_heads_kv, num_key_value_groups, q_len, head_dim)
 
         # Subsample keys

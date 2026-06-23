@@ -22,7 +22,20 @@ def _layer_seq_length(layer) -> Optional[int]:
 
 
 def _can_slice_attention_kv(layer) -> bool:
-    return hasattr(layer, "keys") and hasattr(layer, "values")
+    # A sliceable attention layer must hold real K/V tensors. In the unified
+    # transformers cache, EVERY per-layer slot is a CacheLayerMixin exposing
+    # ``keys``/``values`` attributes — including the mamba/mlp slots of a hybrid
+    # model (NemotronH), where they stay ``None`` because no attention layer
+    # populates them. ``hasattr`` alone would wrongly include those stateful
+    # (non-K/V) slots and then crash checkpoint/restore on ``None[:, :, :n]``.
+    keys = getattr(layer, "keys", None)
+    values = getattr(layer, "values", None)
+    return (
+        keys is not None
+        and values is not None
+        and hasattr(keys, "shape")
+        and len(keys.shape) >= 3
+    )
 
 
 class CacheAdapter:
@@ -134,11 +147,31 @@ def _is_hybrid_model(model: PreTrainedModel) -> bool:
     except Exception:
         decoder_cfg = cfg
 
-    layer_types = getattr(decoder_cfg, "layer_types", None) or []
+    # Per-layer type list: ``layer_types`` (Qwen3.5/Gemma3) or, for NemotronH,
+    # ``layers_block_type`` (native transformers also aliases this onto
+    # ``layer_types``). Values look like "full_attention"/"linear_attention"
+    # (Qwen3.5) or "attention"/"mamba"/"mlp" (NemotronH Mamba-attention hybrid).
+    layer_types = (
+        getattr(decoder_cfg, "layer_types", None)
+        or getattr(decoder_cfg, "layers_block_type", None)
+        or []
+    )
     lowered = [str(t).lower() for t in layer_types]
-    has_linear = any("linear" in t for t in lowered)
-    has_full_or_sliding = any(("attention" in t or "sliding" in t) for t in lowered)
-    return has_linear and has_full_or_sliding
+    # "Hybrid" here means some layers hold NO standard K/V cache (linear-attention
+    # or mamba), so checkpoint/restore must skip them. Sliding attention still
+    # has a K/V cache and therefore does NOT, by itself, make a model hybrid.
+    has_stateful = any(("linear" in t or "mamba" in t) for t in lowered)
+    has_attention = any("attention" in t for t in lowered)
+    if has_stateful and has_attention:
+        return True
+
+    # NemotronH configs may carry only the raw pattern string (M=mamba,
+    # *=attention, -=mlp) without an expanded per-layer list.
+    pattern = getattr(decoder_cfg, "hybrid_override_pattern", None)
+    if isinstance(pattern, str) and "M" in pattern and "*" in pattern:
+        return True
+
+    return False
 
 
 def create_cache_adapter(model: PreTrainedModel) -> CacheAdapter:

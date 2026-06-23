@@ -195,6 +195,31 @@ Constraints to keep in mind when wiring runs or reviewing changes:
 - Most position-sensitive scorers assume vanilla absolute-position rotated keys: do **not**
   combine with `attention_method: dca` (cyclic positions); validated combo is
   `attention_method: none` unless the docstring says otherwise.
+- **Mamba-attention hybrids (NemotronH — `nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16`)**: only the
+  few full-attention layers carry a K/V cache (the 4B is 42 layers, 4 attention; the rest are
+  Mamba2/MLP). The framework hooks **only** the attention layers and leaves mamba/mlp untouched.
+  Detection: a block is full-attention iff `block.block_type == "attention"` (or
+  `config.layers_block_type`/`hybrid_override_pattern`) — handled in
+  `_is_non_full_attention_layer` and `_is_hybrid_model`. The attention module lives under
+  `block.mixer` (not `self_attn`); the install loop resolves it via `_resolve_attention_module`.
+  NemotronH attention uses **no RoPE** — the `rotary_emb` install assignment is guarded, and
+  `snapkv`/`pyramidkv` skip query rotation when `position_embeddings` is absent (scoring raw
+  queries, which is exactly what the model computes; `compactor` and `expected_attention`
+  likewise reduce their RoPE step to identity when the module has no `rotary_emb`). Validated:
+  `knorm`, `ridge`, `snapkv`, `pyramidkv`, `compactor`, `expected_attention`, `keydiff`
+  (config `evaluate/evaluate_nemotron_kv.yaml`; tests
+  `tests/test_nemotron_h_kv_compression.py`). Keep `attention_method: none`. **Real runs need a
+  CUDA GPU and a transformers build with the native `nemotron_h` architecture** (which threads
+  `past_key_values` through `block.mixer` and uses a plain `DynamicCache`); `pyramidkv`'s ragged
+  cache needs `flash_attention_2` or `uniform_budget: true`. Use **single-pass prefill**
+  (`prefill_chunk_size: null`, the default) so the compressor fires ONCE on the full cache and
+  retains `(1-ratio)·prompt`; chunked prefill makes the post-prefill hook fire per chunk →
+  geometric over-eviction. A single-pass 16k Mamba prefill needs the fast Mamba kernels
+  (`use_mamba_kernels` default True → `kernels-community/causal-conv1d` + `mamba-ssm`; the
+  pure-torch SSD path OOMs), and the research pipeline feeds the question **token-by-token** for
+  Mamba models (their cached decode assumes `q_len==1`; see `research_pipeline._model_has_mamba_layers`).
+  Run **online** so the kernels lib can verify the trusted publisher. Confirmed on H200: ratio 0.5
+  on a ~15.6k prompt retains ~7.8k on the attention layers only.
 
 ## Conventions
 
@@ -203,5 +228,5 @@ Constraints to keep in mind when wiring runs or reviewing changes:
 - New benchmarks: drop into `eval_harness/benchmarks/`, subclass `base.Benchmark`, register in `registry.py`.
 - New positional methods (door 1): drop into `eval_harness/positional_methods/`, subclass `PositionalMethod`, decorate with `@register_positional_method`. Override `compute_inv_freq` (frequency scaling) and/or `remap_position_ids` (position remap); set `mscale` for a logit temperature.
 - New attention methods (door 2): drop into `eval_harness/attention_methods/`, subclass `AttentionMethod`, decorate with `@register_attention_method`. Implement `attention_forward` (one impl; framework gates it by `phase` ∈ prefill|decode|both) and `setup(model)`. Custom kernels live in `eval_harness/kernels/`. (Legacy faithful methods — reattention / reattention_exact — now live in `attention_methods/` as `PrefillMethod` subclasses and are reachable via `attention_method`.)
-- New KV compressors (door 3): drop into `eval_harness/kv_compression/compressors/`, subclass `KVCompressor` (or `ScorerKVCompressor` for score-and-topk methods), decorate with `@register_kv_compressor` — auto-discovered, selected via `kv_compressor` + `kv_compressor_kwargs`; `schedule` ∈ streaming|post_prefill|decode gates firing. Ports of kvpress presses replicate upstream quirks on purpose and document deviations in the class docstring; keep that contract when editing.
+- New KV compressors (door 3): drop into `eval_harness/kv_compression/compressors/`, subclass `KVCompressor` (or `ScorerKVCompressor` for score-and-topk methods), decorate with `@register_kv_compressor` — auto-discovered, selected via `kv_compressor` + `kv_compressor_kwargs`; `schedule` ∈ streaming|post_prefill|decode gates firing. Ports of kvpress presses replicate upstream quirks on purpose and document deviations in the class docstring; keep that contract when editing. On mixed-attention models (Qwen3.5/Gemma3/NemotronH) the hook fires **only** on full-softmax layers — read head counts from `module.config`/tensor shapes and treat `kwargs.get("position_embeddings")` as optional (NemotronH applies no RoPE) so a new compressor composes with hybrids out of the box.
 - The HF `DynamicCache` on the research path stores **RoPE-rotated** K/V. `KnormSketch` norm-scoring is still valid (RoPE is orthogonal, norms preserved), but any consumer that assumes contiguous absolute positions must account for DCA's cyclic-rotated keys.

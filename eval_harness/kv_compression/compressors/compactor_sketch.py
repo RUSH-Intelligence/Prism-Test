@@ -22,10 +22,16 @@ def _get_prerope_query_states(module: nn.Module, hidden_states: torch.Tensor) ->
         query_states = qkv[..., : num_heads * head_dim]
     elif hasattr(module, "q_proj"):
         query_states = module.q_proj(hidden_states)
+        # Qwen3.5 gated attention fuses [query | gate] per head into q_proj
+        # (output dim = num_heads * head_dim * 2). Slice off the gate to recover
+        # the pre-RoPE query, matching Qwen3_5Attention.forward's
+        # torch.chunk(q_proj(x).view(*, -1, head_dim * 2), 2, dim=-1).
+        if query_states.shape[-1] == num_heads * head_dim * 2:
+            query_states = query_states.view(bsz, q_len, num_heads, head_dim * 2)[..., :head_dim]
     else:
         raise NotImplementedError(f"CompactorSketch not yet implemented for {module.__class__}.")
 
-    query_states = query_states.view(bsz, q_len, num_heads, head_dim).transpose(1, 2)
+    query_states = query_states.reshape(bsz, q_len, num_heads, head_dim).transpose(1, 2)
 
     q_norm = getattr(module, "q_norm", None)
     if q_norm is not None:
@@ -94,6 +100,13 @@ class CompactorSketch(ScorerKVCompressor):
     - ``get_prerope_query_states``/``get_prerope_key_states`` are inlined
       with duck-typing (``qkv_proj``/``q_proj``/``k_proj``, optional
       ``q_norm``/``k_norm``) instead of isinstance checks.
+    - Qwen3.5 hybrid attention is handled in the query reprojection: when
+      ``q_proj`` emits ``num_heads * head_dim * 2`` features the per-head output
+      gate is sliced off, and ``_non_causal_scores`` rotates only the first
+      ``rotary_dim`` channels (partial rotary), passing the rest through. Both
+      reduce to the prior full-head behavior when ``rotary_dim == head_dim`` and
+      the gate is absent, so non-hybrid models (Llama/Qwen3/Gemma3) are
+      unaffected.
     - ``phi``: optional injected sketch matrix used verbatim (no 1/sqrt(k)
       scaling) for deterministic tests; upstream draws a fresh
       ``torch.randn`` every call, so scores are nondeterministic run-to-run.
@@ -101,11 +114,20 @@ class CompactorSketch(ScorerKVCompressor):
       ``torch.Generator`` initialized once and advanced across layers, making
       runs reproducible while still using a different sketch per layer.
       Default ``None`` matches kvpress's nondeterministic behavior.
+    - Leverage Cholesky jitter (``_chol_with_jitter``): upstream's absolute
+      jitter ladder (max 1e2) cannot regularize the length-scaled Gram matrix
+      ``G = XᵀX`` at long context, so Compactor fails at RULER-64k on
+      head_dim=128 models (Llama/Ministral) — a real kvpress limitation, not a
+      port bug. A scale-relative jitter fallback runs ONLY after the faithful
+      ladder is exhausted, so inputs that succeed upstream are bit-identical.
     - Empty-interior guard: when sink protection covers the whole sequence,
       uniform zero scores are returned (topk then keeps an arbitrary
       subset); upstream crashes on this input.
     - ``(cos, sin)`` are rebuilt from ``module.rotary_emb`` when
-      ``kwargs['position_embeddings']`` is unavailable.
+      ``kwargs['position_embeddings']`` is unavailable. On no-RoPE models
+      (e.g. NemotronH, no ``rotary_emb``) an identity rotation (cos=1, sin=0) is
+      used, so the non-causal q·k logits use raw queries against the raw keys —
+      matching the model's actual (rotary-free) attention.
 
     Do not combine with ``attention_method: dca``: DCA caches keys rotated at
     cyclic positions, which breaks the non-causal q.k logits.
@@ -147,7 +169,18 @@ class CompactorSketch(ScorerKVCompressor):
 
     @staticmethod
     def _chol_with_jitter(G: torch.Tensor, jitter: float = 0.0, max_tries: int = 5) -> torch.Tensor:
-        """Cholesky factorization with adaptive jitter (kvpress ``LeverageScorePress.chol_with_jitter``)."""
+        """Cholesky factorization with adaptive jitter (kvpress ``LeverageScorePress.chol_with_jitter``).
+
+        DEVIATION (Prism-Test): upstream raises once the absolute jitter ladder
+        (1e-2 ×10 → max 1e2) is exhausted. That ladder cannot regularize
+        ``G = XᵀX`` whose magnitude scales with sequence length S, so Compactor
+        fails the leverage Cholesky at long context (RULER-64k) on head_dim=128
+        models (Llama/Ministral); upstream kvpress has the same limitation. After
+        the faithful ladder fails we fall back to a jitter scaled to ``G``'s
+        diagonal magnitude. This branch runs ONLY when the upstream ladder would
+        already have raised, so any input that succeeds upstream returns a
+        bit-identical factor here (shorter contexts are unchanged).
+        """
         identity = torch.eye(G.shape[-1], device=G.device, dtype=G.dtype)
         cur = float(jitter)
         for _ in range(max_tries):
@@ -155,7 +188,20 @@ class CompactorSketch(ScorerKVCompressor):
             if bool((info == 0).all()):
                 return L
             cur = max(1e-8, (1e-2 if cur == 0.0 else 10.0 * cur))
-        raise RuntimeError(f"Cholesky failed after {max_tries} tries.")
+        # Scale-relative fallback (only reached after the faithful absolute ladder fails):
+        # regularize relative to G's diagonal magnitude so long-context (large-S) Gram
+        # matrices can be made PSD. Minimal regularization — smallest 10^p that succeeds.
+        scale = G.diagonal(dim1=-2, dim2=-1).abs().mean().clamp_min(1e-12)
+        cur = 1e-6 * float(scale)
+        for _ in range(max_tries + 5):
+            L, info = torch.linalg.cholesky_ex(G + cur * identity, upper=False)
+            if bool((info == 0).all()):
+                return L
+            cur *= 10.0
+        raise RuntimeError(
+            f"Cholesky failed after absolute ({max_tries}) + relative ({max_tries + 5}) "
+            f"jitter tries (G diag scale={float(scale):.3e})."
+        )
 
     def _compute_leverage_scores(self, key_states: torch.Tensor) -> torch.Tensor:
         """Approximate leverage scores on pre-RoPE keys via right Gaussian sketching."""
@@ -235,7 +281,15 @@ class CompactorSketch(ScorerKVCompressor):
 
         q_len = q.shape[-2]
         num_kv_groups = q.shape[1] // values.shape[1]
-        q = (q * cos[:, -q_len:, :].unsqueeze(1)) + (rotate_half(q) * sin[:, -q_len:, :].unsqueeze(1))
+        # Partial rotary (Qwen3.5: rotary_dim < head_dim) — rotate only the first
+        # rotary_dim channels of q so it matches the (partially) RoPE-rotated
+        # cached keys, mirroring the model's apply_rotary_pos_emb. Reduces to full
+        # RoPE when rotary_dim == head_dim.
+        cos_q, sin_q = cos[:, -q_len:, :].unsqueeze(1), sin[:, -q_len:, :].unsqueeze(1)
+        rotary_dim = cos_q.shape[-1]
+        q_rot, q_pass = q[..., :rotary_dim], q[..., rotary_dim:]
+        q_rot = (q_rot * cos_q) + (rotate_half(q_rot) * sin_q)
+        q = torch.cat([q_rot, q_pass], dim=-1)
 
         A = self._non_causal_chunked_attn(q, repeat_kv(keys, num_kv_groups), self.chunk_size)  # (B, H_q, S)
         A = A.view(A.shape[0], values.shape[1], -1, A.shape[-1]).mean(dim=-2)  # (B, H_kv, S)
@@ -254,9 +308,18 @@ class CompactorSketch(ScorerKVCompressor):
 
         rotary = getattr(module, "rotary_emb", None)
         if rotary is None:
-            raise ValueError(
-                "CompactorSketch requires kwargs['position_embeddings'] or module.rotary_emb"
+            # No-RoPE model (e.g. NemotronH attention, which applies no rotary):
+            # the cached keys are un-rotated, so return an identity rotation
+            # (cos=1, sin=0). The non-causal q·k logits then use raw queries
+            # against raw keys — exactly what the model computes.
+            q_len = hidden_states.shape[-2]
+            head_dim = module.head_dim
+            cos = torch.ones(
+                hidden_states.shape[0], q_len, head_dim,
+                device=hidden_states.device, dtype=hidden_states.dtype,
             )
+            sin = torch.zeros_like(cos)
+            return cos, sin
         cache_position = kwargs.get("cache_position")
         if cache_position is not None:
             position_ids = cache_position.unsqueeze(0)

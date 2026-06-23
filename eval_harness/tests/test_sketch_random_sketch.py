@@ -107,13 +107,17 @@ class TestDeadOverrideFaithfulness(unittest.TestCase):
         self.assertTrue(torch.equal(state_before, torch.get_rng_state()))
 
     def test_bitwise_identical_to_ridge_sketch_query_aware(self):
+        # Keep the real mid-selection query-aware path under the 8/64 defaults
+        # (so tau/omega scoring actually runs, not the degenerate keep_mid==0
+        # branch). T=256, ratio=0.5: sink=8, local=64, mid_len=120,
+        # keep_total=128, keep_mid=128-72=56 (0<56<120) -> out = 8+56+64 = 128.
         module = _FakeAttnModule(seed=1)
-        keys, values, hidden = _rand_inputs(T=128, seed=2)
+        keys, values, hidden = _rand_inputs(T=256, seed=2)
         ridge = RidgeSketch(compression_ratio=0.5)
         rand = RandomSketchRidgeSketch(compression_ratio=0.5)
         ridge_k, ridge_v = ridge.compress(module, hidden, keys, values, None, {})
         rand_k, rand_v = rand.compress(module, hidden, keys, values, None, {})
-        self.assertEqual(rand_k.shape[2], 64)
+        self.assertEqual(rand_k.shape[2], 128)
         self.assertTrue(torch.equal(rand_k, ridge_k))
         self.assertTrue(torch.equal(rand_v, ridge_v))
 
@@ -157,59 +161,92 @@ class TestInheritedRidgeBehavior(unittest.TestCase):
 
     def test_min_tokens_gate(self):
         sketch = RandomSketchRidgeSketch(compression_ratio=0.5)
+        # Below the min_tokens_to_compress=64 gate -> no-op.
         keys63, values63, hidden63 = _rand_inputs(T=63)
         out_k, _ = sketch.compress(_NoQProjModule(), hidden63, keys63, values63, None, {})
         self.assertEqual(out_k.shape[2], 63)
 
-        keys64, values64, hidden64 = _rand_inputs(T=64)
-        out_k, out_v = sketch.compress(_NoQProjModule(), hidden64, keys64, values64, None, {})
-        self.assertEqual(out_k.shape[2], 32)
-        self.assertTrue(torch.equal(out_k, torch.cat([keys64[:, :, :4], keys64[:, :, 36:]], dim=2)))
+        # Above the gate, compression fires. Under the 8/64 defaults T must be
+        # >72 for the mid window to be non-empty; at T=80, ratio=0.5 the budget
+        # int(80*0.5)=40 < sink+local=72 so keep_mid=max(40-72,0)=0 -> the
+        # keep_mid<=0 branch returns [sink | local] = 8 + 64 = 72 tokens (the
+        # same deterministic branch the old 4/28 T=64 case exercised).
+        T = 80
+        keys80, values80, hidden80 = _rand_inputs(T=T)
+        out_k, out_v = sketch.compress(_NoQProjModule(), hidden80, keys80, values80, None, {})
+        sink, local = sketch.sink_size, sketch.local_size
+        mid_end = T - local
+        self.assertEqual(out_k.shape[2], sink + local)
+        self.assertTrue(torch.equal(out_k, torch.cat([keys80[:, :, :sink], keys80[:, :, mid_end:]], dim=2)))
 
     def test_over_keep_edge_exceeds_nominal_budget(self):
-        keys, values, hidden = _rand_inputs(T=64)
+        # 8/64 defaults at T=80, ratio=0.9: sink=8, local=64, mid_end=16,
+        # mid_len=8>0, keep_total=int(80*0.1)=8, keep_mid=max(8-72,0)=0 ->
+        # keep_mid<=0 branch returns [sink | local] = 8 + 64 = 72, which EXCEEDS
+        # the nominal budget int(80*0.1)=8 (the over-keep edge).
+        T = 80
+        keys, values, hidden = _rand_inputs(T=T)
         sketch = RandomSketchRidgeSketch(compression_ratio=0.9)
         out_k, out_v = sketch.compress(_NoQProjModule(), hidden, keys, values, None, {})
-        self.assertEqual(out_k.shape[2], 32)
-        self.assertGreater(out_k.shape[2], int(64 * (1.0 - 0.9)))
-        self.assertTrue(torch.equal(out_k, torch.cat([keys[:, :, :4], keys[:, :, 36:]], dim=2)))
-        self.assertTrue(torch.equal(out_v, torch.cat([values[:, :, :4], values[:, :, 36:]], dim=2)))
+        sink, local = sketch.sink_size, sketch.local_size
+        mid_end = T - local
+        self.assertEqual(out_k.shape[2], sink + local)
+        self.assertGreater(out_k.shape[2], int(T * (1.0 - 0.9)))
+        self.assertTrue(torch.equal(out_k, torch.cat([keys[:, :, :sink], keys[:, :, mid_end:]], dim=2)))
+        self.assertTrue(torch.equal(out_v, torch.cat([values[:, :, :sink], values[:, :, mid_end:]], dim=2)))
 
     def test_budget_arithmetic_and_temporal_order(self):
+        # Keep the real mid-selection path (0 < keep_mid < mid_len) under the
+        # 8/64 defaults so sink/local pinning AND temporal ordering of the
+        # selected mid tokens are actually exercised. T=200, ratio=0.5:
+        # sink=8, local=64, mid_start=8, mid_end=136, mid_len=128,
+        # keep_total=100, keep_mid=100-72=28 (0<28<128) -> out = 8+28+64 = 100.
+        T = 200
         module = _FakeAttnModule(seed=5)
-        keys, values, hidden = _rand_inputs(T=100, seed=6)
+        keys, values, hidden = _rand_inputs(T=T, seed=6)
         sketch = RandomSketchRidgeSketch(compression_ratio=0.5)
         out_k, out_v = sketch.compress(module, hidden, keys, values, None, {})
-        self.assertEqual(out_k.shape[2], 50)
-        self.assertTrue(torch.equal(out_k[:, :, :4], keys[:, :, :4]))
-        self.assertTrue(torch.equal(out_k[:, :, -28:], keys[:, :, 72:]))
-        self.assertTrue(torch.equal(out_v[:, :, :4], values[:, :, :4]))
-        self.assertTrue(torch.equal(out_v[:, :, -28:], values[:, :, 72:]))
+        sink, local = sketch.sink_size, sketch.local_size
+        mid_start, mid_end = sink, T - local
+        keep_mid = int(T * 0.5) - sink - local  # 28
+        self.assertEqual(out_k.shape[2], sink + keep_mid + local)
+        self.assertTrue(torch.equal(out_k[:, :, :sink], keys[:, :, :sink]))
+        self.assertTrue(torch.equal(out_k[:, :, -local:], keys[:, :, mid_end:]))
+        self.assertTrue(torch.equal(out_v[:, :, :sink], values[:, :, :sink]))
+        self.assertTrue(torch.equal(out_v[:, :, -local:], values[:, :, mid_end:]))
         for h in range(keys.shape[1]):
-            mid_in = keys[0, h, 4:72]
-            mid_out = out_k[0, h, 4:22]
+            mid_in = keys[0, h, mid_start:mid_end]
+            mid_out = out_k[0, h, sink:sink + keep_mid]
             eq = (mid_out.unsqueeze(1) == mid_in.unsqueeze(0)).all(dim=-1)
             self.assertTrue((eq.sum(dim=1) == 1).all())
             pos = eq.float().argmax(dim=1)
             self.assertTrue((pos[1:] > pos[:-1]).all())
 
     def test_rectangular_output_across_layers(self):
+        # Keep the real mid-selection path (0 < keep_mid < mid_len) under the
+        # 8/64 defaults so per-head selection genuinely diverges yet kept counts
+        # stay rectangular. T=200, ratio=0.5: keep_mid=int(200*0.5)-8-64=28
+        # (0<28<128) -> out = 8+28+64 = 100 tokens for every seed/layer.
         sketch = RandomSketchRidgeSketch(compression_ratio=0.5, query_aware=False)
         lengths = set()
         for seed in (0, 1):
-            keys, values, hidden = _rand_inputs(T=100, seed=seed)
+            keys, values, hidden = _rand_inputs(T=200, seed=seed)
             out_k, _ = sketch.compress(_NoQProjModule(), hidden, keys, values, None, {})
             lengths.add(out_k.shape[2])
-        self.assertEqual(lengths, {50})
+        self.assertEqual(lengths, {100})
 
     def test_bf16_passthrough(self):
+        # Keep the real mid-selection path (0 < keep_mid < mid_len) under the
+        # 8/64 defaults so the bf16-sensitive scoring/gather code runs. T=160,
+        # ratio=0.5: sink=8, local=64, mid_len=88, keep_total=80,
+        # keep_mid=80-72=8 (0<8<88) -> out = 8 + 8 + 64 = 80 tokens.
         module = _FakeAttnModule(seed=7)
         module.to(torch.bfloat16)
-        keys, values, hidden = _rand_inputs(T=80, seed=8)
+        keys, values, hidden = _rand_inputs(T=160, seed=8)
         keys, values, hidden = keys.bfloat16(), values.bfloat16(), hidden.bfloat16()
         sketch = RandomSketchRidgeSketch(compression_ratio=0.5)
         out_k, out_v = sketch.compress(module, hidden, keys, values, None, {})
-        self.assertEqual(out_k.shape[2], 40)
+        self.assertEqual(out_k.shape[2], 80)
         self.assertEqual(out_k.dtype, torch.bfloat16)
         self.assertEqual(out_v.dtype, torch.bfloat16)
 

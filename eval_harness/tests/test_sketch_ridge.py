@@ -57,7 +57,7 @@ class _NoQProjModule(nn.Module):
 
 
 def _ridge_default_reference(module, hidden_states, keys, values, *,
-                             compression_ratio, sink_size=4, local_size=28,
+                             compression_ratio, sink_size=8, local_size=64,
                              ridge_lambda=1e-4, envelope_gamma=1.0,
                              value_norm_power=1.0, eps=1e-8):
     """kvpress RidgePress default-path transcription (query-aware fixed_envelope)."""
@@ -158,12 +158,21 @@ class TestRidgeGuards(unittest.TestCase):
         self.assertTrue(torch.equal(out_k, keys63))
 
     def test_t64_default_windows_hit_keep_mid_zero_branch(self):
-        keys, values, hidden = _rand_inputs(T=64)
+        # Under the 8/64 defaults, T=64 collapses the mid window entirely
+        # (local clamps to 56 -> mid_len==0 -> plain no-op), which would NOT
+        # exercise the keep_mid==0 branch this test is named for. Use T=80 so
+        # the windows are the full 8/64 (sink=8, local=64, mid_len=8>0) and
+        # keep_mid = int(80*0.5) - 8 - 64 = 40 - 72 = -32 -> clamped to 0,
+        # which DOES hit the keep_mid<=0 branch: out = [sink | local].
+        T = 80
+        keys, values, hidden = _rand_inputs(T=T)
         sketch = RidgeSketch(compression_ratio=0.5)
         out_k, out_v = sketch.compress(_NoQProjModule(), hidden, keys, values, None, {})
-        self.assertEqual(out_k.shape[2], 32)
-        self.assertTrue(torch.equal(out_k, torch.cat([keys[:, :, :4], keys[:, :, 36:]], dim=2)))
-        self.assertTrue(torch.equal(out_v, torch.cat([values[:, :, :4], values[:, :, 36:]], dim=2)))
+        sink, local = sketch.sink_size, sketch.local_size
+        mid_end = T - local
+        self.assertEqual(out_k.shape[2], sink + local)
+        self.assertTrue(torch.equal(out_k, torch.cat([keys[:, :, :sink], keys[:, :, mid_end:]], dim=2)))
+        self.assertTrue(torch.equal(out_v, torch.cat([values[:, :, :sink], values[:, :, mid_end:]], dim=2)))
 
     def test_mid_window_collapse_noop(self):
         keys, values, hidden = _rand_inputs(T=32)
@@ -180,13 +189,20 @@ class TestRidgeGuards(unittest.TestCase):
         self.assertIs(out_v, values)
 
     def test_keep_mid_zero_under_compression_exceeds_budget(self):
-        keys, values, hidden = _rand_inputs(T=100)
+        # 8/64 defaults at T=100, ratio=0.8: sink=8, local=64, mid_end=36,
+        # mid_len=28>0, keep_total=int(100*0.2)=20, keep_mid=max(20-72,0)=0 ->
+        # keep_mid<=0 branch returns [sink | local] = 8 + 64 = 72 tokens, which
+        # EXCEEDS the nominal budget int(100*0.2)=20 (under-compression).
+        T = 100
+        keys, values, hidden = _rand_inputs(T=T)
         sketch = RidgeSketch(compression_ratio=0.8, min_tokens_to_compress=0)
         out_k, out_v = sketch.compress(_NoQProjModule(), hidden, keys, values, None, {})
-        self.assertEqual(out_k.shape[2], 32)
-        self.assertGreater(out_k.shape[2], int(100 * (1.0 - 0.8)))
-        self.assertTrue(torch.equal(out_k, torch.cat([keys[:, :, :4], keys[:, :, 72:]], dim=2)))
-        self.assertTrue(torch.equal(out_v, torch.cat([values[:, :, :4], values[:, :, 72:]], dim=2)))
+        sink, local = sketch.sink_size, sketch.local_size
+        mid_end = T - local
+        self.assertEqual(out_k.shape[2], sink + local)
+        self.assertGreater(out_k.shape[2], int(T * (1.0 - 0.8)))
+        self.assertTrue(torch.equal(out_k, torch.cat([keys[:, :, :sink], keys[:, :, mid_end:]], dim=2)))
+        self.assertTrue(torch.equal(out_v, torch.cat([values[:, :, :sink], values[:, :, mid_end:]], dim=2)))
 
 
 class TestRidgeTauSelection(unittest.TestCase):
@@ -536,13 +552,17 @@ class TestRidgeInvariants(unittest.TestCase):
         self.assertEqual(lengths[0], (25, 25))
 
     def test_bf16_passthrough(self):
+        # Keep the real mid-selection path (0 < keep_mid < mid_len) under the
+        # 8/64 defaults so the bf16-sensitive tau/omega/scoring/gather code runs.
+        # T=160, ratio=0.5: sink=8, local=64, mid_len=88, keep_total=80,
+        # keep_mid=80-72=8 (0<8<88) -> out = 8 + 8 + 64 = 80 tokens.
         module = _FakeAttnModule(hidden_dim=32, num_heads=4, head_dim=8, num_kv_heads=2, seed=2)
         module.to(torch.bfloat16)
-        keys, values, hidden = _rand_inputs(T=80, seed=3)
+        keys, values, hidden = _rand_inputs(T=160, seed=3)
         keys, values, hidden = keys.bfloat16(), values.bfloat16(), hidden.bfloat16()
         sketch = RidgeSketch(compression_ratio=0.5)
         out_k, out_v = sketch.compress(module, hidden, keys, values, None, {})
-        self.assertEqual(out_k.shape[2], 40)
+        self.assertEqual(out_k.shape[2], 80)
         self.assertEqual(out_k.dtype, torch.bfloat16)
         self.assertEqual(out_v.dtype, torch.bfloat16)
 

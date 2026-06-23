@@ -23,21 +23,6 @@ LOFT_SUBSETS = [
 ]
 
 
-def _extract_list_like_prediction(text: str) -> List[str]:
-    raw = str(text).strip()
-    if "[" in raw and "]" in raw:
-        start = raw.find("[")
-        end = raw.rfind("]") + 1
-        chunk = raw[start:end]
-        try:
-            val = ast.literal_eval(chunk)
-            if isinstance(val, (list, tuple)):
-                return [str(v) for v in val]
-        except Exception:
-            pass
-    return [raw]
-
-
 def _normalize_answer(text: str) -> str:
     text = unicodedata.normalize("NFD", str(text))
 
@@ -126,40 +111,40 @@ def _compute_multi_value_subspan_em(gold_answers: List[str], pred_answers: List[
 
 
 def _extract_prediction(model_output: str, answer_prefix: str = "final answer") -> List[str]:
+    """Faithful port of upstream LOFT ``extract_prediction`` (loft_upstream/utils.py).
+
+    Commits to the FIRST line containing both ``[`` and ``]`` — the ``break`` fires for
+    that line whether or not it parses (so a non-parseable first bracket line yields no
+    prediction rather than scanning on). The bracketed slice is parsed as a Python
+    literal; if no line contains a bracket, ``[]`` is returned. There is deliberately NO
+    answer_prefix-split or raw-text fallback: upstream returns ``[]`` for non-bracketed
+    output (scoring 0), and adding fallbacks inflates em/subspan/f1/coverage above
+    upstream. ``answer_prefix`` is advisory only (upstream uses it for a warning).
+
+    One intentional, score-neutral deviation: upstream assigns ``preds = literal_eval(...)``
+    raw; we coerce to a list of ``str`` so a non-list literal does not poison downstream
+    list handling (well-formed ``[...]`` list outputs are unchanged).
+    """
     def _escape_single_quotes(text: str) -> str:
         return re.sub(r"([a-zA-Z0-9])'([a-zA-Z0-9])", r"\1\\'\2", text)
 
     cleaned = str(model_output).replace("*", "").replace("`", "")
-    model_output_lines = cleaned.strip().split("\n")
     preds: List[str] = []
-
-    for line in model_output_lines:
+    for line in cleaned.strip().split("\n"):
         if "[" in line and "]" in line:
             pred_start_index = line.find("[")
             pred_end_index = line.rfind("]") + 1
             pred_as_str = line[pred_start_index:pred_end_index].strip()
             try:
-                pred_as_str = _escape_single_quotes(pred_as_str)
-                parsed = ast.literal_eval(pred_as_str)
-                if isinstance(parsed, list):
-                    preds = [str(p) for p in parsed]
-                else:
-                    preds = [str(parsed)]
-                break
+                parsed = ast.literal_eval(_escape_single_quotes(pred_as_str))
+                preds = (
+                    [str(p) for p in parsed]
+                    if isinstance(parsed, (list, tuple))
+                    else [str(parsed)]
+                )
             except Exception:
                 pass
-
-    if not preds:
-        for line in model_output_lines:
-            if answer_prefix.lower() in line.lower():
-                prefix_idx = line.lower().find(answer_prefix.lower())
-                after_prefix = line[prefix_idx + len(answer_prefix) :].strip().lstrip(":").strip()
-                if after_prefix:
-                    preds = [after_prefix]
-                break
-
-    if not preds:
-        return _extract_list_like_prediction(cleaned)
+            break
     return preds
 
 
@@ -274,10 +259,11 @@ class LoftBenchmark(Benchmark):
                 if not pred_answers_raw:
                     em_vals.append(0.0)
                     subspan_vals.append(0.0)
-                    if is_multi:
-                        cover_vals.append(0.0)
-                    else:
+                    if not is_multi:
                         f1_vals.append(0.0)
+                    # Upstream MultiValueRagEvaluation omits coverage for empty
+                    # predictions (it is only recorded on the non-empty branch),
+                    # so it must NOT enter the coverage denominator here.
                     continue
 
                 preds = _normalize_answers(pred_answers_raw)
@@ -320,7 +306,9 @@ class LoftBenchmark(Benchmark):
             overall_metrics["coverage"] = round(sum(overall_coverage_vals) / len(overall_coverage_vals), 2)
 
         return {
-            "overall_score": round(overall_em, 2),
+            # LOFT's paper/leaderboard primary metric for all 5 RAG datasets is
+            # subspan_em (README "Primary Metric" column), not exact match.
+            "overall_score": round(overall_subspan, 2),
             "overall_metrics": overall_metrics,
             "task_scores": task_scores,
             "total_samples": int(len(df)),

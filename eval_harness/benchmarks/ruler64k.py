@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from typing import Dict, List
 
@@ -8,6 +9,85 @@ import pandas as pd
 from .base import Benchmark, BenchmarkInfo
 from .common import parse_answers
 from .registry import register_benchmark
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Prompt decomposition (query-AGNOSTIC parity with att-hub ruler16k/32k).
+#
+# tonychenxyz/ruler-full ships each sample as a FULL Qwen chat-templated string
+# with the question baked into the user turn at the very end:
+#   <|im_start|>system\n...<|im_end|>\n<|im_start|>user\n[CONTEXT]...[QUESTION][ANSWER_PREFIX]<|im_end|>\n<|im_start|>assistant\n
+# Previously the whole prompt was dumped into the `context` column (question
+# included), so the KV compressor — which compresses ONLY `context`, before the
+# question is processed — saw the query inside the compressed region (query-AWARE),
+# inflating observation-attention methods (snapkv/pyramidkv). att-hub ruler16k/32k
+# instead ship SEPARATE context/question/answer_prefix columns (query-agnostic).
+# We replicate that: strip the chat template and split the body into
+# [context | question | answer_prefix]. (att-hub-ruler-64k/128k do not exist on HF.)
+# ---------------------------------------------------------------------------
+_USER_HEAD_RE = re.compile(r"<\|im_start\|>user\n")
+_ASSISTANT_TAIL = "<|im_end|>\n<|im_start|>assistant\n"
+
+# Phrase that begins the trailing question, per RULER task. `rfind` (LAST match)
+# is load-bearing: cwe/qa/vt repeat the instruction once as a preamble (stays in
+# context) and once at the end (the real question).
+QUESTION_ANCHORS = {
+    "niah_single_1": "What is the special magic number for",
+    "niah_single_2": "What is the special magic number for",
+    "niah_multikey_1": "What is the special magic number for",
+    "niah_multikey_2": "What is the special magic number for",
+    "niah_single_3": "What is the special magic uuid for",
+    "niah_multikey_3": "What is the special magic uuid for",
+    "niah_multiquery": "What are all the special magic numbers for",
+    "niah_multivalue": "What are all the special magic numbers for",
+    "qa_1": "Answer the question based on the given documents",
+    "qa_2": "Answer the question based on the given documents",
+    "vt": "Question: Find all variables that are assigned the value",
+    "cwe": "Question: What are the 10 most common words",
+    "fwe": "Question: Do not provide any explanation",
+}
+
+# Per-task generation budgets matching att-hub ruler16k (overridden when the run
+# config sets max_new_tokens, e.g. the multi-ctx fleet's 128).
+_MAX_NEW_TOKENS = {"qa_1": 32, "qa_2": 32, "vt": 30, "cwe": 120, "fwe": 50}
+
+
+def _split_prompt(prompt: str, task: str):
+    """Split a ruler-full chat-templated prompt into (context, question, answer_prefix).
+
+    Returns ``None`` if the prompt cannot be split (unknown task / missing
+    anchor) so the caller can fall back to legacy whole-prompt-as-context
+    behavior rather than crash. Validated on all 13 RULER tasks (both variants,
+    all context lengths) with exact reconstruction.
+    """
+    body = prompt
+    heads = list(_USER_HEAD_RE.finditer(body))
+    if heads:
+        body = body[heads[-1].end():]
+    tail = body.rfind(_ASSISTANT_TAIL)
+    if tail != -1:
+        body = body[:tail]
+    else:
+        body = body.rstrip()
+        if body.endswith("<|im_end|>"):
+            body = body[: -len("<|im_end|>")]
+
+    anchor = QUESTION_ANCHORS.get(task)
+    if not anchor or anchor not in body:
+        return None
+    qi = body.rfind(anchor)
+    context, q_block = body[:qi], body[qi:]
+
+    sp = q_block.find("? ")
+    if sp != -1:
+        question, answer_prefix = q_block[: sp + 2], q_block[sp + 2:]
+    else:  # vt-style: no "?", split at the trailing "Answer:" cue
+        ap = q_block.find("Answer:")
+        if ap == -1:
+            return None
+        question, answer_prefix = q_block[:ap], q_block[ap:]
+    return context, question, answer_prefix
 
 
 RULER_SUBSETS = [
@@ -55,15 +135,26 @@ def _collect_rows_for_context_length(subsets: List[str], context_length: int) ->
                 answer = ground_truth.get("answers", "")
             else:
                 answer = ground_truth
+            prompt = str(sample.get("prompt", ""))
+            split = _split_prompt(prompt, task)
+            if split is not None:
+                context, question, answer_prefix = split
+            else:
+                logger.warning(
+                    "ruler-full: could not split prompt for task=%r (cl=%s); falling back "
+                    "to whole-prompt context (query-AWARE for this row).",
+                    task, context_length,
+                )
+                context, question, answer_prefix = prompt, "", ""
             rows.append(
                 {
-                    "context": str(sample.get("prompt", "")),
-                    "question": "",
+                    "context": context,
+                    "question": question,
                     "answer": answer,
                     "task": task,
                     "context_length": context_length,
-                    "answer_prefix": "",
-                    "max_new_tokens": 64,
+                    "answer_prefix": answer_prefix,
+                    "max_new_tokens": _MAX_NEW_TOKENS.get(task, 128),
                     "variant": variant,
                     "category": category,
                 }
