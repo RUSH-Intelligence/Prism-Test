@@ -112,6 +112,10 @@ class ExpectedAttentionSketch(ScorerKVCompressor):
       reducing exactly to the full-head rotation when ``rotary_dim == head_dim``
       (Llama/Qwen3/Gemma3). Requires even ``head_dim`` (and even ``rotary_dim``),
       as upstream.
+    - No-RoPE models (e.g. NemotronH attention, which applies no rotary and
+      exposes no ``rotary_emb``) skip ``apply_avg_rope`` entirely — the averaged
+      rotation is the identity, so the un-rotated query statistics score the
+      un-rotated cached keys, matching the model's actual attention.
     - Do not compose with the DCA prefill method: DCA stores keys rotated at
       cyclic positions ``pos % chunk_len``, which mismatches the
       absolute-future-position frame of the averaged rotation matrix.
@@ -172,9 +176,16 @@ class ExpectedAttentionSketch(ScorerKVCompressor):
         cov : torch.Tensor
             The covariance matrix of the queries after RoPE.
         """
+        rotary_emb = getattr(module, "rotary_emb", None)
+        if rotary_emb is None:
+            # No-RoPE model (e.g. NemotronH attention, which applies no rotary):
+            # future positions carry no rotation, so the averaged RoPE matrix is
+            # the identity — use the query mean/covariance unchanged.
+            return mu, cov
+
         position_ids = torch.arange(q_len, q_len + self.n_future_positions).unsqueeze(0).to(mu.device)
         head_dim = module.head_dim
-        cos, sin = module.rotary_emb(mu, position_ids)
+        cos, sin = rotary_emb(mu, position_ids)
         cos, sin = cos[0], sin[0]
         # Partial rotary (Qwen3.5): cos/sin span only rotary_dim = head_dim *
         # partial_rotary_factor channels. Build the averaged RoPE rotation on the

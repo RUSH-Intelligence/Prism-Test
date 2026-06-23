@@ -16,6 +16,28 @@ from eval_harness.kv_compression.compressors.prefill_decoding_sketch import Pref
 logger = logging.getLogger(__name__)
 
 
+def _model_has_mamba_layers(model) -> bool:
+    """True if the model has Mamba/SSM decoder layers (e.g. NemotronH).
+
+    Such layers' cached forward assumes a single query token, so the question
+    must be fed token-by-token after the context prefill (see generate_answer).
+    Detected via ``hybrid_override_pattern`` ('M' = mamba) or ``layers_block_type``
+    / ``layer_types`` containing "mamba".
+    """
+    cfg = getattr(model, "config", None)
+    if cfg is None:
+        return False
+    try:
+        cfg = cfg.get_text_config(decoder=True)
+    except Exception:
+        pass
+    pattern = getattr(cfg, "hybrid_override_pattern", None)
+    if isinstance(pattern, str) and "M" in pattern:
+        return True
+    layer_types = getattr(cfg, "layers_block_type", None) or getattr(cfg, "layer_types", None) or []
+    return any("mamba" in str(t).lower() for t in layer_types)
+
+
 class ResearchGenerationPipeline(Pipeline):
     def _sanitize_parameters(
         self,
@@ -268,15 +290,37 @@ class ResearchGenerationPipeline(Pipeline):
                 context_length, context_length + question_ids.shape[1], device=self.model.device
             ).unsqueeze(0)
 
-        outputs = self.model(
-            input_ids=question_ids.to(self.model.device),
-            past_key_values=cache,
-            position_ids=position_ids,
-            logits_to_keep=1,
-        )
+        question_ids = question_ids.to(self.model.device)
+        if _model_has_mamba_layers(self.model) and question_ids.shape[1] > 1:
+            # Mamba/SSM layers' cached (decode) forward assumes a single query token
+            # (it does ``hidden_states.squeeze(1)``); a multi-token question block
+            # after the context prefill would hit that path with q_len>1 and crash
+            # (e.g. NemotronH: "weight must have shape (dim, width)"). Feed the
+            # question one token at a time — identical to the block forward for the
+            # attention layers (causal, KV-cached), and the only correct path for the
+            # mamba layers. Compression already happened on the context prefill; no
+            # compressor hooks are active here.
+            last_logits = None
+            for j in range(question_ids.shape[1]):
+                outputs = self.model(
+                    input_ids=question_ids[:, j : j + 1],
+                    past_key_values=cache,
+                    position_ids=position_ids[:, j : j + 1],
+                    logits_to_keep=1,
+                )
+                last_logits = outputs.logits
+            logits = last_logits
+        else:
+            outputs = self.model(
+                input_ids=question_ids,
+                past_key_values=cache,
+                position_ids=position_ids,
+                logits_to_keep=1,
+            )
+            logits = outputs.logits
 
         position_ids = position_ids[:, -1:] + 1
-        generated_ids = [outputs.logits[0, -1].argmax()]
+        generated_ids = [logits[0, -1].argmax()]
 
         should_stop_token_ids = self.model.generation_config.eos_token_id
         if not isinstance(should_stop_token_ids, list):

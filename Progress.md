@@ -1,19 +1,39 @@
 # Prism-Test — Project Progress
 
-*Last updated: 2026-06-11. Supersedes the original prefill-methods progress
-report (the approximate ReAttention/DCA ports it described have since been
-replaced by faithful, reference-verified implementations).*
+*Last updated: 2026-06-22. Adds Mamba-attention hybrid (NemotronH) KV-compression
+support and refreshes the architecture description to the current **three-door**
+model. Note: earlier revisions called Door 2 "prefill methods"
+(`eval_harness/prefill_methods/`) and Door 3 "sketches"; those now live in
+`eval_harness/attention_methods/` and `eval_harness/kv_compression/`. The
+faithful DCA/ReAttention narrative below is unchanged in substance.*
+
+## Goal
+
+Enable research on custom **prefill**, **KV-cache compression**, and **decode
+attention** methods — letting them run and be tested in an error-free way across
+standard models *and* hybrid (Mamba-attention) models, on the long-context
+benchmark suite (RULER, LOFT, LongBench, InfiniteBench, GSM-Infinite, …).
 
 ## Where the project stands
 
 Prism-Test is a long-context evaluation harness with four interchangeable
 backends (`vllm`, `hf`, `rag`, `research`). The `research` backend is the
-extension surface: it wires **prefill methods** (context extension) and
-**sketches** (KV-cache compression) into a shared generation pipeline, so
-inference-time long-context techniques can be benchmarked under one roof
+extension surface: it wires three independent, optional **doors** into a shared
+generation pipeline (nested context managers, outer → inner):
+
+- **Door 1 — positional** (`positional_methods/`): RoPE frequency/position
+  remap — `yarn`, `ntk`, `linear_pi`.
+- **Door 2 — attention** (`attention_methods/`): how attention scores positions
+  — `dca`, and the faithful `reattention` / `reattention_exact` (legacy
+  `PrefillMethod` subclasses on the same slot).
+- **Door 3 — KV compression** (`kv_compression/`): what stays in the cache —
+  ~36 compressors (mostly faithful kvpress 0.5.1 ports), auto-discovered from
+  `kv_compression/compressors/` via `@register_kv_compressor`.
+
+so inference-time long-context techniques can be benchmarked under one roof
 against clean baselines.
 
-### Context-extension methods (`eval_harness/prefill_methods/`)
+### Context-extension methods (Door 2, `eval_harness/attention_methods/`)
 
 Three methods are implemented, registered, and verified against their
 reference implementations:
@@ -43,6 +63,76 @@ Two notable correctness fixes made during verification:
   and leaked future keys. Multi-token blocks now use the reference's
   concat-scores + single fp32 softmax decode branch.
 
+### KV-cache compression (Door 3) & hybrid-model support
+
+Door 3 installs a compressor as a post-attention forward hook on the
+**full-softmax attention layers only**, rewriting that layer's cached K/V. The
+roster is ~36 baselines (knorm, ridge, snapkv, pyramidkv, tova, finch, adakv,
+duo_attention, kvzip, …); see `available_kv_compressors()` and CLAUDE.md for the
+full list and per-method quirks.
+
+**Mixed-attention models** are handled by hooking only the layers that carry a
+standard K/V cache and skipping the rest:
+
+| Family | Non-cache layers | How they're detected |
+|---|---|---|
+| Qwen3.5 / Qwen3-Next | DeltaNet linear-attention | `layer.layer_type` / config `layer_types` contains `linear` |
+| Gemma3 | sliding-window (still cached) | `config.sliding_window` — *not* skipped (it has K/V) |
+| **NemotronH** (new) | Mamba2 + MLP | `block.block_type` / `config.layers_block_type` / `hybrid_override_pattern` |
+
+**NemotronH (`nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16`) — Mamba2-attention hybrid.**
+The 4B model is 42 layers with only **four** full-attention layers
+(`hybrid_override_pattern` positions 12/17/24/32); the rest are Mamba2/MLP and
+hold no K/V cache. Differences from Llama-style models, and how the framework
+adapts:
+
+- Attention lives under `block.mixer` (no `block.self_attn`) — the install loop
+  resolves it via `_resolve_attention_module` (base.py) and hooks only the four
+  attention mixers.
+- Blocks are typed by `block_type` / `config.layers_block_type` — added to
+  `_is_non_full_attention_layer` (skip mamba/mlp) and to `_is_hybrid_model`
+  (selects `HybridCacheAdapter`, which checkpoints/restores attention layers
+  only).
+- Attention applies **no RoPE** — the `rotary_emb` install assignment is guarded,
+  and SnapKV/PyramidKV fall back to raw (un-rotated) queries when
+  `position_embeddings` is absent (exactly what the model computes).
+- `NemotronHForCausalLM` is registered in `SUPPORTED_MODELS`.
+
+Verified by `test_nemotron_h_kv_compression.py` (faithful fake NemotronH; no
+weights, no GPU): hooks land on exactly the four attention layers, and knorm /
+ridge / snapkv / pyramidkv / compactor / expected_attention / keydiff each shrink
+only those four caches (mamba/mlp slots untouched). `compactor` and
+`expected_attention` reduce their RoPE step to identity on this no-RoPE model.
+Config: `evaluate/evaluate_nemotron_kv.yaml`.
+
+**End-to-end on H200 (RULER-16k, transformers 5.9 native `nemotron_h`, fast Mamba
+kernels):** single-pass prefill at the full ~15.6k context works and retains
+`(1-ratio)·prompt` on the attention layers (e.g. ratio 0.5 → ~7.8k retained,
+`per_layer_min=0` for the Mamba/MLP layers). A 6-method × 4-ratio sweep + full-cache
+baseline is in [`nemotron_ruler16k_kv_report.md`](nemotron_ruler16k_kv_report.md)
+(baseline 92.7; robustness keydiff ≳ compactor > knorm > snapkv ≈ pyramidkv >
+expected_attention). Two issues found and fixed getting there:
+
+- **Chunked prefill ⇒ per-chunk over-eviction.** The post-prefill compressor's
+  hook fires after *every* prefill chunk, so a ratio applied per 512-token chunk
+  collapses geometrically (retained ≈ chunk size, not `(1-ratio)·prompt`). Use
+  **single-pass** prefill (`prefill_chunk_size: null`, the default) for correct
+  KV-compression semantics; chunking is only for the `streaming` schedule.
+- **Mamba decode assumes `q_len==1`.** The pipeline forwarded the question as one
+  multi-token block after the context prefill; NemotronH's cached Mamba forward
+  does `hidden_states.squeeze(1)` and crashes (`weight must have shape
+  (dim, width)`) on a multi-token block. `generate_answer` now feeds the question
+  **token-by-token** for Mamba models (`_model_has_mamba_layers`) — identical to
+  the block forward for the attention layers, required for the Mamba layers.
+
+> **Runtime requirements.** CUDA GPU; a transformers build with the *native*
+> `nemotron_h` architecture (the older trust_remote_code modeling file does not
+> thread attention K/V through a hookable forward); single-pass 16k needs the fast
+> Mamba kernels (`use_mamba_kernels` default True → `kernels-community/causal-conv1d`
+> + `mamba-ssm`; the pure-torch SSD path OOMs), so run **online** (or pre-warm the
+> kernel cache) for the publisher-trust check. PyramidKV's ragged cache decodes
+> correctly only under `flash_attention_2`.
+
 ### Custom kernels (`eval_harness/kernels/`)
 
 - Fused Triton einsum+top-k (+ bitonic merge) for ReAttention recall
@@ -56,19 +146,23 @@ Two notable correctness fixes made during verification:
 
 ### Ready-made configs (`evaluate/`)
 
-Six self-documenting configs, each verified to construct end-to-end through
-the harness's own loading path:
+Self-documenting configs, each verified to construct end-to-end through the
+harness's own loading path (`EvalConfig` parse):
 
 - `evaluate_vllm.yaml` / `evaluate_hf.yaml` — clean no-method baselines.
-- `evaluate_kv.yaml` — KV-compression sketch only (knorm 50%).
+- `evaluate_kv.yaml` — KV-compression (Door 3) only (knorm 50%, Llama-3.1-8B).
+- `evaluate_nemotron_kv.yaml` — **new**: KV compression on NemotronH (Mamba-attention
+  hybrid); compresses the four full-attention layers only.
+- `evaluate_positional.yaml` — Door 1 (YaRN / NTK / linear-PI).
 - `evaluate_dca.yaml` — DCA with faithful ChunkLlama defaults
   (chunk_size 6144 / local_window 1024 for an 8K Llama-3, no PI).
 - `evaluate_reattention.yaml` — the paper-faithful `reattention_exact` config
   (`recall_clip: 127` is load-bearing: 32 + 127·32 + 4096 = 8192 keeps the
   re-rotated view inside the native window).
 - `evaluate_common.yaml` — the full research surface, including the
-  prefill-method × sketch compatibility matrix (`dca` and `reattention_exact`
-  must keep `sketch_name: none`; the hook port composes with any sketch).
+  attention-method × compressor compatibility matrix (`dca` and
+  `reattention_exact` must keep the KV compressor at `none`; the `reattention`
+  hook port composes with any compressor).
 
 ### Reproduction status (RULER-16k, Meta-Llama-3-8B base, fp/bf16, greedy)
 
@@ -84,13 +178,32 @@ run is the immediate next experiment.
 
 ### Test suite
 
-**193 tests, all green** (2 environment-conditional skips), including:
-reference-transcription oracles for both DCA and ReAttention, reduce-to-dense
-baselines (`recall_option: full_attn` is bitwise-identical to no-method),
-multi-layer ragged-cache regressions, chunk-boundary straddle tests, and
-integration tests driving the real pipeline on a tiny CPU Llama. The suite
-also passes in a CI-like environment with triton, flash-attn, and vLLM all
-absent (verified by import-hiding simulation).
+**All 988 tests green** (11 environment-conditional skips), including:
+reference-transcription oracles for both DCA and ReAttention, per-compressor
+kvpress oracles (~36 compressors), reduce-to-dense baselines
+(`recall_option: full_attn` is bitwise-identical to no-method), multi-layer
+ragged-cache regressions, chunk-boundary straddle tests, hybrid-layer-detection
+regressions (Qwen3.5 + NemotronH), and integration tests driving the real
+pipeline on a tiny CPU Llama. The suite also passes with triton, flash-attn,
+and vLLM all absent (verified by import-hiding simulation).
+
+The NemotronH hybrid path is pinned by `tests/test_nemotron_h_kv_compression.py`
+(24 tests): attention-only layer hooking (a direct hook-count assertion plus the
+detection helpers), mamba/mlp skip, no-RoPE handling for every scorer, the
+`_can_slice_attention_kv` None-guard on mamba cache slots, explicit-phase
+decode no-op, and the token-by-token Mamba question feed.
+
+### Environment
+
+- **Python ≥ 3.10 is required** (`pyproject.toml`; the code uses
+  `dataclasses.field(kw_only=...)`). Under 3.9 the entire `kv_compression`
+  package fails to import (`field() got an unexpected keyword argument
+  'kw_only'`), cascading to dozens of test-collection errors — those are an
+  interpreter mismatch, not code bugs.
+- Unit tests are **weight-free and CPU-only** (fake modules + `object.__new__`),
+  so they run anywhere with torch + transformers installed. Real model
+  evaluations need a CUDA GPU (and, for NemotronH, native `nemotron_h` support
+  — see the KV-compression section).
 
 ### Hardening landed alongside
 
@@ -117,33 +230,44 @@ absent (verified by import-hiding simulation).
    extension-plus-compression axis on a 128k-native model.
 3. **Prism-1M / longer benchmarks**: the harness already registers prism1m and
    gsm_infinite at 128k; nothing has been run beyond RULER yet.
+4. **NemotronH real-run validation — DONE** on H200 (see
+   [`nemotron_ruler16k_kv_report.md`](nemotron_ruler16k_kv_report.md)): 6 methods ×
+   4 ratios + baseline on RULER-16k, single-pass, correct `(1-ratio)·prompt`
+   retention on the 4 attention layers. Follow-ups: (a) investigate
+   `expected_attention`'s weakness on this no-RoPE model (its averaged-RoPE score
+   reduces to identity — likely ill-suited); (b) scale to the full 13-subset ×
+   200-sample RULER; (c) extend to larger Nemotron Nano / Nano-2 hybrids (same
+   `hybrid_override_pattern` machinery).
 
 ### Medium-term (framework)
 
-4. **Tier-1 RoPE methods (NTK, YaRN, linear PI)**: `compute_inv_freq` exists
-   on `PrefillMethod` but nothing calls it — implementing these needs a
-   RoPE-level interceptor in the pipeline. This is the single biggest missing
-   piece of the original design.
-5. **Pre-attention sparsity + repositioning as a first-class frame**:
+5. **Validate Door 1 (positional) at length**: `yarn` / `ntk` / `linear_pi`
+   are implemented and wired (the pipeline wraps `rotary_emb`;
+   `compute_inv_freq` / `remap_position_ids` fire per rotary call) — but they
+   have not been swept on long-context benchmarks. Run the positional door
+   against the no-method baseline on RULER-32k/64k. (Door 1 is a no-op for
+   NemotronH, which uses no RoPE — note this when composing doors.)
+6. **Pre-attention sparsity + repositioning as a first-class frame**:
    `reattention_exact` (pe_original=false) is the architecturally-complete
    instance of the "select, then re-rotate contiguously, then attend" pattern.
-   Generalizing that into a reusable base (the way `PrefillMethod` generalizes
-   post-attention pruning) would let new selection policies inherit the
-   verified chunked-prefill/recall machinery instead of re-porting it.
-6. **Attention-plugin seam** (`eval_harness/attention/`): a registry +
-   Protocol for swappable attention implementations exists but is wired into
-   nothing (only its own tests). Decide whether to grow it into the Tier-1
-   interceptor above or drop it.
-7. **Decode-side selection for the hook port**: the hook no-ops on decode;
-   a decode-time re-selection hook would close the gap to `reattention_exact`
-   (`recall_option: whole`) at much lower memory cost.
+   Generalizing that into a reusable `AttentionMethod` base would let new
+   selection policies inherit the verified chunked-prefill/recall machinery
+   instead of re-porting it.
+7. **Decode-side selection for the `reattention` hook**: the hook no-ops on
+   decode; a decode-time re-selection hook would close the gap to
+   `reattention_exact` (`recall_option: whole`) at much lower memory cost.
+8. **Mamba-state compression**: Door 3 only touches attention K/V. NemotronH-4B's
+   non-attention memory is the 21 Mamba2 layers' conv/ssm state (the other 17
+   non-attention layers are MLP and hold none) — a separate "Door 3.5" for
+   SSM-state compression is the natural next hybrid axis.
 
 ### Housekeeping
 
-8. The reposition mode on the hook port (`reposition: true`) is shipped but
-   default-off and unexplored experimentally.
-9. `test_identity_rope_equivalence.py` no longer tests identity-RoPE (it pins
-   legacy CacheConfig field removal) — rename when convenient.
-10. CI installs unpinned latest transformers; the lock pins 5.10.2 and the
+9. The reposition mode on the `reattention` hook (`reposition: true`) is shipped
+   but default-off and unexplored experimentally.
+10. `test_identity_rope_equivalence.py` no longer tests identity-RoPE (it pins
+    legacy CacheConfig field removal) — rename when convenient.
+11. CI installs unpinned latest transformers; the lock pins 5.10.2 and the
     suite is verified on 5.9.0. Consider pinning a floor in CI to avoid
-    surprise breakage from future transformers majors.
+    surprise breakage from future transformers majors. **Pin a Python ≥ 3.10
+    floor too** — under 3.9 the `kv_compression` package fails to import.

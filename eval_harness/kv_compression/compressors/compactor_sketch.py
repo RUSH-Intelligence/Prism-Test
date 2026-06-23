@@ -120,7 +120,10 @@ class CompactorSketch(ScorerKVCompressor):
       uniform zero scores are returned (topk then keeps an arbitrary
       subset); upstream crashes on this input.
     - ``(cos, sin)`` are rebuilt from ``module.rotary_emb`` when
-      ``kwargs['position_embeddings']`` is unavailable.
+      ``kwargs['position_embeddings']`` is unavailable. On no-RoPE models
+      (e.g. NemotronH, no ``rotary_emb``) an identity rotation (cos=1, sin=0) is
+      used, so the non-causal q·k logits use raw queries against the raw keys —
+      matching the model's actual (rotary-free) attention.
 
     Do not combine with ``attention_method: dca``: DCA caches keys rotated at
     cyclic positions, which breaks the non-causal q.k logits.
@@ -289,9 +292,18 @@ class CompactorSketch(ScorerKVCompressor):
 
         rotary = getattr(module, "rotary_emb", None)
         if rotary is None:
-            raise ValueError(
-                "CompactorSketch requires kwargs['position_embeddings'] or module.rotary_emb"
+            # No-RoPE model (e.g. NemotronH attention, which applies no rotary):
+            # the cached keys are un-rotated, so return an identity rotation
+            # (cos=1, sin=0). The non-causal q·k logits then use raw queries
+            # against raw keys — exactly what the model computes.
+            q_len = hidden_states.shape[-2]
+            head_dim = module.head_dim
+            cos = torch.ones(
+                hidden_states.shape[0], q_len, head_dim,
+                device=hidden_states.device, dtype=hidden_states.dtype,
             )
+            sin = torch.zeros_like(cos)
+            return cos, sin
         cache_position = kwargs.get("cache_position")
         if cache_position is not None:
             position_ids = cache_position.unsqueeze(0)

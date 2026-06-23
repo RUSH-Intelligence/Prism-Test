@@ -4,6 +4,7 @@ from typing import Literal, Optional
 
 import torch
 from torch import nn
+from transformers.models.llama.modeling_llama import rotate_half
 
 from eval_harness.kv_compression.base import KVCompressor
 from eval_harness.kv_compression.registry import register_kv_compressor
@@ -69,6 +70,14 @@ class RidgeSketch(KVCompressor):
 
     Deviations from kvpress
     -----------------------
+    - ``rotate_queries`` (default False = faithful): when True, RoPE is applied
+      to the re-projected queries (``position_embeddings`` from the layer
+      forward kwargs, or rebuilt from ``module.rotary_emb``) before omega is
+      formed. The reference leaves queries un-rotated (see the quirk note
+      above); rotating them makes ``omega_i = ||Q k_i||`` a faithful proxy for
+      the model's relative-position attention energy. Partial rotary (Qwen3.5)
+      is handled by rotating only the first ``rotary_dim`` channels. If position
+      embeddings are unavailable the path warns and falls back to un-rotated.
     - ``_get_all_queries`` skips the query-aware path (warning + tau-only
       fallback) when ``hidden_states`` and ``keys`` cover different numbers of
       tokens. Upstream assumes they match and would misalign (or crash on the
@@ -87,6 +96,12 @@ class RidgeSketch(KVCompressor):
 
     # Query-aware options.
     query_aware: bool = True
+    # Deviation from kvpress (opt-in): apply RoPE to the re-projected queries at
+    # their absolute positions before forming omega, so omega = ||Q k_i|| dots
+    # rotated queries against the (rotated) cached keys and recovers the model's
+    # true relative-position attention energy. Default False = faithful port
+    # (un-rotated queries, bit-identical to RidgePress / saved baselines).
+    rotate_queries: bool = False
     normalize_queries: bool = False
     normalize_keys_for_query_metric: bool = False
     query_gram_normalization: Literal["mean", "sum"] = "mean"
@@ -215,11 +230,45 @@ class RidgeSketch(KVCompressor):
         tau = ((k @ inv_reg) * k).sum(dim=-1).clamp_min(0.0)
         return tau.to(keys.dtype)
 
+    def _position_embeddings(
+        self, module: nn.Module, hidden_states: torch.Tensor, kwargs: dict
+    ) -> Optional[tuple[torch.Tensor, torch.Tensor]]:
+        """(cos, sin) from the layer forward kwargs, else rebuilt from rotary_emb."""
+        pos_emb = kwargs.get("position_embeddings") if kwargs else None
+        if isinstance(pos_emb, (tuple, list)) and len(pos_emb) == 2 and pos_emb[0] is not None:
+            return pos_emb[0], pos_emb[1]
+
+        rotary = getattr(module, "rotary_emb", None)
+        if rotary is None:
+            return None
+        cache_position = kwargs.get("cache_position") if kwargs else None
+        if cache_position is not None:
+            position_ids = cache_position.unsqueeze(0)
+        else:
+            position_ids = torch.arange(
+                hidden_states.shape[-2], device=hidden_states.device
+            ).unsqueeze(0)
+        cos, sin = rotary(hidden_states, position_ids)
+        return cos, sin
+
+    def _apply_rope_to_queries(
+        self, q: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
+    ) -> torch.Tensor:
+        """RoPE-rotate queries [B, H, T, D] at absolute positions (partial-rotary aware)."""
+        q_len = q.shape[-2]
+        cos_q = cos[:, -q_len:, :].unsqueeze(1).to(q.dtype)
+        sin_q = sin[:, -q_len:, :].unsqueeze(1).to(q.dtype)
+        rotary_dim = cos_q.shape[-1]
+        q_rot, q_pass = q[..., :rotary_dim], q[..., rotary_dim:]
+        q_rot = (q_rot * cos_q) + (rotate_half(q_rot) * sin_q)
+        return torch.cat([q_rot, q_pass], dim=-1)
+
     def _get_all_queries(
         self,
         module: nn.Module,
         hidden_states: torch.Tensor,
         keys: torch.Tensor,
+        kwargs: Optional[dict] = None,
     ) -> Optional[torch.Tensor]:
         """Return prefill queries aligned with KV heads: [B, H_kv, T, D]."""
         if hidden_states is None or not hasattr(module, "q_proj"):
@@ -262,6 +311,17 @@ class RidgeSketch(KVCompressor):
             return None
 
         q = q.to(keys.dtype)
+
+        if self.rotate_queries:
+            cos_sin = self._position_embeddings(module, hidden_states, kwargs or {})
+            if cos_sin is not None:
+                q = self._apply_rope_to_queries(q, cos_sin[0], cos_sin[1])
+            else:
+                logger.warning(
+                    "rotate_queries=True but position embeddings are unavailable; "
+                    "falling back to un-rotated queries."
+                )
+
         if self.normalize_queries:
             q = q / q.float().norm(p=2, dim=-1, keepdim=True).clamp_min(self.eps).to(q.dtype)
         return q.contiguous()
@@ -666,7 +726,7 @@ class RidgeSketch(KVCompressor):
         attentions: torch.Tensor,
         kwargs: dict,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        del attentions, kwargs
+        del attentions
 
         if self.compression_ratio is None:
             raise ValueError("compression_ratio must be set before RidgeSketch.compress is called")
@@ -705,7 +765,9 @@ class RidgeSketch(KVCompressor):
         omega_val = None
         omega_final = None
         if self.query_aware:
-            queries = self._get_all_queries(module=module, hidden_states=hidden_states, keys=keys)
+            queries = self._get_all_queries(
+                module=module, hidden_states=hidden_states, keys=keys, kwargs=kwargs
+            )
             if queries is not None:
                 if self.query_position_mode == "matching_keys":
                     queries_for_metric = queries[:, :, mid_start:mid_end, :]
