@@ -69,12 +69,16 @@ _MODEL_NAMES = (
     "Qwen3_5ForCausalLM",
     "Gemma3ForCausalLM",
     "Gemma3ForConditionalGeneration",
+    # Mamba2-attention hybrid (only the few full-attention layers carry a K/V
+    # cache; mamba/mlp blocks are skipped — see _is_non_full_attention_layer).
+    "NemotronHForCausalLM",
 )
 SUPPORTED_MODELS = tuple(m for m in (_try_import(n) for n in _MODEL_NAMES) if m is not None)
 
 _Gemma3Causal = _try_import("Gemma3ForCausalLM")
 _Gemma3Cond = _try_import("Gemma3ForConditionalGeneration")
 _Qwen35 = _try_import("Qwen3_5ForCausalLM")
+_NemotronH = _try_import("NemotronHForCausalLM")
 
 
 def _is_gemma3(model) -> bool:
@@ -89,6 +93,15 @@ def _is_non_full_attention_layer(layer: nn.Module) -> bool:
     For mixed-attention families (Gemma3, Qwen3.5) we only hook full-softmax
     layers; this flags sliding/linear (or any non-full typed) layer to skip.
     """
+    # NemotronH-style Mamba-attention hybrids tag every decoder block with
+    # ``block_type`` ∈ {"mamba", "attention", "mlp"} and hold the active module
+    # under ``.mixer`` (there is NO ``.self_attn``). Only "attention" blocks
+    # carry a standard K/V cache, so mamba/mlp blocks must be skipped. Checked
+    # first because these blocks expose neither ``layer_type`` nor ``self_attn``.
+    block_type = getattr(layer, "block_type", None)
+    if isinstance(block_type, str):
+        return block_type.lower() != "attention"
+
     # Decoder-layer-level type hints first. These are present even when the
     # layer has NO ``self_attn`` submodule (e.g. Qwen3.5 linear-attention
     # layers expose ``layer_type="linear_attention"`` and no ``self_attn``), so
@@ -135,6 +148,41 @@ def _is_non_full_attention_layer(layer: nn.Module) -> bool:
         return sw > 0
 
     return False
+
+
+def _resolve_attention_module(layer: nn.Module):
+    """Return the attention submodule to install a KV-cache hook on, or ``None``.
+
+    Standard decoder layers expose the attention module as ``self_attn``.
+    NemotronH-style hybrid blocks instead hold it under ``mixer`` (only for
+    ``block_type == "attention"``; mamba/mlp blocks have a non-attention mixer
+    that must not be hooked). Callers should still gate on
+    :func:`_is_non_full_attention_layer` first; this only resolves *where* the
+    hookable attention module lives.
+    """
+    attn = getattr(layer, "self_attn", None)
+    if attn is not None:
+        return attn
+    block_type = getattr(layer, "block_type", None)
+    if isinstance(block_type, str) and block_type.lower() != "attention":
+        return None
+    return getattr(layer, "mixer", None)
+
+
+def _get_language_model(model: nn.Module):
+    """Locate the decoder stack (the module that owns ``.layers``).
+
+    Most CausalLM wrappers expose it at ``model.model`` (with an optional
+    ``model.model.language_model`` for multimodal wrappers). NemotronH names its
+    backbone ``model.model`` in native transformers but ``model.backbone`` in
+    some trust_remote_code revisions, so fall back to ``backbone``.
+    """
+    inner = getattr(model, "model", None)
+    if inner is None:
+        inner = getattr(model, "backbone", None)
+    if inner is None:
+        inner = model
+    return getattr(inner, "language_model", inner)
 
 
 # ----------------------------------------------------------------------
@@ -355,7 +403,12 @@ class KVCompressor:
             )
 
         is_gemma3_family = _is_gemma3(model)
-        if is_gemma3_family or (_Qwen35 is not None and isinstance(model, _Qwen35)):
+        is_nemotron_h = _NemotronH is not None and isinstance(model, _NemotronH)
+        if (
+            is_gemma3_family
+            or is_nemotron_h
+            or (_Qwen35 is not None and isinstance(model, _Qwen35))
+        ):
             logger.warning(
                 "Compression is only applied to full-softmax attention layers "
                 "for this model family",
@@ -364,19 +417,29 @@ class KVCompressor:
         self.post_init_from_model(model)
         hooks = []
         try:
-            language_model = (
-                model.model.language_model
-                if hasattr(model.model, "language_model")
-                else model.model
-            )
+            language_model = _get_language_model(model)
+            rotary_emb = getattr(language_model, "rotary_emb", None)
             for layer in language_model.layers:
-                if is_gemma3_family and getattr(layer.self_attn, "is_sliding", False):
+                attn_module = _resolve_attention_module(layer)
+                if (
+                    is_gemma3_family
+                    and attn_module is not None
+                    and getattr(attn_module, "is_sliding", False)
+                ):
                     continue
                 if _is_non_full_attention_layer(layer):
                     continue
-                layer.self_attn.rotary_emb = language_model.rotary_emb
+                if attn_module is None:
+                    # Typed full-attention but no resolvable attention submodule;
+                    # nothing to hook (defensive — should not happen in practice).
+                    continue
+                # Most position-sensitive scorers read the layer's RoPE module;
+                # NemotronH attention has none (no rotary), so only set it when
+                # the model actually exposes one.
+                if rotary_emb is not None:
+                    attn_module.rotary_emb = rotary_emb
                 hooks.append(
-                    layer.self_attn.register_forward_hook(
+                    attn_module.register_forward_hook(
                         self.forward_hook, with_kwargs=True,
                     )
                 )

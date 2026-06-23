@@ -1,0 +1,102 @@
+# ============================================================================
+# KV-compression on NemotronH (Mamba-attention hybrid) — research backend
+# ============================================================================
+# Runs nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16 through ResearchAdapter with a KV
+# compressor (Door 3) installed as a post-attention forward hook, and NO
+# context-extension attention method.
+#
+#   python -m eval_harness.cli run --config_file ./evaluate/evaluate_nemotron_kv.yaml
+#   # override the compressor on the CLI, e.g.:
+#   python -m eval_harness.cli run --config_file ./evaluate/evaluate_nemotron_kv.yaml \
+#       --llm_kwargs '{"research_config": {"kv_compressor": "snapkv"}}'
+#
+# NemotronH is a Mamba2-Transformer hybrid: the 4B model has 42 layers but only
+# FOUR full-attention layers (hybrid_override_pattern positions 12, 17, 24, 32);
+# the rest are Mamba2 / MLP and hold NO K/V cache. The framework hooks ONLY the
+# four attention layers (block.mixer where block_type == "attention") and leaves
+# the mamba/mlp blocks untouched — so compression shrinks exactly the four
+# attention caches. See test_nemotron_h_kv_compression.py.
+#
+# Requirements (a real run, not the unit tests):
+#   * A CUDA GPU. NemotronH's Mamba2 path needs CUDA (mamba-ssm / causal-conv1d
+#     fast kernels, or the slower CUDA torch fallback).
+#   * A transformers build that ships the NATIVE `nemotron_h` architecture (the
+#     one that threads `past_key_values` through `block.mixer` and uses a plain
+#     DynamicCache). The older trust_remote_code modeling file does not cache
+#     attention K/V through a hookable forward and will not compress.
+#   * trust_remote_code: true (the model card uses auto_map / custom config).
+#
+# NemotronH attention applies NO RoPE — SnapKV/PyramidKV detect the absent
+# position_embeddings and score with raw (un-rotated) queries, which is exactly
+# what the model computes. No positional door is used here.
+
+benchmark: ruler16k
+# Three retrieval anchors, matching the other KV configs for direct comparison.
+subsets: niah_single_1,niah_single_3,niah_multikey_3
+
+backend: research
+
+# NemotronH (Nemotron-3 Nano 4B). 262K native context, so ruler16k is in-window:
+# this isolates the effect of CACHE COMPRESSION, not context extension.
+model: nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16
+
+# Runtime
+tensor_parallel_size: 1        # vLLM-only; ignored by the research backend
+dtype: bfloat16
+max_model_len: 18000           # pipeline truncation cap (ruler16k fits in-window)
+gpu_memory_utilization: 0.9    # vLLM-only; ignored by the research backend
+trust_remote_code: true        # REQUIRED for NemotronH (auto_map config/model)
+enable_prefix_caching: true    # vLLM-only; ignored by the research backend
+
+# Generation
+max_new_tokens: 128
+temperature: 0.0               # greedy
+top_p: 1.0
+system_prompt: null
+seed: 42
+
+# Evaluation limits (max_requests applies PER SUBSET — runner.py)
+max_requests: 200
+fraction: 1.0
+query_aware: false
+
+# KV runs share a model/benchmark with other configs; give this its own dir.
+output_dir: ./results/nemotron_kv
+
+llm_kwargs:
+  # sdpa is the research backend's validated parity path. NemotronH attention
+  # returns attn_weights=None under sdpa, so attention-weight scorers recompute
+  # window attention themselves (SnapKV/PyramidKV) — fine here.
+  attn_implementation: sdpa
+
+  # This dict becomes research_adapter.ResearchConfig.
+  research_config:
+    # --- KV-compression sketch ---------------------------------------------
+    # Validated on NemotronH (full-attention layers only — see
+    # tests/test_nemotron_h_kv_compression.py and the H200 ruler16k smoke):
+    #   knorm              — prune by key-norm (score = -||k||); RoPE-invariant.
+    #   ridge              — query-aware ridge-leverage scoring; works on raw
+    #                        (un-rotated) keys (keep rotate_queries=False here).
+    #   snapkv             — window-attention scoring; raw queries (no RoPE).
+    #   pyramidkv          — per-layer pyramid budgets (SnapKV scoring). NOTE: its
+    #                        cache is cross-layer ragged, which decodes correctly
+    #                        only under flash_attention_2; with sdpa set
+    #                        kv_compressor_kwargs: {uniform_budget: true}.
+    #   compactor          — leverage + non-causal-attention blend; identity
+    #                        rotation on this no-RoPE model.
+    #   expected_attention — expected future attention from query statistics;
+    #                        averaged-RoPE reduces to identity here (no rotary).
+    #   keydiff            — evict keys most similar to the mean key direction;
+    #                        uses only cached keys (no queries/RoPE).
+    kv_compressor: knorm
+    kv_compressor_kwargs: {}
+    compression_ratio: 0.5          # fraction of the cache PRUNED (kept = 1 - ratio)
+    max_context_length: null        # null -> fall back to max_model_len above
+    log_cache_seq_len: true         # log per-layer cache lengths so the
+                                    # compression is visible in the run log
+
+    # --- Attention method: OFF ---------------------------------------------
+    # Position-sensitive KV scorers assume vanilla cached keys; do NOT combine
+    # with DCA (cyclic positions). NemotronH uses no RoPE, so leave this off.
+    attention_method: none
+    attention_method_kwargs: {}

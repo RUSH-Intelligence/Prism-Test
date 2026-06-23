@@ -56,7 +56,10 @@ class SnapKVSketch(ScorerKVCompressor):
     queries are re-projected (pre-RoPE), rotated to their true absolute
     positions with the layer's own ``kwargs["position_embeddings"]``, and
     matmul-ed against the RoPE-rotated cached keys, reproducing the model's
-    real window-attention logits with no un-rotation anywhere. Per-position
+    real window-attention logits with no un-rotation anywhere. On no-RoPE
+    models (e.g. NemotronH attention, which applies no rotary) the layer passes
+    ``position_embeddings=None``; the rotation is then skipped and raw queries
+    score the raw cached keys, which is exactly what the model computes. Per-position
     scores are the window-mean attention, smoothed with ``avg_pool1d``,
     group-averaged to KV heads, and the observation window is re-appended with
     the global max score so it is never pruned.
@@ -132,17 +135,23 @@ class SnapKVSketch(ScorerKVCompressor):
 
         query_states = _get_prerope_query_states(module, hidden_states[:, -window_size:])
 
-        cos, sin = position_embeddings
-        cos, sin = cos[:, -window_size:], sin[:, -window_size:]
-        # Partial rotary (Qwen3.5: rotary_dim = head_dim * partial_rotary_factor
-        # < head_dim) — rotate only the first rotary_dim channels and leave the
-        # passthrough channels unchanged, mirroring the model's
-        # apply_rotary_pos_emb. Reduces to full RoPE when rotary_dim == head_dim.
-        rotary_dim = cos.shape[-1]
-        cos_u, sin_u = cos.unsqueeze(1), sin.unsqueeze(1)
-        q_rot, q_pass = query_states[..., :rotary_dim], query_states[..., rotary_dim:]
-        q_rot = (q_rot * cos_u) + (rotate_half(q_rot) * sin_u)
-        query_states = torch.cat([q_rot, q_pass], dim=-1)
+        # No-RoPE models (e.g. NemotronH attention, which applies no rotary at
+        # all) pass ``position_embeddings=None``. The cached keys are likewise
+        # un-rotated, so scoring with raw queries reproduces the model's real
+        # window-attention logits exactly — skip the rotation entirely.
+        if position_embeddings is not None:
+            cos, sin = position_embeddings
+            cos, sin = cos[:, -window_size:], sin[:, -window_size:]
+            # Partial rotary (Qwen3.5: rotary_dim = head_dim *
+            # partial_rotary_factor < head_dim) — rotate only the first
+            # rotary_dim channels and leave the passthrough channels unchanged,
+            # mirroring the model's apply_rotary_pos_emb. Reduces to full RoPE
+            # when rotary_dim == head_dim.
+            rotary_dim = cos.shape[-1]
+            cos_u, sin_u = cos.unsqueeze(1), sin.unsqueeze(1)
+            q_rot, q_pass = query_states[..., :rotary_dim], query_states[..., rotary_dim:]
+            q_rot = (q_rot * cos_u) + (rotate_half(q_rot) * sin_u)
+            query_states = torch.cat([q_rot, q_pass], dim=-1)
 
         key_states = repeat_kv(keys, num_key_value_groups)
         attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(head_dim)
@@ -175,7 +184,8 @@ class SnapKVSketch(ScorerKVCompressor):
             attn_weights = attentions[..., -self.window_size :, : -self.window_size]
         else:
             attn_weights = self.compute_window_attention(
-                module, hidden_states, keys, self.window_size, kwargs["position_embeddings"]
+                module, hidden_states, keys, self.window_size,
+                kwargs.get("position_embeddings"),
             )
 
         scores = attn_weights.mean(dim=-2)
