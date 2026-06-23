@@ -47,8 +47,8 @@ Results land in `results/<benchmark>__<model>__<backend>__.../{predictions.csv,m
 ## Backend notes
 
 - **`vllm`** — production path. Prefix caching on by default.
-- **`hf`** — small-context / debugging path. `_prefill` and `_decode` are direct model calls; flash-attn-2 loads natively if available (no override hooks installed).
-- **`research`** — `ResearchAdapter` (subclass of `HFAdapter`) for context compression experiments.
+- **`hf`** — small-context / debugging path. `_prefill` and `_decode` are direct model calls; flash-attn-2 loads natively if available (no override hooks installed). Opt-in `llm_kwargs.dequantize_fp8: true` streams FP8 checkpoints (e.g. Ministral-3) to BF16/FP16 at load time for apples-to-apples comparison with BF16 baselines; no-op on non-FP8 models.
+- **`research`** — `ResearchAdapter` (subclass of `HFAdapter`) for context compression experiments. Inherits `dequantize_fp8` from `HFAdapter`.
 - **`rag`** — OnePassRAG; requires a running Ollama server (see BENCHMARKING.md).
 
 ## ResearchAdapter — architecture

@@ -22,6 +22,15 @@ LONG_BENCH_SUBSETS = [
     "trec_e", "triviaqa_e", "samsum_e", "passage_count_e", "passage_retrieval_en_e", "lcc_e", "repobench-p_e",
 ]
 
+# Official LongBench pred.py skips chat-template wrapping for these few-shot /
+# completion-style datasets: "chat models are better off without build prompts
+# on these tasks." Everything else gets the chat wrapper. The runner reads the
+# per-row `use_chat_template` column populated by `load` and overrides the
+# adapter's config-level default per generate_for_context call.
+CHAT_TEMPLATE_SKIP_TASKS = frozenset({
+    "trec", "triviaqa", "samsum", "lsht", "lcc", "repobench-p",
+})
+
 
 @register_benchmark("longbench")
 class LongBenchBenchmark(Benchmark):
@@ -46,6 +55,7 @@ class LongBenchBenchmark(Benchmark):
                 sdf["answer_prefix"] = ""
             if "max_new_tokens" not in sdf.columns:
                 sdf["max_new_tokens"] = 128
+            sdf["use_chat_template"] = base_task_name(subset) not in CHAT_TEMPLATE_SKIP_TASKS
             frames.append(sdf)
         return pd.concat(frames, ignore_index=True)
 
@@ -72,6 +82,12 @@ class LongBenchBenchmark(Benchmark):
             return 0.0
 
         prediction = str(row.get("predicted_answer", "") or "")
+        # Mistral-instruct family wraps answers in ``**bold**`` markdown by
+        # default. LongBench metrics are token-overlap based, so the asterisks
+        # tokenize as junk that lowers F1 vs gold ~1-3 pts/task. Llama-3.1 emits
+        # plain text and is unaffected. Strip only the markers, not the inner
+        # text. Predictions.csv keeps the raw model output for transparency.
+        prediction = prediction.replace("**", "")
         if task in FIRST_LINE_TASKS:
             prediction = prediction.lstrip("\n").split("\n")[0]
 

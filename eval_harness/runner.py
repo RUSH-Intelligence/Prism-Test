@@ -227,6 +227,17 @@ class EvalRunner:
                         "Research backend expects one shared answer_prefix per context."
                     )
 
+                # Per-row chat-template override (e.g. LongBench skips the chat
+                # wrapper on trec/triviaqa/samsum/lcc/repobench-p to match the
+                # official pred.py). When the column is absent or mixed inside a
+                # group, fall back to the adapter's config-level default by
+                # passing None.
+                chat_override: bool | None = None
+                if "use_chat_template" in group.columns:
+                    uniq = group["use_chat_template"].drop_duplicates().tolist()
+                    if len(uniq) == 1:
+                        chat_override = bool(uniq[0])
+
                 gen_cfg = HFGenerateConfig(
                     max_tokens=max_tokens,
                     temperature=self.config.temperature,
@@ -237,6 +248,7 @@ class EvalRunner:
                     questions=[str(row["question"]) for _, row in group.iterrows()],
                     answer_prefix=answer_prefixes[0],
                     gen_cfg=gen_cfg,
+                    use_chat_template=chat_override,
                 )
             else:
                 prompts: List[str] = []

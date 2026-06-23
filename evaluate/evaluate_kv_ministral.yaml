@@ -1,0 +1,99 @@
+# ============================================================================
+# KV-compression baseline — research backend, KV compressor ONLY (no attention method)
+# ============================================================================
+# Runs the model through ResearchAdapter with a KV compressor (Door 3)
+# installed as a post-attention forward hook, and NO context-extension
+# attention method.  Default: knorm (KVPress-style key-norm scoring) pruning
+# 50% of the prefill KV cache.
+#
+#   python -m eval_harness.cli run --config_file ./evaluate/evaluate_kv.yaml
+#
+# The default model is 128k-native so ruler16k positions are in-window —
+# the run isolates the effect of CACHE COMPRESSION, not context extension.
+# (On the 8k base model the compression signal would be confounded by
+# positional OOD; use the prefill-baseline configs for that axis.)
+
+# Available benchmarks:
+#   aime, aime2024, aime2025, gsm_infinite_hard_128k, gsm_infinite_medium_128k,
+#   gsm_infinite_symbolic_128k, infinite_bench, mock_benchmark,
+#   ruler, ruler16k, ruler32k, ruler64k, ruler128k,
+#   longbench, longbenchv2, loft, loft_rag, loogle, prism1m, zero_scrolls
+benchmark: ruler16k
+# Comma-separated subset list; null = all benchmark defaults.  Default: the
+# same three anchors as the baseline configs, for direct comparison.
+subsets: niah_single_1,niah_single_3,niah_multikey_3
+
+# Inference backend: vllm | hf | rag | research  (sketches need research)
+backend: research
+
+model: mistralai/Ministral-3-3B-Instruct-2512
+
+# Runtime
+tensor_parallel_size: 1        # vLLM-only; ignored by the research backend (single-GPU .to("cuda"))
+dtype: bfloat16
+max_model_len: 131072          # pipeline truncation cap (used because
+                               # research_config.max_context_length below is null).
+                               # Set to Llama-3.1-8B's full trained context (128k)
+                               # so LongBench (~47k max) runs untruncated with
+                               # large headroom for longer benchmarks.
+gpu_memory_utilization: 0.9    # vLLM-only; ignored by the research backend
+trust_remote_code: true
+enable_prefix_caching: true    # vLLM-only; ignored by the research backend
+
+# Generation
+max_new_tokens: null           # null = let the benchmark's per-task value win
+                               # (LongBench: 128 for QA, 512 for summarization,
+                               # 64 for code completion). A global cap silently
+                               # truncates summaries → bogus low scores.
+temperature: 0.0               # greedy
+top_p: 1.0
+system_prompt: null
+seed: 42
+
+# Evaluation limits (max_requests applies PER SUBSET — runner.py:79)
+max_requests: 200
+fraction: 1.0
+query_aware: false
+
+# Sketch-specific subdir: the auto-named run dir encodes benchmark/model/
+# backend but NOT the sketch, so this file and evaluate_common.yaml (same
+# model/benchmark) would otherwise write to the same directory.
+output_dir: ./results/kv
+
+llm_kwargs:
+  # runner._setup_adapter (runner.py:141) defaults this to sdpa anyway; sdpa
+  # is the research backend's validated parity path.
+  attn_implementation: sdpa
+
+  # Ministral-3 ships FP8; dequantize on load for apples-to-apples comparison
+  # with BF16 Llama-3.1 numbers (~2x VRAM, same compute, ~6 -> ~10 GB peak).
+  # No-op for non-FP8 checkpoints, safe to leave on across model swaps.
+  dequantize_fp8: true
+
+  # This dict becomes research_adapter.ResearchConfig (runner.py:144-145).
+  research_config:
+    # --- KV-compression sketch ---------------------------------------------
+    # Available sketches (research_adapter._build_kv_compressor):
+    #   none                   — compression off (no sketch hooks installed)
+    #   knorm                  — prune lowest-scoring keys by key-norm
+    #                            (score = -||k||; large-norm keys evicted),
+    #                            once per layer during PREFILL
+    #   reattention            — ReAttention-style retention as a sketch
+    #   random                 — random eviction (control)
+    #   decoding_knorm         — knorm applied periodically during DECODE
+    #                            (uses compression_interval/target_size/
+    #                            hidden_states_buffer_size below)
+    #   prefill_decoding_knorm — knorm at prefill + periodic knorm at decode
+    kv_compressor: knorm
+    compression_ratio: 0.5          # fraction of the cache PRUNED (must be in
+                                    # [0, 1); kept = 1 - ratio).  0.0 = no-op.
+    compression_interval: 512       # decoding-sketches only: compress every N steps
+    target_size: 2048               # decoding-sketches only: cache size target
+    hidden_states_buffer_size: 256  # decoding-sketches only: scoring buffer
+    max_context_length: null        # null -> fall back to max_model_len above
+    log_cache_seq_len: true         # log per-layer cache lengths so the
+                                    # compression is visible in the run log
+
+    # --- Prefill method: OFF (this file isolates KV compression) -----------
+    attention_method: none
+    attention_method_kwargs: {}

@@ -8,8 +8,11 @@ the existing research backend and records where each ``metrics.json`` landed, so
 Method rows = the superset of the PyramidKV paper (arXiv:2406.02069) and the
 team's RULER sheet:
     Full (no compression baseline, once) +
-    Knorm, CurDkv, PyramidKv, SnapKv, Expected_attn, Key_Diff, Ridge,
+    Knorm, CurDkv, PyramidKv, SnapKv, Expected_attn, Key_Diff,
     StreamingLLM, Compactor     (each at ratios 0.6 / 0.9 / 0.95)
+    Ridge                       (gamma sweep: envelope_gamma ∈
+                                 {0, 0.5, 1, 1.5, 2, 2.5, 3} × ratios
+                                 0.6 / 0.9 / 0.95 = 21 cells)
 
 H2O is intentionally excluded: the in-tree H2OSketch only sums attention from
 the LAST prefill chunk's queries (no running accumulator), so it is not a
@@ -64,6 +67,8 @@ LONGBENCH_16 = [
 
 # Sheet row label -> kv_compression registry key. "Full" is the no-compression
 # baseline (kv_compressor=none); it is run once, not per ratio.
+# Ridge is sweep separately as a (gamma, ratio) grid — see RIDGE_GAMMA_GRID
+# below — so it is intentionally absent from this dict.
 METHODS: dict[str, str] = {
     "Knorm": "knorm",
     "CurDkv": "cur",
@@ -71,12 +76,18 @@ METHODS: dict[str, str] = {
     "SnapKv": "snapkv",
     "Expected_attn": "expected_attention",
     "Key_Diff": "keydiff",
-    "Ridge": "ridge",
     "StreamingLLM": "streaming_llm",
     "Compactor": "compactor",
 }
 
 DEFAULT_RATIOS = [0.6, 0.9, 0.95]
+
+# Ridge gamma sweep. envelope_gamma is the dial on the query-side signal in
+# Ridge's default fixed_envelope combine_mode:
+#   score_i = max(p_ridge_i, envelope_gamma * p_query_i)
+# 0 = pure ridge (query muted); 1 = balanced (the press's default);
+# >1 tilts toward the query side. Each gamma runs at every ratio.
+RIDGE_GAMMAS = [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0]
 
 # PyramidKV's per-layer pyramid budgets leave the cache cross-layer ragged.
 # Under transformers 5.x sdpa/eager the single decode mask is sized from layer 0
@@ -111,7 +122,8 @@ def _slug(model: str) -> str:
 
 def build_config(base: dict, *, model: str, kv_compressor: str, ratio: float,
                  subsets: list[str], out_root: Path, cell_id: str,
-                 max_requests: int | None, max_model_len: int | None) -> dict:
+                 max_requests: int | None, max_model_len: int | None,
+                 extra_kv_kwargs: dict | None = None) -> dict:
     """Construct the full EvalConfig dict for one sweep cell."""
     cfg = copy.deepcopy(base)
     cfg["benchmark"] = "longbench"
@@ -138,10 +150,21 @@ def build_config(base: dict, *, model: str, kv_compressor: str, ratio: float,
     rc["compression_ratio"] = 0.0 if kv_compressor == "none" else float(ratio)
     rc["attention_method"] = "none"
     rc["attention_method_kwargs"] = {}
-    # Seed the random sketches in cur/compactor so reruns are reproducible.
+    # Leave use_chat_template at its config default (True) — LongBench's load()
+    # tags each row with a `use_chat_template` column derived from the official
+    # pred.py skip-list (trec/triviaqa/samsum/lsht/lcc/repobench-p go raw, the
+    # rest get the chat wrapper), and the runner threads the per-row value to
+    # the adapter as a per-call override. A blanket False here would break the
+    # QA-style tasks (hotpotqa/2wikimqa/qasper/multifieldqa_en/musique) that
+    # Llama-3.1-Instruct cannot answer without its native chat format.
+    # Seed the random sketches in cur/compactor so reruns are reproducible,
+    # and merge in any per-cell extras (e.g. Ridge's envelope_gamma).
+    kv_kwargs = dict(rc.get("kv_compressor_kwargs") or {})
     if kv_compressor in SEEDED_METHODS:
-        kv_kwargs = dict(rc.get("kv_compressor_kwargs") or {})
         kv_kwargs.setdefault("seed", SWEEP_SEED)
+    if extra_kv_kwargs:
+        kv_kwargs.update(extra_kv_kwargs)
+    if kv_kwargs:
         rc["kv_compressor_kwargs"] = kv_kwargs
     rc.pop("prefill_chunk_size", None)
     llm["research_config"] = rc
@@ -208,20 +231,31 @@ def main() -> None:
         REPO_ROOT / "results" / "longbench_sweep" / _slug(args.model))
     out_root.mkdir(parents=True, exist_ok=True)
 
-    # Build the list of cells: (label, kv_key, ratio_or_None, cell_id).
-    cells: list[tuple[str, str, float | None, str]] = []
+    # Build the list of cells: (label, kv_key, ratio_or_None, cell_id, extra_kwargs).
+    cells: list[tuple[str, str, float | None, str, dict]] = []
     if not args.skip_full:
-        cells.append(("Full", "none", None, "Full"))
+        cells.append(("Full", "none", None, "Full", {}))
     for label, key in methods.items():
         for ratio in ratios:
-            cells.append((label, key, ratio, f"{label}__r{ratio}"))
+            cells.append((label, key, ratio, f"{label}__r{ratio}", {}))
+    # Ridge gamma sweep: envelope_gamma ∈ RIDGE_GAMMAS × each ratio.
+    # combine_mode is fixed_envelope by default so envelope_gamma is live;
+    # pin it here to be explicit/robust against upstream default changes.
+    for gamma in RIDGE_GAMMAS:
+        for ratio in ratios:
+            cells.append((
+                "Ridge", "ridge", ratio,
+                f"Ridge_g{gamma}__r{ratio}",
+                {"envelope_gamma": float(gamma), "combine_mode": "fixed_envelope"},
+            ))
 
     print(f"Model:   {args.model}")
     print(f"Tasks:   {len(subsets)} subsets")
     print(f"Cells:   {len(cells)} runs (out-root: {out_root})")
-    for idx, (label, key, ratio, cell_id) in enumerate(cells):
+    for idx, (label, key, ratio, cell_id, extras) in enumerate(cells):
         flag = " [flash_attn_2]" if key in FLASH_ATTN_METHODS else ""
-        print(f"  [{idx:2d}] {cell_id:24s} kv_compressor={key} ratio={ratio}{flag}")
+        extra = f" extras={extras}" if extras else ""
+        print(f"  [{idx:2d}] {cell_id:28s} kv_compressor={key} ratio={ratio}{flag}{extra}")
     if args.dry_run:
         return
 
@@ -242,7 +276,7 @@ def main() -> None:
     tmp_yaml = out_root / tmp_yaml_name
     manifest = {"model": args.model, "subsets": subsets, "ratios": ratios, "cells": []}
     n_selected = len(selected)
-    for run_pos, (idx, (label, key, ratio, cell_id)) in enumerate(selected, 1):
+    for run_pos, (idx, (label, key, ratio, cell_id, extras)) in enumerate(selected, 1):
         prefix = f"cell {idx}" if args.cell_index is not None else f"{run_pos}/{n_selected}"
         cell_dir = out_root / cell_id
         existing = find_metrics(cell_dir) if cell_dir.exists() else None
@@ -254,7 +288,8 @@ def main() -> None:
             print(f"\n[{prefix}] {cell_id}: running…", flush=True)
             cfg = build_config(base, model=args.model, kv_compressor=key, ratio=ratio or 0.0,
                                subsets=subsets, out_root=out_root, cell_id=cell_id,
-                               max_requests=args.max_requests, max_model_len=args.max_model_len)
+                               max_requests=args.max_requests, max_model_len=args.max_model_len,
+                               extra_kv_kwargs=extras or None)
             t0 = time.time()
             rc = run_cell(cfg, tmp_yaml)
             elapsed = time.time() - t0
@@ -265,6 +300,7 @@ def main() -> None:
         cell_record = {
             "index": idx,
             "label": label, "kv_compressor": key, "ratio": ratio, "cell_id": cell_id,
+            "kv_compressor_kwargs": extras or None,
             "returncode": rc, "elapsed_sec": round(elapsed, 1) if elapsed else None,
             "total_samples": _total_samples(metrics_path),
             "metrics": str(metrics_path) if metrics_path else None,

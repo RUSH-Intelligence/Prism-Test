@@ -1,0 +1,32 @@
+# Flash-attn JIT validation — 1 example, pyramidkv (the one sweep cell that
+# requires flash_attention_2). Confirms A6000 sm_86 JIT-compile of flash-attn
+# kernels works before the full batch goes out.
+benchmark: longbench
+subsets: qasper
+backend: research
+model: mistralai/Ministral-3-3B-Instruct-2512
+
+tensor_parallel_size: 1
+dtype: bfloat16
+max_model_len: 32768
+trust_remote_code: true
+
+max_new_tokens: null
+temperature: 0.0
+top_p: 1.0
+system_prompt: null
+seed: 42
+
+max_requests_per_subset:
+  qasper: 1
+
+output_dir: ./results/ministral_flash_smoke
+
+llm_kwargs:
+  attn_implementation: flash_attention_2
+  dequantize_fp8: true
+  research_config:
+    kv_compressor: pyramidkv
+    compression_ratio: 0.5
+    attention_method: none
+    max_context_length: null

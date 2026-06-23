@@ -71,6 +71,13 @@ class ResearchConfig:
     max_context_length: Optional[int] = None
     log_cache_seq_len: bool = False
 
+    # Set False for completion-style few-shot benchmarks (LongBench): the dataset
+    # already provides instruction + few-shot examples + the new query as one
+    # block meant to be continued, and chat-template wrapping makes instruct
+    # models emit reasoning instead of completing the pattern (trec/repobench-p
+    # break visibly; QA/summarization lose 1-3pts to verbose output).
+    use_chat_template: bool = True
+
 
 class ResearchAdapter(HFAdapter):
     """Three-door research backend.
@@ -226,6 +233,7 @@ class ResearchAdapter(HFAdapter):
                 prefill_chunk_size=self._cfg.prefill_chunk_size,
                 max_new_tokens=gen_cfg.max_tokens,
                 max_context_length=self._max_context_length,
+                use_chat_template=self._cfg.use_chat_template,
                 cache=cache,
                 cache_adapter=cache_adapter,
             )
@@ -242,9 +250,13 @@ class ResearchAdapter(HFAdapter):
         questions: List[str],
         answer_prefix: str,
         gen_cfg: HFGenerateConfig,
+        use_chat_template: Optional[bool] = None,
     ) -> List[str]:
         cache_adapter = getattr(self, "_cache_adapter", None)
         cache = cache_adapter.initialize_cache(None) if (self._cfg.log_cache_seq_len and cache_adapter) else None
+        # Per-call override (e.g. LongBench's per-task skip list) wins over the
+        # adapter-level config default.
+        chat_flag = self._cfg.use_chat_template if use_chat_template is None else use_chat_template
         output = self._pipe(
             context,
             questions=questions,
@@ -255,6 +267,7 @@ class ResearchAdapter(HFAdapter):
             prefill_chunk_size=self._cfg.prefill_chunk_size,
             max_new_tokens=gen_cfg.max_tokens,
             max_context_length=self._max_context_length,
+            use_chat_template=chat_flag,
             cache=cache,
             cache_adapter=cache_adapter,
         )

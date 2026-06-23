@@ -93,6 +93,7 @@ Before publishing a comparison, confirm each of the following is **intentional**
 | `seed`                     | Default `42`; rows are random-subsampled when `fraction < 1.0`. Same seed → same rows.          |
 | `enable_prefix_caching`    | vLLM only. On by default. Turn off only when measuring cold-prefill cost.                       |
 | `attn_implementation`      | `sdpa` for `research` (the parity path the prefill-method hooks are validated against); `flash_attention_2` for `hf`. vLLM ignores it. |
+| `dequantize_fp8`           | `hf` / `research` only. Set `true` in `llm_kwargs` for FP8-shipped checkpoints (e.g. Ministral-3) to dequantize to the run's `dtype` at load time. No-op on non-FP8 models. Off by default. |
 | `max_model_len`            | Override the model's positional cap when running past its training window.                      |
 | `query_aware`              | If `True`, the question is concatenated into the context — needed for some query-aware methods. Note it in your write-up. |
 | `max_requests` / `max_requests_per_subset` | Subsampling caps. Same value across compared runs or numbers don't line up.    |

@@ -19,6 +19,21 @@ _AUTO_SYSTEM_BLOCK_RE = re.compile(
     r"Cutting Knowledge Date:[^<]*?<\|eot_id\|>"
 )
 
+# Mistral-3 / Ministral-3 chat templates auto-inject a "[SYSTEM_PROMPT]You are
+# Ministral-3-..., a Large Language Model created by Mistral AI...[/SYSTEM_PROMPT]"
+# block even when no system message is passed. Same parity concern as Llama's
+# Cutting-Knowledge-Date block — strip it so LongBench / kvpress numbers line
+# up with the published baselines and our prior Llama runs. DOTALL because the
+# auto block spans multiple lines.
+_MISTRAL_AUTO_SYSTEM_BLOCK_RE = re.compile(
+    r"(<s>)\[SYSTEM_PROMPT\].*?\[/SYSTEM_PROMPT\]",
+    re.DOTALL,
+)
+
+# Both substitutions reduce to "keep the BOS capture group, drop the rest" —
+# applied in sequence so each model family hits exactly one matching pattern.
+_AUTO_SYSTEM_BLOCK_PATTERNS = (_AUTO_SYSTEM_BLOCK_RE, _MISTRAL_AUTO_SYSTEM_BLOCK_RE)
+
 from eval_harness.attention_methods._method_base import PrefillMethod
 from eval_harness.kv_compression.cache_adapter import CacheAdapter, create_cache_adapter
 from eval_harness.kv_compression.base import KVCompressor
@@ -41,6 +56,7 @@ class ResearchGenerationPipeline(Pipeline):
         max_context_length: Optional[int] = None,
         prefill_chunk_size: Optional[int] = None,
         enable_thinking: bool = False,
+        use_chat_template: bool = True,
         cache: Optional[Cache] = None,
         cache_adapter: Optional[CacheAdapter] = None,
         **kwargs,
@@ -56,6 +72,7 @@ class ResearchGenerationPipeline(Pipeline):
             "answer_prefix": answer_prefix,
             "max_context_length": max_context_length,
             "enable_thinking": enable_thinking,
+            "use_chat_template": use_chat_template,
         }
         forward_kwargs = {
             "kv_compressor": kv_compressor,
@@ -68,6 +85,14 @@ class ResearchGenerationPipeline(Pipeline):
         }
         return preprocess_kwargs, forward_kwargs, postprocess_kwargs
 
+    def _get_text_decoder(self):
+        # Matches the multimodal-aware ``model.model.language_model`` lookup used
+        # across attention_methods/ and kv_compression/ (e.g. _method_base.py,
+        # finch_sketch.py, kvzip_sketch.py). For CausalLM (Llama/Mistral),
+        # ``model.model`` already IS the text decoder.
+        inner = self.model.model
+        return inner.language_model if hasattr(inner, "language_model") else inner
+
     def preprocess(
         self,
         context: str,
@@ -75,20 +100,34 @@ class ResearchGenerationPipeline(Pipeline):
         answer_prefix: str,
         max_context_length: int,
         enable_thinking: bool = False,
+        use_chat_template: bool = True,
     ):
-        if self.tokenizer.chat_template is None:
+        # MistralCommonBackend exposes ``apply_chat_template`` but intentionally
+        # has no ``chat_template`` attribute (mistral-common bakes the format in).
+        # Default the missing case to a truthy sentinel so we take the chat path
+        # rather than crashing on AttributeError.
+        chat_template = getattr(self.tokenizer, "chat_template", "<builtin>")
+        if chat_template is None or not use_chat_template:
             bos_token = getattr(self.tokenizer, "bos_token", "")
             context = bos_token + context
             question_suffix = "\n"
         else:
             separator = "#" * (len(context) + 10)
+            # Standard HF tokenizers (Llama, Qwen, ...) have a Jinja
+            # ``chat_template`` and silently ignore unused vars like
+            # ``enable_thinking``. ``MistralCommonBackend`` has no
+            # ``chat_template`` attr and validates kwargs strictly via
+            # Pydantic, so we only forward the Jinja-only kwarg when the
+            # tokenizer is the Jinja kind.
+            chat_kwargs = {"add_generation_prompt": True, "tokenize": False}
+            if hasattr(self.tokenizer, "chat_template"):
+                chat_kwargs["enable_thinking"] = enable_thinking
             context = self.tokenizer.apply_chat_template(
                 [{"role": "user", "content": context + separator}],
-                add_generation_prompt=True,
-                tokenize=False,
-                enable_thinking=enable_thinking,
+                **chat_kwargs,
             )
-            context = _AUTO_SYSTEM_BLOCK_RE.sub(r"\1", context)
+            for pattern in _AUTO_SYSTEM_BLOCK_PATTERNS:
+                context = pattern.sub(r"\1", context)
             context, question_suffix = context.split(separator)
 
         questions = [question + question_suffix + answer_prefix for question in questions]
@@ -98,24 +137,25 @@ class ResearchGenerationPipeline(Pipeline):
             self.tokenizer.encode(question, return_tensors="pt", add_special_tokens=False) for question in questions
         ]
 
-        # Truncation guard. Official LongBench truncates the *middle* of the
-        # context so the question (which sits at the end of the prompt) is
-        # preserved. Our path uses head-only truncation, which would chop the
-        # question off if the prompt overflows. LongBench tops out around 47k
-        # tokens and the default cap is 131k, so this should never fire — but if
-        # it ever does, log it LOUDLY (per row) and surface the gap so the
-        # operator can either raise max_model_len or implement middle truncation.
+        # Middle-truncation matches official LongBench (THUDM/LongBench/pred.py):
+        # take the first half + last half of the context when it overflows. This
+        # preserves both the document's setup (title/instructions at the start)
+        # and any task framing near the end. The question is appended separately
+        # AFTER context_ids in _forward, so it's always preserved in full.
         if context_ids.shape[1] > max_context_length:
             longest_question = max((q.shape[1] for q in question_ids), default=0)
             overflow = context_ids.shape[1] - max_context_length
+            half = max_context_length // 2
+            context_ids = torch.cat(
+                [context_ids[:, :half], context_ids[:, -half:]], dim=1
+            )
             logger.warning(
                 "LONGBENCH TRUNCATION TRIGGERED: context=%d tokens > cap=%d (overflow=%d). "
-                "Question (%d tokens) will still be appended AFTER truncation, but the "
-                "head-only strategy here diverges from official LongBench middle-truncation. "
-                "Raise max_model_len or implement middle truncation if scores look low.",
-                context_ids.shape[1], max_context_length, overflow, longest_question,
+                "Applied middle-truncation (first %d + last %d tokens). "
+                "Question (%d tokens) is appended in full after the truncated context.",
+                context_ids.shape[1] + overflow, max_context_length, overflow,
+                half, half, longest_question,
             )
-            context_ids = context_ids[:, :max_context_length]
 
         return {"context_ids": context_ids, "questions_ids": question_ids}
 
@@ -254,8 +294,9 @@ class ResearchGenerationPipeline(Pipeline):
         # POST_PREFILL gate.  The chunked branch below overrides this per chunk.
         if kv_compressor is not None:
             kv_compressor.set_prefill_is_final(True)
+        text_decoder = self._get_text_decoder()
         if prefill_chunk_size is None or prefill_chunk_size >= context_length:
-            self.model.model(
+            text_decoder(
                 input_ids=context_ids,
                 past_key_values=cache,
             )
@@ -285,7 +326,7 @@ class ResearchGenerationPipeline(Pipeline):
             # and POST_PREFILL behavior is unchanged.
             if kv_compressor is not None:
                 kv_compressor.set_prefill_is_final(end == context_length)
-            self.model.model(
+            text_decoder(
                 input_ids=context_ids[:, start:end],
                 past_key_values=cache,
                 position_ids=position_ids,
