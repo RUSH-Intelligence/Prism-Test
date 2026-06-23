@@ -90,6 +90,11 @@ class RidgeSketch(KVCompressor):
 
     compression_ratio: Optional[float] = None
     ridge_lambda: float = 1e-4
+    # Kept-window defaults (always-retained first ``sink_size`` + last ``local_size``
+    # tokens; only the middle span is scored/pruned). These DEVIATE from upstream
+    # RidgePress (which used sink=4, local=28): local=28 was an anomalously small
+    # guaranteed-recency window. To reproduce an upstream / older saved-baseline ridge
+    # run, pass ``sink_size=4, local_size=28`` explicitly.
     sink_size: int = 8
     local_size: int = 64
     min_tokens_to_compress: int = 64
@@ -99,8 +104,11 @@ class RidgeSketch(KVCompressor):
     # Deviation from kvpress (opt-in): apply RoPE to the re-projected queries at
     # their absolute positions before forming omega, so omega = ||Q k_i|| dots
     # rotated queries against the (rotated) cached keys and recovers the model's
-    # true relative-position attention energy. Default False = faithful port
-    # (un-rotated queries, bit-identical to RidgePress / saved baselines).
+    # true relative-position attention energy. Default False = upstream RidgePress
+    # query-scoring behavior (un-rotated queries). NOTE: this "faithful" scoping is
+    # about the un-rotation quirk only; the kept-window defaults above (sink/local)
+    # deviate from upstream 4/28 — pass sink_size=4, local_size=28 to reproduce
+    # upstream/saved baselines bit-for-bit.
     rotate_queries: bool = False
     normalize_queries: bool = False
     normalize_keys_for_query_metric: bool = False

@@ -110,7 +110,7 @@ kernels):** single-pass prefill at the full ~15.6k context works and retains
 `(1-ratio)·prompt` on the attention layers (e.g. ratio 0.5 → ~7.8k retained,
 `per_layer_min=0` for the Mamba/MLP layers). A 6-method × 4-ratio sweep + full-cache
 baseline is in [`nemotron_ruler16k_kv_report.md`](nemotron_ruler16k_kv_report.md)
-(baseline 92.7; robustness keydiff ≳ compactor > knorm > snapkv ≈ pyramidkv >
+(baseline 93.43; robustness compactor ≳ keydiff > knorm > snapkv > pyramidkv >
 expected_attention). Two issues found and fixed getting there:
 
 - **Chunked prefill ⇒ per-chunk over-eviction.** The post-prefill compressor's
