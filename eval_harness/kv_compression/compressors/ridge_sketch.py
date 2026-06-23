@@ -90,8 +90,8 @@ class RidgeSketch(KVCompressor):
 
     compression_ratio: Optional[float] = None
     ridge_lambda: float = 1e-4
-    sink_size: int = 4
-    local_size: int = 28
+    sink_size: int = 8
+    local_size: int = 64
     min_tokens_to_compress: int = 64
 
     # Query-aware options.
