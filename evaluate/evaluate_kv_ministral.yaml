@@ -26,9 +26,7 @@ subsets: niah_single_1,niah_single_3,niah_multikey_3
 # Inference backend: vllm | hf | rag | research  (sketches need research)
 backend: research
 
-# Gated HF repo: accept the Meta license on the Hub and authenticate
-# (HF_TOKEN / `huggingface-cli login`) before running.
-model: meta-llama/Llama-3.1-8B-Instruct
+model: mistralai/Ministral-3-3B-Instruct-2512
 
 # Runtime
 tensor_parallel_size: 1        # vLLM-only; ignored by the research backend (single-GPU .to("cuda"))
@@ -66,6 +64,11 @@ llm_kwargs:
   # runner._setup_adapter (runner.py:141) defaults this to sdpa anyway; sdpa
   # is the research backend's validated parity path.
   attn_implementation: sdpa
+
+  # Ministral-3 ships FP8; dequantize on load for apples-to-apples comparison
+  # with BF16 Llama-3.1 numbers (~2x VRAM, same compute, ~6 -> ~10 GB peak).
+  # No-op for non-FP8 checkpoints, safe to leave on across model swaps.
+  dequantize_fp8: true
 
   # This dict becomes research_adapter.ResearchConfig (runner.py:144-145).
   research_config:

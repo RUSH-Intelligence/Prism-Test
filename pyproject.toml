@@ -23,6 +23,15 @@ dependencies = [
     # >=4.49: the pipeline passes `logits_to_keep` (renamed from
     # `num_logits_to_keep` in 4.49; earlier versions only accept the old name).
     "transformers>=4.49,<6",
+    # Mistral-family tokenizer (Mistral, Ministral, Mistral3, Pixtral, Voxtral).
+    # AutoTokenizer auto-routes Mistral model_ids to MistralCommonBackend when
+    # this is installed; without it, it silently falls back to a generic backend
+    # and chat-template formatting will be wrong.
+    "mistral-common>=1.8.6",
+    # FP8-quantized checkpoints (Ministral-3 ships FP8 by default) require the
+    # transformers `finegrained_fp8` quantizer, which imports accelerate for
+    # device-map dispatch and dequantization.
+    "accelerate>=0.30",
 
     # Data / scoring
     "datasets>=2.20",
@@ -30,10 +39,22 @@ dependencies = [
     "numpy>=1.26",
     "scipy>=1.11",
     "pyarrow",
+    # LongBench task-specific metrics: ROUGE-L (summarization) and jieba
+    # (Chinese segmentation). Pure-Python, imported lazily by the scorer.
+    "rouge>=1.0",
+    "jieba>=0.42",
+    # LongBench code tasks (lcc, repobench-p) score via fuzzywuzzy.fuzz.ratio.
+    # python-Levenshtein wires up fuzzywuzzy's fast C backend so our numbers
+    # match the path most published LongBench results were measured on (with
+    # only the pure-Python difflib fallback, lcc/repobench-p drift ~1-2 pts).
+    "fuzzywuzzy>=0.18",
+    "python-Levenshtein>=0.20",
 
     # Config / CLI / IO
     "pyyaml>=6.0",
     "tqdm>=4.66",
+    # Writing the LongBench result sheet (scripts/longbench_to_xlsx.py).
+    "openpyxl>=3.1",
 
     # Embeddings
     "sentence-transformers",

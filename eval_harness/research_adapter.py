@@ -71,6 +71,27 @@ class ResearchConfig:
     max_context_length: Optional[int] = None
     log_cache_seq_len: bool = False
 
+    # Set False for completion-style few-shot benchmarks (LongBench): the dataset
+    # already provides instruction + few-shot examples + the new query as one
+    # block meant to be continued, and chat-template wrapping makes instruct
+    # models emit reasoning instead of completing the pattern (trec/repobench-p
+    # break visibly; QA/summarization lose 1-3pts to verbose output).
+    use_chat_template: bool = True
+
+    # Opt-in: strip the auto-injected system header (Llama "Cutting Knowledge
+    # Date" block / Mistral "[SYSTEM_PROMPT]" block) when applying the chat
+    # template. Off by default to preserve prior RULER/KV/positional run
+    # numerics — turning it on changes the prompt prefix. LongBench sets this
+    # True per-row to match the official pred.py pipeline.
+    strip_auto_system_block: bool = False
+
+    # Opt-in: when the context overflows max_context_length, take the first
+    # half + last half of the context (matches official LongBench pred.py).
+    # Off by default = head-only truncation (prior behavior); turning this on
+    # changes which tokens survive for RULER-style needle benchmarks. LongBench
+    # sets this True per-row.
+    middle_truncation: bool = False
+
 
 class ResearchAdapter(HFAdapter):
     """Three-door research backend.
@@ -226,6 +247,9 @@ class ResearchAdapter(HFAdapter):
                 prefill_chunk_size=self._cfg.prefill_chunk_size,
                 max_new_tokens=gen_cfg.max_tokens,
                 max_context_length=self._max_context_length,
+                use_chat_template=self._cfg.use_chat_template,
+                strip_auto_system_block=self._cfg.strip_auto_system_block,
+                middle_truncation=self._cfg.middle_truncation,
                 cache=cache,
                 cache_adapter=cache_adapter,
             )
@@ -242,9 +266,25 @@ class ResearchAdapter(HFAdapter):
         questions: List[str],
         answer_prefix: str,
         gen_cfg: HFGenerateConfig,
+        use_chat_template: Optional[bool] = None,
+        strip_auto_system_block: Optional[bool] = None,
+        middle_truncation: Optional[bool] = None,
     ) -> List[str]:
         cache_adapter = getattr(self, "_cache_adapter", None)
         cache = cache_adapter.initialize_cache(None) if (self._cfg.log_cache_seq_len and cache_adapter) else None
+        # Per-call override (e.g. LongBench's per-task skip list) wins over the
+        # adapter-level config default.
+        chat_flag = self._cfg.use_chat_template if use_chat_template is None else use_chat_template
+        strip_flag = (
+            self._cfg.strip_auto_system_block
+            if strip_auto_system_block is None
+            else strip_auto_system_block
+        )
+        middle_trunc_flag = (
+            self._cfg.middle_truncation
+            if middle_truncation is None
+            else middle_truncation
+        )
         output = self._pipe(
             context,
             questions=questions,
@@ -255,6 +295,9 @@ class ResearchAdapter(HFAdapter):
             prefill_chunk_size=self._cfg.prefill_chunk_size,
             max_new_tokens=gen_cfg.max_tokens,
             max_context_length=self._max_context_length,
+            use_chat_template=chat_flag,
+            strip_auto_system_block=strip_flag,
+            middle_truncation=middle_trunc_flag,
             cache=cache,
             cache_adapter=cache_adapter,
         )

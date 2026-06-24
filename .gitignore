@@ -54,7 +54,11 @@ tensorboard/
 *.lance/
 lancedb/
 
+# Local result spreadsheets (Ridge Press / sweep output sheets)
+*.xlsx
+
 # --- Background process logs (see BENCHMARKING.md) ---
+logs/
 ollama.log
 wake_lock.log
 nohup.out

@@ -1,0 +1,39 @@
+# Smoke test — Ministral-3-3B-Instruct-2512 on LongBench (research backend).
+# 2 examples per subset, no compression, exercises both chat-template paths:
+#   qasper      → uses chat template (typical case)
+#   triviaqa    → skips chat template (CHAT_TEMPLATE_SKIP_TASKS path)
+benchmark: longbench
+subsets: qasper,triviaqa
+backend: research
+model: mistralai/Ministral-3-3B-Instruct-2512
+
+tensor_parallel_size: 1
+dtype: bfloat16
+max_model_len: 32768
+trust_remote_code: true
+
+max_new_tokens: null
+temperature: 0.0
+top_p: 1.0
+system_prompt: null
+seed: 42
+
+max_requests_per_subset:
+  qasper: 2
+  triviaqa: 2
+
+# LongBench parity — match the sweep cells (deterministic SDPA backend).
+deterministic: true
+
+output_dir: ./results/ministral_smoke
+
+llm_kwargs:
+  attn_implementation: sdpa
+  # Ministral-3-3B ships FP8; dequantize on load so weights land as BF16
+  # for apples-to-apples comparison vs the Llama-3.1-8B BF16 baseline.
+  # ~2x VRAM (still small, ~6 GB), same compute.
+  dequantize_fp8: true
+  research_config:
+    kv_compressor: none
+    attention_method: none
+    max_context_length: null

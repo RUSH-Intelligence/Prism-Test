@@ -31,6 +31,11 @@ class EvalRunner:
         self.df: pd.DataFrame | None = None
         self._setup_logging()
         self._set_seed(config.seed)
+        # Determinism flags (cudnn / SDPA backend pinning) shift attention
+        # kernels and numerics vs the prior unpinned defaults, so they are
+        # opt-in. vLLM uses its own kernels and ignores these.
+        if config.deterministic and config.backend != "vllm":
+            self._enable_determinism()
 
     def _setup_logging(self) -> None:
         # Configure the package/root logger so sibling modules (e.g. hf_adapter)
@@ -54,6 +59,27 @@ class EvalRunner:
         torch.manual_seed(seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
+
+    @staticmethod
+    def _enable_determinism() -> None:
+        # Opt-in (EvalConfig.deterministic=True). Best-effort run-to-run
+        # reproducibility — warn_only=True so ops without a deterministic kernel
+        # (e.g. some scatter/topk paths in compressors) log a warning instead of
+        # raising. Pair with CUBLAS_WORKSPACE_CONFIG=:4096:8 in the environment —
+        # without it cuBLAS GEMM choice is not pinned.
+        torch.use_deterministic_algorithms(True, warn_only=True)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        # Pin the SDPA backend so runs are reproducible AND comparable to kvpress
+        # baselines. The mem-efficient backend is nondeterministic on some shapes
+        # and is what use_deterministic_algorithms would silently route AWAY from
+        # under warn_only=True, leaving us with an unannounced backend swap vs
+        # the published numbers. Disable it; keep flash + math (both
+        # deterministic). flash is preferred when available, math is the fallback.
+        if torch.cuda.is_available():
+            torch.backends.cuda.enable_mem_efficient_sdp(False)
+            torch.backends.cuda.enable_flash_sdp(True)
+            torch.backends.cuda.enable_math_sdp(True)
 
     def _build_prompt(self, context: str, question: str, answer_prefix: str) -> str:
         # Match sparse-attention-hub request assembly for RULER benchmarks.
@@ -210,6 +236,31 @@ class EvalRunner:
                         "Research backend expects one shared answer_prefix per context."
                     )
 
+                # Per-row chat-template override (e.g. LongBench skips the chat
+                # wrapper on trec/triviaqa/samsum/lcc/repobench-p to match the
+                # official pred.py). When the column is absent or mixed inside a
+                # group, fall back to the adapter's config-level default by
+                # passing None.
+                chat_override: bool | None = None
+                if "use_chat_template" in group.columns:
+                    uniq = group["use_chat_template"].drop_duplicates().tolist()
+                    if len(uniq) == 1:
+                        chat_override = bool(uniq[0])
+
+                # Same pattern for the system-block strip: LongBench opts in
+                # per-row; absent column means use the adapter default (off).
+                strip_override: bool | None = None
+                if "strip_auto_system_block" in group.columns:
+                    uniq_s = group["strip_auto_system_block"].drop_duplicates().tolist()
+                    if len(uniq_s) == 1:
+                        strip_override = bool(uniq_s[0])
+
+                middle_trunc_override: bool | None = None
+                if "middle_truncation" in group.columns:
+                    uniq_m = group["middle_truncation"].drop_duplicates().tolist()
+                    if len(uniq_m) == 1:
+                        middle_trunc_override = bool(uniq_m[0])
+
                 gen_cfg = HFGenerateConfig(
                     max_tokens=max_tokens,
                     temperature=self.config.temperature,
@@ -220,6 +271,9 @@ class EvalRunner:
                     questions=[str(row["question"]) for _, row in group.iterrows()],
                     answer_prefix=answer_prefixes[0],
                     gen_cfg=gen_cfg,
+                    use_chat_template=chat_override,
+                    strip_auto_system_block=strip_override,
+                    middle_truncation=middle_trunc_override,
                 )
             else:
                 prompts: List[str] = []

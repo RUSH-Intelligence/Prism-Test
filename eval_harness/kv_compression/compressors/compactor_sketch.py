@@ -110,6 +110,10 @@ class CompactorSketch(ScorerKVCompressor):
     - ``phi``: optional injected sketch matrix used verbatim (no 1/sqrt(k)
       scaling) for deterministic tests; upstream draws a fresh
       ``torch.randn`` every call, so scores are nondeterministic run-to-run.
+    - ``seed``: when set (non-None), the per-call sketch draw uses a seeded
+      ``torch.Generator`` initialized once and advanced across layers, making
+      runs reproducible while still using a different sketch per layer.
+      Default ``None`` matches kvpress's nondeterministic behavior.
     - Leverage Cholesky jitter (``_chol_with_jitter``): upstream's absolute
       jitter ladder (max 1e2) cannot regularize the length-scaled Gram matrix
       ``G = XᵀX`` at long context, so Compactor fails at RULER-64k on
@@ -152,6 +156,16 @@ class CompactorSketch(ScorerKVCompressor):
     sketch_dimension: int = 48
     blending: Optional[float] = None
     phi: Optional[torch.Tensor] = None
+    seed: Optional[int] = None
+
+    def _get_generator(self, device: torch.device) -> Optional[torch.Generator]:
+        if self.seed is None:
+            return None
+        gen = getattr(self, "_rng", None)
+        if gen is None or gen.device != device:
+            gen = torch.Generator(device=device).manual_seed(int(self.seed))
+            self._rng = gen
+        return gen
 
     @staticmethod
     def _chol_with_jitter(G: torch.Tensor, jitter: float = 0.0, max_tries: int = 5) -> torch.Tensor:
@@ -195,6 +209,7 @@ class CompactorSketch(ScorerKVCompressor):
         if self.phi is not None:
             Phi = self.phi.to(device=key_states.device, dtype=key_states.dtype)
         else:
+            gen = self._get_generator(key_states.device)
             Phi = torch.randn(
                 key_states.shape[0],
                 key_states.shape[1],
@@ -202,6 +217,7 @@ class CompactorSketch(ScorerKVCompressor):
                 k,
                 device=key_states.device,
                 dtype=key_states.dtype,
+                generator=gen,
             ) * (1 / math.sqrt(k))
 
         X = key_states - key_states.mean(dim=-2, keepdim=True)

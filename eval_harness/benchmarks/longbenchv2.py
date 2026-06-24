@@ -5,7 +5,7 @@ from typing import Dict, List
 import pandas as pd
 
 from .base import Benchmark, BenchmarkInfo
-from .common import extract_option_letter
+from .common import extract_longbench_v2_answer, extract_option_letter
 from .registry import register_benchmark
 
 
@@ -45,7 +45,8 @@ class LongBenchV2Benchmark(Benchmark):
             n = len(tdf)
             correct = 0
             for _, row in tdf.iterrows():
-                pred = extract_option_letter(row.get("predicted_answer", ""))
+                pred = extract_longbench_v2_answer(row.get("predicted_answer", ""))
+                # Gold ``answer`` is already a bare A-D letter in the dataset.
                 gold = extract_option_letter(row.get("answer", ""))
                 if pred and gold and pred == gold:
                     correct += 1

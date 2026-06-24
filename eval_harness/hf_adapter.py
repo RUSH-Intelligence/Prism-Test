@@ -22,6 +22,11 @@ except ImportError:
     Mistral3ForConditionalGeneration = None  # type: ignore[assignment]
 
 try:
+    from transformers import FineGrainedFP8Config
+except ImportError:
+    FineGrainedFP8Config = None  # type: ignore[assignment]
+
+try:
     from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 except ImportError:
     ALL_ATTENTION_FUNCTIONS = None
@@ -85,6 +90,13 @@ class HFAdapter:
         torch_dtype = _resolve_dtype(dtype)
         if torch_dtype is not None:
             load_kwargs["dtype"] = torch_dtype
+
+        # Opt-in: dequantize FP8 checkpoints to floating-point weights at load
+        # time (FineGrainedFP8 only). Lets Mistral3 / other FP8-shipped models
+        # run with BF16 weights for fair comparison vs BF16 baselines (Llama).
+        # Off by default — FP8 stays FP8.
+        if load_kwargs.pop("dequantize_fp8", False):
+            _apply_fp8_dequantize(model, load_kwargs)
 
         self._model = _load_model(model, load_kwargs)
         if torch.cuda.is_available():
@@ -238,6 +250,39 @@ def _resolve_dtype(dtype: str) -> Optional[torch.dtype]:
         "bfloat16": torch.bfloat16, "bf16": torch.bfloat16,
         "float32": torch.float32, "fp32": torch.float32,
     }.get(dtype)
+
+
+def _apply_fp8_dequantize(model_name: str, load_kwargs: dict[str, Any]) -> None:
+    """Override a model's ``config.json`` FP8 quantization with a dequantize-on-load
+    variant. Mutates ``load_kwargs`` in place to inject ``quantization_config``.
+
+    Streams FP8 weights off disk and dequantizes each tensor to ``load_kwargs['dtype']``
+    (BF16/FP16) before they land in GPU memory — no FP8 VRAM spike, no post-hoc pass.
+    Silently no-ops for non-FP8 checkpoints (the override is harmless when the model
+    has no quantization to begin with — the quantizer just has nothing to attach).
+    """
+    if FineGrainedFP8Config is None:
+        logger.warning(
+            "dequantize_fp8=True requested but FineGrainedFP8Config is unavailable "
+            "in this transformers version; loading FP8 weights as-is."
+        )
+        return
+    try:
+        cfg = AutoConfig.from_pretrained(
+            model_name, trust_remote_code=load_kwargs.get("trust_remote_code", True)
+        )
+    except Exception:
+        cfg = None
+    qcfg = getattr(cfg, "quantization_config", None) if cfg is not None else None
+    quant_method = (qcfg or {}).get("quant_method") if isinstance(qcfg, dict) else getattr(qcfg, "quant_method", None)
+    if quant_method != "fp8":
+        logger.info(
+            "dequantize_fp8=True ignored: model %s is not FP8-quantized (quant_method=%s).",
+            model_name, quant_method,
+        )
+        return
+    load_kwargs["quantization_config"] = FineGrainedFP8Config(dequantize=True)
+    logger.info("Loading %s with FP8 → %s dequantization at load time.", model_name, load_kwargs.get("dtype"))
 
 
 def _load_model(model_name: str, load_kwargs: dict[str, Any]) -> PreTrainedModel:

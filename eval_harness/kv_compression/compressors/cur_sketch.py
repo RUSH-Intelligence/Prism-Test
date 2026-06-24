@@ -1,6 +1,6 @@
 import math
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Optional
 
 import torch
 import torch.nn.functional as F
@@ -36,7 +36,11 @@ class CURSketch(ScorerKVCompressor):
       bitwise identical to upstream under the same seed.
 
     Upstream quirks replicated on purpose:
-    - ``G`` is unseeded and resampled on every call (i.e. per layer).
+    - When ``seed=None`` (kvpress-default behavior), ``G`` is unseeded and resampled
+      on every call (i.e. per layer). Set ``seed`` to a non-None int to make the
+      random projection deterministic across reruns — the generator is initialized
+      once and advances naturally across layers, so per-layer ``G`` still differs
+      (just reproducibly).
     - A local window (or the global normalization) with zero total mass yields
       0/0 = NaN scores.
     - ``num_sinks >= seq_len`` sets every score to 1.0, leaving the topk selection
@@ -48,6 +52,16 @@ class CURSketch(ScorerKVCompressor):
     use_random_leverage: bool = False
     use_local_approximation: bool = True
     local_window_size: int = 16
+    seed: Optional[int] = None
+
+    def _get_generator(self, device: torch.device) -> Optional[torch.Generator]:
+        if self.seed is None:
+            return None
+        gen = getattr(self, "_rng", None)
+        if gen is None or gen.device != device:
+            gen = torch.Generator(device=device).manual_seed(int(self.seed))
+            self._rng = gen
+        return gen
 
     def score(
         self,
@@ -61,7 +75,10 @@ class CURSketch(ScorerKVCompressor):
 
         if self.use_random_leverage:
             r = 20
-            G = torch.randn(keys.shape[-1], r, device=keys.device, dtype=keys.dtype) / math.sqrt(r)
+            gen = self._get_generator(keys.device)
+            G = torch.randn(
+                keys.shape[-1], r, device=keys.device, dtype=keys.dtype, generator=gen,
+            ) / math.sqrt(r)
             keys = keys @ G
             values = values @ G
 

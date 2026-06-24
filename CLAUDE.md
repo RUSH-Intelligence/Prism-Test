@@ -47,8 +47,8 @@ Results land in `results/<benchmark>__<model>__<backend>__.../{predictions.csv,m
 ## Backend notes
 
 - **`vllm`** — production path. Prefix caching on by default.
-- **`hf`** — small-context / debugging path. `_prefill` and `_decode` are direct model calls; flash-attn-2 loads natively if available (no override hooks installed).
-- **`research`** — `ResearchAdapter` (subclass of `HFAdapter`) for context compression experiments.
+- **`hf`** — small-context / debugging path. `_prefill` and `_decode` are direct model calls; flash-attn-2 loads natively if available (no override hooks installed). Opt-in `llm_kwargs.dequantize_fp8: true` streams FP8 checkpoints (e.g. Ministral-3) to BF16/FP16 at load time for apples-to-apples comparison with BF16 baselines; no-op on non-FP8 models.
+- **`research`** — `ResearchAdapter` (subclass of `HFAdapter`) for context compression experiments. Inherits `dequantize_fp8` from `HFAdapter`.
 - **`rag`** — OnePassRAG; requires a running Ollama server (see BENCHMARKING.md).
 
 ## ResearchAdapter — architecture
@@ -163,9 +163,16 @@ documents params, replicated upstream quirks, and deviations: scorers `knorm`, `
 `reattention`, `streaming_llm`, `keydiff`, `lagkv`, `cur`, `leverage`, `non_causal_attention`,
 `compactor`, `ridge`, `random_sketch_press` (research-fork; dead-code bug replicated ⇒ ≡ `ridge`),
 `expected_attention`, `expected_attention_stats`, `snapkv`, `pyramidkv`, `tova`,
-`observed_attention`, `qfilter`, `kvzap`, `finch`, `think` (key-channel zeroing), `simlayerkv`;
+`observed_attention`, `h2o` (Heavy Hitter Oracle, arXiv:2306.14048 — raw accumulated-attention
+sum + recent-window force-keep; like `observed_attention` it needs `attn_implementation: eager`),
+`qfilter`, `kvzap`, `finch`, `think` (key-channel zeroing), `simlayerkv`;
 masking-based `adakv`, `critical_adakv`, `dms`, `duo_attention`, `kvzip`, `fastkvzip`; wrappers
 `criticalkv`, `block`, `chunk`, `chunkkv`, `composed`, `key_rerotation`, `per_layer_compression`.
+One non-kvpress coreset method: `balancekv` (faithful port of github.com/ksheth96/BalanceKV,
+arXiv:2502.07861) — a discrepancy-theory self-balancing walk that selects a balanced
+`[sink | middle-coreset | window]` token subset and **reweights surviving values**; knobs are
+`itrs` (halvings; `compression_ratio` maps to it) + `gamma`/`temp`/`beta`/`block_size`/`n_sink`/
+`window_size`, `post_prefill` schedule.
 
 Constraints to keep in mind when wiring runs or reviewing changes:
 

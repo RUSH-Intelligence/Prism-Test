@@ -91,6 +91,29 @@ def extract_option_letter(text: str) -> str:
     return m.group(1) if m else ""
 
 
+def extract_longbench_v2_answer(text: str) -> str:
+    """Extract an A-D choice from a LongBench-v2 response.
+
+    Mirrors the official THUDM/LongBench-v2 ``extract_answer``: strip markdown
+    emphasis, then look for the steered final-answer template
+    ``The correct answer is (X)`` / ``The correct answer is X``. The dataset's
+    ``answer_prefix`` instructs the model to use exactly this format, so this is
+    the faithful extraction. Falls back to a looser last/first standalone A-D
+    match only when the template is absent, so a model that ignores the format
+    instruction is not silently scored zero.
+    """
+    s = str(text).replace("*", "")
+    m = re.search(r"The correct answer is \(([A-D])\)", s)
+    if m:
+        return m.group(1)
+    m = re.search(r"The correct answer is ([A-D])", s)
+    if m:
+        return m.group(1)
+    # Fallback: last standalone A-D mention (a final answer usually comes last).
+    matches = re.findall(r"\b([A-D])\b", s.upper())
+    return matches[-1] if matches else ""
+
+
 def extract_int_0_999(text: str) -> str:
     t = str(text)
     boxed = re.findall(r"\\boxed\{([^}]*)\}", t)
