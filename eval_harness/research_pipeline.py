@@ -79,6 +79,8 @@ class ResearchGenerationPipeline(Pipeline):
         prefill_chunk_size: Optional[int] = None,
         enable_thinking: bool = False,
         use_chat_template: bool = True,
+        strip_auto_system_block: bool = False,
+        middle_truncation: bool = False,
         cache: Optional[Cache] = None,
         cache_adapter: Optional[CacheAdapter] = None,
         **kwargs,
@@ -95,6 +97,8 @@ class ResearchGenerationPipeline(Pipeline):
             "max_context_length": max_context_length,
             "enable_thinking": enable_thinking,
             "use_chat_template": use_chat_template,
+            "strip_auto_system_block": strip_auto_system_block,
+            "middle_truncation": middle_truncation,
         }
         forward_kwargs = {
             "kv_compressor": kv_compressor,
@@ -123,6 +127,8 @@ class ResearchGenerationPipeline(Pipeline):
         max_context_length: int,
         enable_thinking: bool = False,
         use_chat_template: bool = True,
+        strip_auto_system_block: bool = False,
+        middle_truncation: bool = False,
     ):
         # MistralCommonBackend exposes ``apply_chat_template`` but intentionally
         # has no ``chat_template`` attribute (mistral-common bakes the format in).
@@ -148,8 +154,13 @@ class ResearchGenerationPipeline(Pipeline):
                 [{"role": "user", "content": context + separator}],
                 **chat_kwargs,
             )
-            for pattern in _AUTO_SYSTEM_BLOCK_PATTERNS:
-                context = pattern.sub(r"\1", context)
+            # Opt-in: strip the model's auto-injected system header. Off by
+            # default to preserve prior RULER/KV/positional/DCA numerics — the
+            # strip changes the prompt prefix and shifts established baselines.
+            # LongBench enables it per-row for parity with the official pred.py.
+            if strip_auto_system_block:
+                for pattern in _AUTO_SYSTEM_BLOCK_PATTERNS:
+                    context = pattern.sub(r"\1", context)
             context, question_suffix = context.split(separator)
 
         questions = [question + question_suffix + answer_prefix for question in questions]
@@ -159,25 +170,36 @@ class ResearchGenerationPipeline(Pipeline):
             self.tokenizer.encode(question, return_tensors="pt", add_special_tokens=False) for question in questions
         ]
 
-        # Middle-truncation matches official LongBench (THUDM/LongBench/pred.py):
-        # take the first half + last half of the context when it overflows. This
-        # preserves both the document's setup (title/instructions at the start)
-        # and any task framing near the end. The question is appended separately
-        # AFTER context_ids in _forward, so it's always preserved in full.
+        # Overflow truncation. Default is head-only truncation (preserves prior
+        # RULER NIAH semantics — which specific needles survive). Opt-in
+        # middle-truncation (first half + last half) matches official LongBench
+        # pred.py; LongBench sets this per-row. The question is appended
+        # separately AFTER context_ids in _forward, so it is always preserved.
         if context_ids.shape[1] > max_context_length:
+            original_len = context_ids.shape[1]
             longest_question = max((q.shape[1] for q in question_ids), default=0)
-            overflow = context_ids.shape[1] - max_context_length
-            half = max_context_length // 2
-            context_ids = torch.cat(
-                [context_ids[:, :half], context_ids[:, -half:]], dim=1
-            )
-            logger.warning(
-                "LONGBENCH TRUNCATION TRIGGERED: context=%d tokens > cap=%d (overflow=%d). "
-                "Applied middle-truncation (first %d + last %d tokens). "
-                "Question (%d tokens) is appended in full after the truncated context.",
-                context_ids.shape[1] + overflow, max_context_length, overflow,
-                half, half, longest_question,
-            )
+            overflow = original_len - max_context_length
+            if middle_truncation:
+                half = max_context_length // 2
+                context_ids = torch.cat(
+                    [context_ids[:, :half], context_ids[:, -half:]], dim=1
+                )
+                logger.warning(
+                    "TRUNCATION TRIGGERED: context=%d tokens > cap=%d (overflow=%d). "
+                    "Applied middle-truncation (first %d + last %d tokens). "
+                    "Question (%d tokens) is appended in full after the truncated context.",
+                    original_len, max_context_length, overflow,
+                    half, half, longest_question,
+                )
+            else:
+                context_ids = context_ids[:, :max_context_length]
+                logger.warning(
+                    "TRUNCATION TRIGGERED: context=%d tokens > cap=%d (overflow=%d). "
+                    "Applied head-truncation (first %d tokens). "
+                    "Question (%d tokens) is appended in full after the truncated context.",
+                    original_len, max_context_length, overflow,
+                    max_context_length, longest_question,
+                )
 
         return {"context_ids": context_ids, "questions_ids": question_ids}
 

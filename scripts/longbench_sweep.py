@@ -130,6 +130,11 @@ def build_config(base: dict, *, model: str, kv_compressor: str, ratio: float,
     cfg["subsets"] = ",".join(subsets)
     cfg["backend"] = "research"
     cfg["model"] = model
+    # Sweep cells need run-to-run reproducibility AND a fixed SDPA backend so
+    # numbers are comparable to the kvpress leaderboard (which assumes flash /
+    # math, not mem-efficient). Off by default at the EvalConfig level — opt
+    # in here for every LongBench sweep cell.
+    cfg["deterministic"] = True
     # Let the per-task value from the LongBench dataset win (128 for QA tasks,
     # 512 for summarization: gov_report/qmsum/multi_news, 64 for code-completion).
     # A global cap here would silently chop summaries off at 128 tokens.

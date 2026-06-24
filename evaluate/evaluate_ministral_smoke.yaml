@@ -22,6 +22,9 @@ max_requests_per_subset:
   qasper: 2
   triviaqa: 2
 
+# LongBench parity — match the sweep cells (deterministic SDPA backend).
+deterministic: true
+
 output_dir: ./results/ministral_smoke
 
 llm_kwargs:

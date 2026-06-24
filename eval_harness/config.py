@@ -39,6 +39,13 @@ class EvalConfig:
     query_aware: bool = False
     output_dir: str = "./results"
 
+    # Opt-in run-to-run determinism. When False (default), only the basic seeds
+    # (random/numpy/torch.manual_seed) are pinned — matches main behavior. When
+    # True, also pins torch.use_deterministic_algorithms, cudnn.deterministic,
+    # and disables the nondeterministic mem-efficient SDPA backend in favor of
+    # flash + math (deterministic). Ignored on vLLM (it uses its own kernels).
+    deterministic: bool = False
+
     # Extra kwargs passthrough to the backend LLM.
     llm_kwargs: Optional[Dict[str, Any]] = None
 

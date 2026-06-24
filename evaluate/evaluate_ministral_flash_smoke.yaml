@@ -20,6 +20,9 @@ seed: 42
 max_requests_per_subset:
   qasper: 1
 
+# LongBench parity — match the sweep cells (deterministic SDPA backend).
+deterministic: true
+
 output_dir: ./results/ministral_flash_smoke
 
 llm_kwargs:

@@ -31,6 +31,12 @@ CHAT_TEMPLATE_SKIP_TASKS = frozenset({
     "trec", "triviaqa", "samsum", "lsht", "lcc", "repobench-p",
 })
 
+# Code-completion tasks scored by code-similarity (difflib/fuzzywuzzy). Stripping
+# ``**`` from predictions would corrupt legitimate Python (e.g. ``x ** 2``) since
+# gold answers are not stripped — the markdown-bold strip only helps the
+# token-overlap and ROUGE-L tasks (Mistral wraps prose answers in ``**...**``).
+_CODE_TASKS = frozenset({"lcc", "repobench-p"})
+
 
 @register_benchmark("longbench")
 class LongBenchBenchmark(Benchmark):
@@ -56,6 +62,16 @@ class LongBenchBenchmark(Benchmark):
             if "max_new_tokens" not in sdf.columns:
                 sdf["max_new_tokens"] = 128
             sdf["use_chat_template"] = base_task_name(subset) not in CHAT_TEMPLATE_SKIP_TASKS
+            # LongBench parity (official pred.py): when the chat template is
+            # applied, the auto-injected system header (Llama "Cutting Knowledge
+            # Date" / Mistral "[SYSTEM_PROMPT]") is stripped so prompts match
+            # published baselines. No-op on the skip-list tasks (they bypass the
+            # chat path entirely).
+            sdf["strip_auto_system_block"] = True
+            # Official LongBench pred.py middle-truncates (first half + last
+            # half) when the context overflows the model window. Opt in
+            # per-row so other benchmarks (RULER NIAH) keep head-truncation.
+            sdf["middle_truncation"] = True
             frames.append(sdf)
         return pd.concat(frames, ignore_index=True)
 
@@ -82,12 +98,15 @@ class LongBenchBenchmark(Benchmark):
             return 0.0
 
         prediction = str(row.get("predicted_answer", "") or "")
-        # Mistral-instruct family wraps answers in ``**bold**`` markdown by
-        # default. LongBench metrics are token-overlap based, so the asterisks
-        # tokenize as junk that lowers F1 vs gold ~1-3 pts/task. Llama-3.1 emits
-        # plain text and is unaffected. Strip only the markers, not the inner
-        # text. Predictions.csv keeps the raw model output for transparency.
-        prediction = prediction.replace("**", "")
+        # Mistral-instruct family wraps prose answers in ``**bold**`` markdown
+        # by default. LongBench's prose metrics are token-overlap based, so the
+        # asterisks tokenize as junk that lowers F1 vs gold ~1-3 pts/task.
+        # Llama-3.1 emits plain text and is unaffected. Strip only the markers
+        # — and only on non-code tasks (lcc/repobench-p use code-similarity
+        # against unstripped gold, so a strip would corrupt ``x ** 2`` etc.).
+        # Predictions.csv keeps the raw model output for transparency.
+        if task not in _CODE_TASKS:
+            prediction = prediction.replace("**", "")
         if task in FIRST_LINE_TASKS:
             prediction = prediction.lstrip("\n").split("\n")[0]
 

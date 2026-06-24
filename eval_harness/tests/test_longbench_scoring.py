@@ -132,6 +132,30 @@ class TestLongBenchScorer(unittest.TestCase):
         self.assertEqual(out["overall_score"], 0.0)
         self.assertEqual(out["total_samples"], 0)
 
+    def test_code_task_preserves_double_asterisk(self):
+        # lcc / repobench-p use code-similarity scoring against unstripped gold.
+        # A blanket ``**`` strip on the prediction would corrupt valid Python
+        # (``x ** 2``) and silently depress code-task scores.
+        df = pd.DataFrame([
+            {"task": "lcc", "predicted_answer": "return x ** 2",
+             "answers": ["return x ** 2"], "all_classes": None},
+            {"task": "repobench-p", "predicted_answer": "y ** 0.5",
+             "answers": ["y ** 0.5"], "all_classes": None},
+        ])
+        out = self._bench().score(df)
+        self.assertEqual(out["task_scores"]["lcc"], 100.0)
+        self.assertEqual(out["task_scores"]["repobench-p"], 100.0)
+
+    def test_prose_task_still_strips_double_asterisk(self):
+        # Prose tasks (token-overlap / ROUGE) should still strip ``**`` so
+        # Mistral's markdown-bold wrapper doesn't tank F1 against plain gold.
+        df = pd.DataFrame([
+            {"task": "hotpotqa", "predicted_answer": "**Barack Obama**",
+             "answers": ["Barack Obama"], "all_classes": None},
+        ])
+        out = self._bench().score(df)
+        self.assertEqual(out["task_scores"]["hotpotqa"], 100.0)
+
     @unittest.skipUnless(_HAS_ROUGE, "rouge not installed")
     def test_rouge_task_runs(self):
         df = pd.DataFrame([

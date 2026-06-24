@@ -45,14 +45,27 @@ SUBSET_TO_HEADER = {
 }
 
 # Row order for each ratio block (the superset; Full is rendered once on top).
+# Ridge is swept over envelope_gamma ∈ {0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0} —
+# each gamma gets its own row. H2O is intentionally excluded (see
+# scripts/longbench_sweep.py for why).
 METHOD_ORDER = [
     "Knorm", "CurDkv", "PyramidKv", "SnapKv", "Expected_attn",
-    "Key_Diff", "Ridge", "StreamingLLM", "H2O",
+    "Key_Diff", "Compactor", "StreamingLLM",
+    "Ridge_g0.0", "Ridge_g0.5", "Ridge_g1.0", "Ridge_g1.5",
+    "Ridge_g2.0", "Ridge_g2.5", "Ridge_g3.0",
 ]
 
 
+def _row_label(cell: dict) -> str:
+    """The display label for the row — cell_id stripped of the ``__r<ratio>`` suffix.
+
+    Falls back to ``label`` for the Full baseline (which has no ratio suffix)."""
+    cid = cell.get("cell_id") or cell["label"]
+    return cid.split("__r", 1)[0]
+
+
 def load_results(manifest: dict) -> dict:
-    """Return {(label, ratio_or_None): {subset: score}} from the manifest."""
+    """Return {(row_label, ratio_or_None): {subset: score}} from the manifest."""
     out: dict = {}
     for cell in manifest["cells"]:
         if not cell.get("metrics"):
@@ -61,7 +74,7 @@ def load_results(manifest: dict) -> dict:
             data = json.loads(Path(cell["metrics"]).read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        out[(cell["label"], cell["ratio"])] = data.get("task_scores", {})
+        out[(_row_label(cell), cell["ratio"])] = data.get("task_scores", {})
     return out
 
 
