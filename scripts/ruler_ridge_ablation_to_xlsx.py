@@ -21,6 +21,8 @@ Usage
     python scripts/ruler_ridge_ablation_to_xlsx.py \
         --cells-dir results/ruler16k_sweep/<model>/manifest.cells
     python scripts/ruler_ridge_ablation_to_xlsx.py \
+        --cells-dir results/ruler16k_sweep_track2/<model>/manifest.cells
+    python scripts/ruler_ridge_ablation_to_xlsx.py \
         --xlsx "Ridge Press.xlsx" --sheet RULER16k-Ridge-Ablation-Llama-3.1-8B
 """
 from __future__ import annotations
@@ -70,11 +72,24 @@ def _cell_axes_2x2(cell: dict) -> tuple[float, bool, bool, float]:
     )
 
 
+def _cell_axes_track2(cell: dict) -> tuple[float, str, float, float]:
+    """Return (gamma, selector, fraction, ratio) for a track-2 query-subset cell."""
+    kw = cell.get("kv_compressor_kwargs", {})
+    return (
+        float(kw["envelope_gamma"]),
+        str(kw["omega_query_selector"]),
+        float(kw["omega_query_fraction"]),
+        float(cell["ratio"]),
+    )
+
+
 def _detect_layout(cells_dir: Path) -> str:
-    """Return 'lambda' if cells carry ridge_lambda, '2x2' for the rotate/normalize axes."""
+    """Return layout tag: lambda, track2, or 2x2."""
     for frag in sorted(cells_dir.glob("cell_*.json")):
         cell = json.loads(frag.read_text(encoding="utf-8"))
         kw = cell.get("kv_compressor_kwargs", {})
+        if "omega_query_selector" in kw:
+            return "track2"
         if "ridge_lambda" in kw:
             return "lambda"
         if "rotate_queries" in kw or "normalize_keys_for_tau" in kw:
@@ -123,6 +138,35 @@ def load_results_2x2(cells_dir: Path) -> tuple[dict, list[float], list[float]]:
                        if "string_match" in s}
         out[(gamma, rot, norm, ratio)] = task_scores
     return out, sorted(gammas), sorted(ratios)
+
+
+SELECTOR_ORDER = ["top_norm", "leverage", "random"]
+SELECTOR_TAG = {"top_norm": "qtop", "leverage": "qlev", "random": "qrnd"}
+
+
+def load_results_track2(cells_dir: Path) -> tuple[dict, list[float], list[str], list[float], list[float]]:
+    """Return ({(gamma, selector, fraction, ratio): scores}, gammas, selectors, fractions, ratios)."""
+    out: dict = {}
+    gammas, selectors, fractions, ratios = set(), set(), set(), set()
+    for frag in sorted(cells_dir.glob("cell_*.json")):
+        cell = json.loads(frag.read_text(encoding="utf-8"))
+        if not cell.get("ok") or not cell.get("metrics"):
+            continue
+        try:
+            data = json.loads(Path(cell["metrics"]).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        gamma, sel, frac, ratio = _cell_axes_track2(cell)
+        gammas.add(gamma)
+        selectors.add(sel)
+        fractions.add(frac)
+        ratios.add(ratio)
+        task_scores = {sub: s["string_match"] for sub, s in data.get("task_scores", {}).items()
+                       if "string_match" in s}
+        out[(gamma, sel, frac, ratio)] = task_scores
+    ordered_selectors = [s for s in SELECTOR_ORDER if s in selectors]
+    ordered_selectors.extend(sorted(selectors - set(ordered_selectors)))
+    return out, sorted(gammas), ordered_selectors, sorted(fractions), sorted(ratios)
 
 
 def _avg(values: list) -> float | None:
@@ -237,6 +281,55 @@ def write_sheet_2x2(wb, sheet_name: str, model: str,
         row += 1  # blank separator between corner blocks
 
 
+def _subset_block_label(selector: str, fraction: float) -> str:
+    return f"{SELECTOR_TAG.get(selector, selector)}{fraction:g}"
+
+
+def write_sheet_track2(wb, sheet_name: str, model: str,
+                       gammas: list[float], ratio: float,
+                       selectors: list[str], fractions: list[float],
+                       results: dict) -> None:
+    """Write one sheet for a single ratio with selector×fraction blocks stacked."""
+    if sheet_name in wb.sheetnames:
+        del wb[sheet_name]
+    ws = wb.create_sheet(sheet_name)
+    bold = Font(bold=True)
+    headers = [SUBSET_TO_HEADER[s] for s in SUBSET_ORDER]
+    avg_col = len(SUBSET_ORDER) + 2
+
+    row = 1
+    ws.cell(row, 1, "RULER16k").font = bold
+    ws.cell(row, 2, model).font = bold
+    ws.cell(row, 3, f"ratio={ratio} rqF_nkT").font = bold
+    row += 2
+
+    for selector in selectors:
+        for fraction in fractions:
+            block = _subset_block_label(selector, fraction)
+            ws.cell(row, 1, block).font = bold
+            for c, h in enumerate(headers, start=2):
+                ws.cell(row, c, h).font = bold
+            ws.cell(row, avg_col, "Avg").font = bold
+            row += 1
+            for gamma in gammas:
+                label = f"Ridge_g{_fmt_gamma(gamma)}_{block}"
+                scores = results.get((gamma, selector, fraction, ratio), {})
+                ws.cell(row, 1, label)
+                vals = []
+                for c, sub in enumerate(SUBSET_ORDER, start=2):
+                    v = scores.get(sub)
+                    vals.append(v)
+                    if v is not None:
+                        cell = ws.cell(row, c, round(float(v), 2))
+                        cell.number_format = "0.00"
+                a = _avg(vals)
+                if a is not None:
+                    cell = ws.cell(row, avg_col, a)
+                    cell.number_format = "0.00"
+                row += 1
+            row += 1
+
+
 def _fmt_lam(lam: float) -> str:
     """Match the cell_id lambda formatting (0.1, 0.01, 0.0001, 1e-05)."""
     if lam >= 1e-4:
@@ -310,6 +403,30 @@ def main() -> None:
         print(f"Wrote sheet '{sheet}' to {xlsx} ({action}; {len(results)}/{total} cells with data).")
         missing = [f"g{g}_l{_fmt_lam(l)}__r{r}" for r in ratios for g in gammas for l in lambdas
                    if (g, l, r) not in results]
+        if missing:
+            print(f"Missing cells (left blank): {', '.join(missing)}")
+        return
+
+    if layout == "track2":
+        results, gammas, selectors, fractions, ratios = load_results_track2(cells_dir)
+        if not results:
+            raise SystemExit(f"No completed cells with metrics under {cells_dir}.")
+        written: list[str] = []
+        for ratio in ratios:
+            ratio_tag = f"r{ratio:g}".replace(".", "p")
+            sheet = args.sheet or f"RidgeTrack2-{short}-{ratio_tag}"
+            if args.sheet and len(ratios) > 1:
+                sheet = f"{args.sheet}-{ratio_tag}"
+            write_sheet_track2(wb, sheet, model, gammas, ratio, selectors, fractions, results)
+            written.append(sheet)
+        xlsx.parent.mkdir(parents=True, exist_ok=True)
+        wb.save(xlsx)
+        total = len(gammas) * len(selectors) * len(fractions) * len(ratios)
+        print(f"Wrote {len(written)} sheet(s) {written} to {xlsx} "
+              f"({action}; {len(results)}/{total} cells with data).")
+        missing = [f"g{_fmt_gamma(g)}_{_subset_block_label(s, f)}__r{ratio}"
+                   for ratio in ratios for s in selectors for f in fractions for g in gammas
+                   if (g, s, f, ratio) not in results]
         if missing:
             print(f"Missing cells (left blank): {', '.join(missing)}")
         return
