@@ -87,8 +87,12 @@ DEFAULT_RATIOS = [0.6, 0.9, 0.95]
 # RidgeSketch):
 #   score_i = max(p_ridge_i, envelope_gamma * p_query_i)
 # 0 = pure ridge (query muted); 1 = balanced (the press's default);
-# >1 tilts toward the query side. Each gamma runs at every ratio.
+# >1 tilts toward the query side. Each gamma runs at every ratio (and at every
+# ridge_lambda if --ridge-lambdas is also provided → 2D grid).
 RIDGE_GAMMAS = [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0]
+# Single None entry = "don't override the press's default ridge_lambda (1e-4)";
+# pass --ridge-lambdas to sweep a list and turn the Ridge cells into a 2D grid.
+RIDGE_LAMBDAS: list[float | None] = [None]
 
 # PyramidKV's per-layer pyramid budgets leave the cache cross-layer ragged.
 # Under transformers 5.x sdpa/eager the single decode mask is sized from layer 0
@@ -122,13 +126,19 @@ def _slug(model: str) -> str:
 
 
 def build_config(base: dict, *, model: str, kv_compressor: str, ratio: float,
-                 subsets: list[str], out_root: Path, cell_id: str,
+                 subsets: list[str] | None, out_root: Path, cell_id: str,
                  max_requests: int | None, max_model_len: int | None,
+                 benchmark: str = "longbench",
                  extra_kv_kwargs: dict | None = None) -> dict:
     """Construct the full EvalConfig dict for one sweep cell."""
     cfg = copy.deepcopy(base)
-    cfg["benchmark"] = "longbench"
-    cfg["subsets"] = ",".join(subsets)
+    cfg["benchmark"] = benchmark
+    if subsets:
+        cfg["subsets"] = ",".join(subsets)
+    else:
+        # Let the benchmark's BenchmarkInfo.default_subsets win (e.g. RULER16k's
+        # 13 task list); explicitly clear any inherited template value.
+        cfg.pop("subsets", None)
     cfg["backend"] = "research"
     cfg["model"] = model
     # Sweep cells need run-to-run reproducibility AND a fixed SDPA backend so
@@ -207,13 +217,29 @@ def main() -> None:
     ap.add_argument("--model", default="meta-llama/Llama-3.1-8B-Instruct")
     ap.add_argument("--template", default=str(REPO_ROOT / "evaluate" / "evaluate_kv.yaml"),
                     help="Base config YAML to clone per run")
+    ap.add_argument("--benchmark", default="longbench",
+                    help="Benchmark name (e.g. longbench, ruler16k). When non-longbench, "
+                         "--tasks defaults to the benchmark's own default_subsets.")
     ap.add_argument("--out-root", default=None,
-                    help="Where run dirs + manifest land (default: results/longbench_sweep/<model>)")
+                    help="Where run dirs + manifest land (default: results/<sweep-name>/<model>)")
     ap.add_argument("--methods", default=None,
-                    help="Comma list of registry keys to include (default: all 9)")
+                    help="Comma list of registry keys to include (default: all 9). "
+                         "Pass a key not in METHODS (e.g. 'ridge') to skip the standard methods "
+                         "and run only the Ridge gamma×lambda grid below.")
     ap.add_argument("--ratios", default=None,
-                    help="Comma list of compression ratios (default: 0.2,0.4,0.6,0.8)")
-    ap.add_argument("--tasks", default=None, help="Comma list of subsets (default: the 16)")
+                    help="Comma list of compression ratios (default: 0.6,0.9,0.95)")
+    ap.add_argument("--tasks", default=None,
+                    help="Comma list of subsets. Default: LongBench's 16 English tasks for "
+                         "--benchmark longbench, else the benchmark's own default_subsets.")
+    ap.add_argument("--ridge-gammas", default=None,
+                    help="Comma list of envelope_gamma values for the Ridge sweep "
+                         f"(default: {RIDGE_GAMMAS})")
+    ap.add_argument("--ridge-lambdas", default=None,
+                    help="Comma list of ridge_lambda values for the Ridge sweep. "
+                         "When set, the Ridge cells become a 2D gamma×lambda grid at each ratio.")
+    ap.add_argument("--ridge-rotate-queries", default=None,
+                    help="Comma list of bools (true/false) to sweep RidgeSketch.rotate_queries. "
+                         "Default: omitted (use the press default, False = upstream-faithful).")
     ap.add_argument("--max-requests", type=int, default=None, help="Cap rows per subset")
     ap.add_argument("--max-model-len", type=int, default=None)
     ap.add_argument("--skip-full", action="store_true", help="Do not run the Full baseline")
@@ -224,7 +250,12 @@ def main() -> None:
     args = ap.parse_args()
 
     base = yaml.safe_load(Path(args.template).read_text(encoding="utf-8")) or {}
-    subsets = [t.strip() for t in args.tasks.split(",")] if args.tasks else LONGBENCH_16
+    if args.tasks:
+        subsets = [t.strip() for t in args.tasks.split(",")]
+    elif args.benchmark == "longbench":
+        subsets = LONGBENCH_16
+    else:
+        subsets = None  # benchmark's BenchmarkInfo.default_subsets wins
     ratios = [float(r) for r in args.ratios.split(",")] if args.ratios else DEFAULT_RATIOS
 
     if args.methods:
@@ -233,8 +264,32 @@ def main() -> None:
     else:
         methods = dict(METHODS)
 
+    ridge_gammas = ([float(g) for g in args.ridge_gammas.split(",")]
+                    if args.ridge_gammas else list(RIDGE_GAMMAS))
+    ridge_lambdas: list[float | None] = ([float(x) for x in args.ridge_lambdas.split(",")]
+                                         if args.ridge_lambdas else list(RIDGE_LAMBDAS))
+
+    def _parse_bools(s: str | None) -> list[bool | None]:
+        """Accept 'true,false' etc.; return [None] when not provided so the
+        cell loop doesn't override the press default."""
+        if not s:
+            return [None]
+        out: list[bool | None] = []
+        for tok in s.split(","):
+            t = tok.strip().lower()
+            if t in {"true", "t", "1", "yes", "y"}:
+                out.append(True)
+            elif t in {"false", "f", "0", "no", "n"}:
+                out.append(False)
+            else:
+                sys.exit(f"Could not parse bool in '{s}': '{tok}'")
+        return out
+
+    ridge_rotate_queries: list[bool | None] = _parse_bools(args.ridge_rotate_queries)
+
+    sweep_name = "longbench_sweep" if args.benchmark == "longbench" else f"{args.benchmark}_sweep"
     out_root = Path(args.out_root) if args.out_root else (
-        REPO_ROOT / "results" / "longbench_sweep" / _slug(args.model))
+        REPO_ROOT / "results" / sweep_name / _slug(args.model))
     out_root.mkdir(parents=True, exist_ok=True)
 
     # Build the list of cells: (label, kv_key, ratio_or_None, cell_id, extra_kwargs).
@@ -244,19 +299,31 @@ def main() -> None:
     for label, key in methods.items():
         for ratio in ratios:
             cells.append((label, key, ratio, f"{label}__r{ratio}", {}))
-    # Ridge gamma sweep: envelope_gamma ∈ RIDGE_GAMMAS × each ratio.
-    # Fixed-envelope scoring is hardcoded in RidgeSketch, so envelope_gamma
-    # is the only kwarg needed (passing combine_mode would now TypeError).
-    for gamma in RIDGE_GAMMAS:
-        for ratio in ratios:
-            cells.append((
-                "Ridge", "ridge", ratio,
-                f"Ridge_g{gamma}__r{ratio}",
-                {"envelope_gamma": float(gamma)},
-            ))
+    # Ridge sweep: envelope_gamma × ridge_lambda × rotate_queries × ratio.
+    # Fixed-envelope scoring is hardcoded in RidgeSketch, so envelope_gamma is
+    # the only always-on kwarg (passing combine_mode would now TypeError). Key
+    # normalization for tau is now hardcoded ON in RidgeSketch, so the old
+    # normalize_keys / omega-query-subset (track-2) knobs are gone. When
+    # --ridge-lambdas is not set, RIDGE_LAMBDAS == [None] → single row at the
+    # press default 1e-4 and the cell_id omits the lambda tag (back-compat with
+    # prior manifests).
+    for gamma in ridge_gammas:
+        for lam in ridge_lambdas:
+            for rq in ridge_rotate_queries:
+                for ratio in ratios:
+                    extras = {"envelope_gamma": float(gamma)}
+                    cell_id = f"Ridge_g{gamma}"
+                    if lam is not None:
+                        extras["ridge_lambda"] = float(lam)
+                        cell_id += f"_l{lam:g}"
+                    if rq is not None:
+                        extras["rotate_queries"] = bool(rq)
+                        cell_id += f"_rq{'T' if rq else 'F'}"
+                    cell_id += f"__r{ratio}"
+                    cells.append(("Ridge", "ridge", ratio, cell_id, extras))
 
     print(f"Model:   {args.model}")
-    print(f"Tasks:   {len(subsets)} subsets")
+    print(f"Tasks:   {len(subsets) if subsets else '<benchmark default>'} subsets")
     print(f"Cells:   {len(cells)} runs (out-root: {out_root})")
     for idx, (label, key, ratio, cell_id, extras) in enumerate(cells):
         flag = " [flash_attn_2]" if key in FLASH_ATTN_METHODS else ""
@@ -295,6 +362,7 @@ def main() -> None:
             cfg = build_config(base, model=args.model, kv_compressor=key, ratio=ratio or 0.0,
                                subsets=subsets, out_root=out_root, cell_id=cell_id,
                                max_requests=args.max_requests, max_model_len=args.max_model_len,
+                               benchmark=args.benchmark,
                                extra_kv_kwargs=extras or None)
             t0 = time.time()
             rc = run_cell(cfg, tmp_yaml)
