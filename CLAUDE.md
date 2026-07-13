@@ -161,7 +161,14 @@ because their nested-compressor args aren't flat kwargs. Live list:
 The roster (kv_baselines branch) is mostly faithful kvpress 0.5.1 ports — each class docstring
 documents params, replicated upstream quirks, and deviations: scorers `knorm`, `random`,
 `reattention`, `streaming_llm`, `keydiff`, `lagkv`, `cur`, `leverage`, `non_causal_attention`,
-`compactor`, `ridge`, `random_sketch_press` (research-fork; dead-code bug replicated ⇒ ≡ `ridge`),
+`compactor` (**ports the authors' reference engine** `/scratch/sj157/compactor-vllm`, arXiv
+2507.08143 — chunked-512 per-chunk-centered SVD leverage + chunk-128 non-causal attention with
+GQA sum and pad-row emulation, blend `attn_z + 0.5·lev_z`, +inf sinks 16/64 included in
+scoring stats, ONE shared seed-42 PHI; NOT the kvpress CompactorPress math of earlier
+revisions. Remaining structural deviations, documented in the docstring: uniform per-head
+top-k instead of the paper's ragged "calibrated" (token×head) allocation — impossible in a
+rectangular HF cache — and framework ratio semantics `int(T·(1−r))` per head), `ridge`,
+`random_sketch_press` (research-fork; dead-code bug replicated ⇒ ≡ `ridge`),
 `expected_attention`, `expected_attention_stats`, `snapkv`, `pyramidkv`, `tova`,
 `observed_attention`, `h2o` (Heavy Hitter Oracle, arXiv:2306.14048 — raw accumulated-attention
 sum + recent-window force-keep; like `observed_attention` it needs `attn_implementation: eager`),
@@ -173,11 +180,24 @@ arXiv:2502.07861) — a discrepancy-theory self-balancing walk that selects a ba
 `[sink | middle-coreset | window]` token subset and **reweights surviving values**; knobs are
 `itrs` (halvings; `compression_ratio` maps to it) + `gamma`/`temp`/`beta`/`block_size`/`n_sink`/
 `window_size`, `post_prefill` schedule.
+One simple hybrid baseline: `top_k_sampling` (`TopKSamplingSketch`) — keeps a deterministic
+top-`top_frac·budget` core by key-norm score (KnormSketch semantics) and fills the rest of the
+per-head budget `int(T·(1−r))` with a **uniform random sample without replacement** from the
+remaining tokens; knobs `top_frac` (default 0.75) + `seed` (default 42, fresh per-call
+generator seeded `seed + layer_idx` — per-layer tails, never touches global RNG);
+`top_frac=1.0` reduces to `knorm`. No attention/RoPE
+requirements, composes with hybrids (config `evaluate/evaluate_kv_top_k_sampling.yaml`).
 
 Constraints to keep in mind when wiring runs or reviewing changes:
 
 - **`observed_attention` needs `attn_implementation: eager`** (only eager returns attention
   probabilities to the hook; sdpa passes `attentions=None` and the sketch asserts).
+- **Ridge-vs-compactor comparisons must keep `prefill_chunk_size: null`** (the default): on
+  chunked prefill `compactor` asserts (prefill-only scorer) and `ridge` silently drops its
+  query-aware term — either way the comparison stops being apples-to-apples. On the default
+  single-pass path both fire once post-prefill, before the question, with the identical
+  per-head budget `int(T·(1−r))` (pinned by
+  `tests/test_compression_schedule.py::TestPostPrefillFiresBeforeQuestion`).
 - **External assets + injection hooks**: `qfilter` (`q_filters`), `kvzap`
   (`model_name_override`), `duo_attention` (`attention_pattern`/`pattern_dir`),
   `expected_attention_stats` (`stats_folder`), `fastkvzip` (`gates`) download model-specific
