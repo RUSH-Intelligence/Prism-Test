@@ -30,6 +30,10 @@
 #   SUBSETS : comma list, or "all" (default) for the benchmark's default 13
 #   ATTN    : attn_implementation (default flash_attention_2)
 #   MAXREQ  : max_requests per subset (default 100)
+#   OFFSET  : request_offset — skip the first N rows of every subset before
+#             MAXREQ applies (default 0). Rows [OFFSET : OFFSET+MAXREQ] run;
+#             lets a tuning split (e.g. OFFSET=100 MAXREQ=5) stay disjoint
+#             from the eval split (OFFSET=0 MAXREQ=100).
 #   KWARGS  : optional literal YAML dict for kv_compressor_kwargs (default {})
 
 set -euo pipefail
@@ -85,6 +89,7 @@ trap 'rm -rf "${JOB_LOCAL_BASE}"' EXIT
 SUBSETS="${SUBSETS:-all}"
 ATTN="${ATTN:-flash_attention_2}"
 MAXREQ="${MAXREQ:-100}"
+OFFSET="${OFFSET:-0}"
 MODEL="${MODEL:-meta-llama/Llama-3.1-8B-Instruct}"
 KWARGS="${KWARGS:-{\}}"
 
@@ -114,6 +119,7 @@ top_p: 1.0
 system_prompt: null
 seed: 42
 max_requests: ${MAXREQ}
+request_offset: ${OFFSET}
 fraction: 1.0
 query_aware: false
 output_dir: ${OUTDIR}
@@ -137,7 +143,7 @@ fi
 
 echo "================ compactor_ruler run ================"
 echo "host=$(hostname)  job=${SLURM_JOB_ID}  name=${SLURM_JOB_NAME:-?}"
-echo "BENCH=${BENCH} METHOD=${METHOD} RATIO=${RATIO} ATTN=${ATTN} MAXREQ=${MAXREQ} MAXLEN=${MAXLEN}"
+echo "BENCH=${BENCH} METHOD=${METHOD} RATIO=${RATIO} ATTN=${ATTN} MAXREQ=${MAXREQ} OFFSET=${OFFSET} MAXLEN=${MAXLEN}"
 echo "SUBSETS=${SUBSETS}"
 echo "OUTDIR=${OUTDIR}"
 echo "python=$(command -v python)"; python --version

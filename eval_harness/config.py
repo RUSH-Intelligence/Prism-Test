@@ -36,6 +36,12 @@ class EvalConfig:
     fraction: float = 1.0
     max_requests: Optional[int] = None
     max_requests_per_subset: Optional[Dict[str, int]] = None
+    # Skip the first N rows of every subset before max_requests* caps apply
+    # (deterministic head slicing becomes rows [offset : offset+limit]).
+    # Lets disjoint tuning/eval splits share one dataset, e.g. eval on rows
+    # 0-99 (offset 0, max_requests 100) and tune on rows 100-104 (offset 100,
+    # max_requests 5).
+    request_offset: int = 0
     query_aware: bool = False
     output_dir: str = "./results"
 
@@ -61,6 +67,16 @@ class EvalConfig:
         if not (0.0 < self.gpu_memory_utilization <= 1.0):
             raise ValueError(
                 f"gpu_memory_utilization must be in (0, 1], got {self.gpu_memory_utilization}"
+            )
+        if self.request_offset < 0:
+            raise ValueError(f"request_offset must be >= 0, got {self.request_offset}")
+        if self.request_offset > 0 and self.fraction < 1.0:
+            # fraction sampling reshuffles rows BEFORE the offset slice, so
+            # [offset : offset+limit] would index a seed-dependent random
+            # subsample and the disjoint tuning/eval guarantee silently breaks.
+            raise ValueError(
+                "request_offset > 0 requires fraction == 1.0 "
+                f"(got request_offset={self.request_offset}, fraction={self.fraction})"
             )
         if self.llm_kwargs is None:
             self.llm_kwargs = {}
