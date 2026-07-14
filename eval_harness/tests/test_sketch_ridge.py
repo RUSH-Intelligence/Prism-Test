@@ -1,17 +1,19 @@
-"""Tests for RidgeSketch (kvpress RidgePress port).
+"""Tests for RidgeSketch (kvpress RidgePress port, reduced + key-normalized).
 
 Reference oracle: in-test transcription of the kvpress ``RidgePress.compress``
-default path (ridge_press.py:691-858 with fixed_envelope/topk defaults) —
-ridge tau via ``torch.linalg.inv`` of ``K_mid^T K_mid + lambda I``, group-mean
-GQA query pooling, mean-normalized query Gram omega, eps-clamped distribution
-normalization, ``max(p1, gamma*p2) * ||v||`` scoring, and ascending-sorted
-per-row topk over the middle region with sink/local windows pinned.
+default path (ridge_press.py:691-858 with fixed_envelope/topk defaults) PLUS
+the deliberate Prism-Test deviation of L2-normalizing keys before the ridge
+leverage computation — ridge tau via ``torch.linalg.inv`` of
+``K̂_mid^T K̂_mid + lambda I`` over unit-direction keys, group-mean GQA query
+pooling, mean-normalized query Gram omega on RAW keys, eps-clamped
+distribution normalization, ``max(p1, gamma*p2) * ||v||`` scoring, and
+ascending-sorted per-row topk over the middle region with sink/local windows
+pinned.
 """
 
 from __future__ import annotations
 
 import unittest
-from unittest.mock import patch
 
 import torch
 from torch import nn
@@ -60,7 +62,7 @@ def _ridge_default_reference(module, hidden_states, keys, values, *,
                              compression_ratio, sink_size=8, local_size=64,
                              ridge_lambda=1e-4, envelope_gamma=1.0,
                              value_norm_power=1.0, eps=1e-8):
-    """kvpress RidgePress default-path transcription (query-aware fixed_envelope)."""
+    """RidgePress default-path transcription + Prism-Test key normalization."""
     B, H_kv, T, D = keys.shape
     sink = min(sink_size, T)
     local = min(local_size, max(0, T - sink))
@@ -72,6 +74,7 @@ def _ridge_default_reference(module, hidden_states, keys, values, *,
     values_mid = values[:, :, mid_start:mid_end, :]
 
     k = keys_mid.float()
+    k = k / k.norm(p=2, dim=-1, keepdim=True).clamp_min(eps)
     eye = torch.eye(D, dtype=torch.float32).view(1, 1, D, D)
     inv_reg = torch.linalg.inv(k.transpose(-2, -1) @ k + ridge_lambda * eye)
     tau = ((k @ inv_reg) * k).sum(dim=-1).clamp_min(0.0).to(keys.dtype)
@@ -206,6 +209,9 @@ class TestRidgeGuards(unittest.TestCase):
 
 
 class TestRidgeTauSelection(unittest.TestCase):
+    # All scored (mid-region) keys in these fixtures are unit basis vectors,
+    # so the pre-leverage key normalization is a no-op and the hand-computed
+    # expectations are unchanged by it.
     def _e(self, i):
         v = torch.zeros(2)
         v[i] = 1.0
@@ -262,27 +268,36 @@ class TestRidgeTauSelection(unittest.TestCase):
 
 
 class TestRidgeEnvelopeGamma(unittest.TestCase):
+    # T=5 with sink=1/local=1 -> mid keys (rows 1-3): [2,0], [1,0], [0,1].
+    # Normalized directions e0, e0, e1 with ridge_lambda=1.0 give
+    # tau = [1/3, 1/3, 1/2] -> tau_c = [2/7, 2/7, 3/7]: ridge prefers the
+    # lone e1 direction (abs idx 3). Mid queries lie along e0 (identity
+    # q_proj), so omega on RAW keys = sqrt([8/3, 2/3, 0]) ->
+    # omega_c ~= [2/3, 1/3, ~0]: the query side prefers the large e0 key
+    # (abs idx 1). envelope_gamma sweeps between the two orderings:
+    # gamma=0 -> tau_c only; gamma>=1 -> omega_c[0] = 2/3 > 3/7 = tau_c[2].
     def _setup(self):
-        keys = torch.tensor([[5.0, 5.0], [2.0, 0.0], [0.0, 1.0], [7.0, 7.0]]).view(1, 1, 4, 2)
-        values = torch.tensor([[1.0, 0.0]] * 4).view(1, 1, 4, 2)
-        hidden = torch.tensor([[0.0, 0.0], [0.1, 0.0], [0.0, 3.0], [0.0, 0.0]]).view(1, 4, 2)
+        keys = torch.tensor(
+            [[5.0, 5.0], [2.0, 0.0], [1.0, 0.0], [0.0, 1.0], [7.0, 7.0]]
+        ).view(1, 1, 5, 2)
+        values = torch.tensor([[1.0, 0.0]] * 5).view(1, 1, 5, 2)
+        hidden = torch.tensor(
+            [[0.0, 0.0], [1.0, 0.0], [1.0, 0.0], [0.0, 0.0], [0.0, 0.0]]
+        ).view(1, 5, 2)
         module = _FakeAttnModule(hidden_dim=2, num_heads=1, head_dim=2, num_kv_heads=1, identity_q=True)
         return module, hidden, keys, values
 
     def _sketch(self, gamma):
+        # keep_total = int(5 * 0.65) = 3 -> keep_mid = 3 - 1 - 1 = 1.
         return RidgeSketch(
-            compression_ratio=0.25, sink_size=1, local_size=1,
+            compression_ratio=0.35, ridge_lambda=1.0, sink_size=1, local_size=1,
             min_tokens_to_compress=0, envelope_gamma=gamma,
         )
 
     def test_gamma_zero_recovers_pure_ridge_ordering(self):
         module, hidden, keys, values = self._setup()
         out_k, out_v = self._sketch(0.0).compress(module, hidden, keys, values, None, {})
-        lam = 1e-4
-        tau = torch.tensor([4.0 / (4.0 + lam), 1.0 / (1.0 + lam)])
-        vnorm = values[0, 0, 1:3].norm(dim=-1)
-        self.assertEqual((tau * vnorm).argmax().item(), 0)
-        expected_idx = torch.tensor([0, 1, 3])
+        expected_idx = torch.tensor([0, 3, 4])
         self.assertTrue(torch.equal(out_k, keys[:, :, expected_idx]))
         self.assertTrue(torch.equal(out_v, values[:, :, expected_idx]))
 
@@ -290,7 +305,7 @@ class TestRidgeEnvelopeGamma(unittest.TestCase):
         module, hidden, keys, values = self._setup()
         for gamma in (1.0, 10.0):
             out_k, out_v = self._sketch(gamma).compress(module, hidden, keys, values, None, {})
-            expected_idx = torch.tensor([0, 2, 3])
+            expected_idx = torch.tensor([0, 1, 4])
             self.assertTrue(torch.equal(out_k, keys[:, :, expected_idx]))
             self.assertTrue(torch.equal(out_v, values[:, :, expected_idx]))
 
@@ -407,114 +422,43 @@ class TestRidgeReferenceOracle(unittest.TestCase):
         self.assertTrue(torch.equal(out_v, ref_v))
 
 
-class TestRidgeWeightedEnvelope(unittest.TestCase):
-    def test_disjoint_topk_sets_boost_gamma(self):
-        sketch = RidgeSketch(compression_ratio=0.5, combine_mode="weighted_envelope",
-                             query_boost_strength=2.0, value_norm_power=0.0)
-        tau = torch.tensor([[[10.0, 8.0, 1.0, 1.0]]])
-        omega = torch.tensor([[[1.0, 1.0, 10.0, 8.0]]])
-        values = torch.randn(1, 1, 4, 2)
-        scores = sketch._scores_from_tau_omega_and_values(tau, values, omega=omega, n_keep=2)
-        p1 = tau / 20.0
-        p2 = omega / 20.0
-        expected = torch.maximum(p1, 3.0 * p2)
-        torch.testing.assert_close(scores, expected, atol=1e-6, rtol=1e-6)
-        idx = sketch._select_indices_from_scores(scores, 2)
-        self.assertTrue(torch.equal(idx, torch.tensor([[[2, 3]]])))
+class TestRidgeKeyNormalization(unittest.TestCase):
+    """The 2026-07 deviation: L2-normalize keys before ridge leverage."""
 
-    def test_identical_components_reduce_to_plain_envelope(self):
-        weighted = RidgeSketch(compression_ratio=0.5, combine_mode="weighted_envelope",
-                               query_boost_strength=2.0, value_norm_power=0.0)
-        envelope = RidgeSketch(compression_ratio=0.5, combine_mode="envelope",
-                               value_norm_power=0.0)
-        tau = torch.tensor([[[10.0, 8.0, 1.0, 1.0]]])
-        values = torch.randn(1, 1, 4, 2)
-        s_weighted = weighted._scores_from_tau_omega_and_values(tau, values, omega=tau.clone(), n_keep=2)
-        s_envelope = envelope._scores_from_tau_omega_and_values(tau, values, omega=tau.clone(), n_keep=2)
-        self.assertTrue(torch.equal(s_weighted, s_envelope))
-
-
-class TestRidgeAlphaMachinery(unittest.TestCase):
-    def test_tail_risk_picks_min_risk_alpha(self):
-        sketch = RidgeSketch(
-            compression_ratio=0.5, combine_mode="additive", alpha_selection="tail_risk",
-            alpha_grid="0.0,1.0", alpha_validation_split="none", value_norm_power=0.0,
+    def test_tau_equal_for_same_direction_different_magnitude(self):
+        # [3,0] and [0.5,0] share direction e0; [0,2] is e1. With lambda=1,
+        # normalized leverage is exactly [1/3, 1/3, 1/2].
+        keys = torch.tensor([[3.0, 0.0], [0.5, 0.0], [0.0, 2.0]]).view(1, 1, 3, 2)
+        sketch = RidgeSketch(compression_ratio=0.5, ridge_lambda=1.0)
+        tau = sketch._compute_key_ridge_tau(keys)
+        torch.testing.assert_close(
+            tau, torch.tensor([[[1 / 3, 1 / 3, 1 / 2]]]), atol=1e-6, rtol=1e-6
         )
-        tau = torch.tensor([[[0.8, 0.15, 0.05]]])
-        omega = torch.tensor([[[0.05, 0.9, 0.05]]])
-        values = torch.tensor([[[1.0, 0.0], [1.0, 0.0], [1.0, 0.0]]]).view(1, 1, 3, 2)
-        alpha, risk, ridge_tail, query_tail = sketch._choose_alpha_by_tail_risk(
-            tau=tau, omega_score=omega, omega_val=omega, values=values, n_keep=1,
+
+    def test_tau_invariant_to_per_token_scaling(self):
+        torch.manual_seed(0)
+        keys = torch.randn(2, 3, 24, 8)
+        scales = torch.rand(2, 3, 24, 1) * 5 + 0.1
+        sketch = RidgeSketch(compression_ratio=0.5)
+        tau = sketch._compute_key_ridge_tau(keys)
+        tau_scaled = sketch._compute_key_ridge_tau(keys * scales)
+        torch.testing.assert_close(tau, tau_scaled, atol=1e-5, rtol=1e-4)
+
+    def test_tau_ordering_magnitude_invariant(self):
+        # Raw-key leverage would score the two huge duplicated-direction keys
+        # ~0.5 each and the tiny lone-direction key ~0.01; direction-only
+        # leverage ranks the lone direction first regardless of magnitude.
+        keys = torch.tensor([[100.0, 0.0], [100.0, 0.0], [0.0, 0.1]]).view(1, 1, 3, 2)
+        sketch = RidgeSketch(compression_ratio=0.5, ridge_lambda=1.0)
+        tau = sketch._compute_key_ridge_tau(keys)[0, 0]
+        self.assertGreater(tau[2].item(), tau[0].item())
+        self.assertGreater(tau[2].item(), tau[1].item())
+        torch.testing.assert_close(
+            tau, torch.tensor([1 / 3, 1 / 3, 1 / 2]), atol=1e-6, rtol=1e-6
         )
-        self.assertEqual(alpha, 0.0)
-        self.assertAlmostEqual(risk, 0.85, places=5)
-        self.assertAlmostEqual(ridge_tail, 0.85, places=5)
-        self.assertAlmostEqual(query_tail, 0.1, places=5)
-
-    def test_tail_risk_alpha_selects_omega_favored_token_end_to_end(self):
-        sketch = RidgeSketch(
-            compression_ratio=0.5, combine_mode="additive", alpha_selection="tail_risk",
-            alpha_grid="0.0,1.0", alpha_validation_split="none", value_norm_power=0.0,
-        )
-        tau = torch.tensor([[[0.8, 0.15, 0.05]]])
-        omega = torch.tensor([[[0.05, 0.9, 0.05]]])
-        values = torch.tensor([[[1.0, 0.0], [1.0, 0.0], [1.0, 0.0]]]).view(1, 1, 3, 2)
-        scores = sketch._scores_from_tau_omega_and_values(tau, values, omega=omega, alpha=0.0)
-        idx = sketch._select_indices_from_scores(scores, 1)
-        self.assertTrue(torch.equal(idx, torch.tensor([[[1]]])))
-
-    def test_envelope_default_bypasses_alpha_machinery(self):
-        module = _FakeAttnModule(hidden_dim=32, num_heads=4, head_dim=8, num_kv_heads=2, seed=1)
-        keys, values, hidden = _rand_inputs(T=40, seed=2)
-        gated = RidgeSketch(compression_ratio=0.5, sink_size=4, local_size=8,
-                            min_tokens_to_compress=0, combine_mode="fixed_envelope",
-                            alpha_selection="gated_query_constrained")
-        with patch.object(gated, "_choose_alpha_query_constrained",
-                          side_effect=AssertionError("alpha machinery must not run")), \
-             patch.object(gated, "_ridge_excess_for_alpha",
-                          side_effect=AssertionError("alpha machinery must not run")), \
-             patch.object(gated, "_choose_alpha_by_tail_risk",
-                          side_effect=AssertionError("alpha machinery must not run")):
-            out_gated = gated.compress(module, hidden, keys, values, None, {})
-
-        fixed = RidgeSketch(compression_ratio=0.5, sink_size=4, local_size=8,
-                            min_tokens_to_compress=0, combine_mode="fixed_envelope",
-                            alpha_selection="fixed")
-        out_fixed = fixed.compress(module, hidden, keys, values, None, {})
-        self.assertTrue(torch.equal(out_gated[0], out_fixed[0]))
-        self.assertTrue(torch.equal(out_gated[1], out_fixed[1]))
 
 
-class TestRidgeSelection(unittest.TestCase):
-    def test_multinomial_structure_and_seeded_determinism(self):
-        keys, values, hidden = _rand_inputs(T=40, seed=7)
-        sketch = RidgeSketch(compression_ratio=0.5, sink_size=4, local_size=8,
-                             min_tokens_to_compress=0, query_aware=False,
-                             selection_method="multinomial")
-        module = _NoQProjModule()
-        torch.manual_seed(0)
-        out_k1, out_v1 = sketch.compress(module, hidden, keys, values, None, {})
-        torch.manual_seed(0)
-        out_k2, out_v2 = sketch.compress(module, hidden, keys, values, None, {})
-        self.assertEqual(out_k1.shape[2], 20)
-        self.assertTrue(torch.equal(out_k1, out_k2))
-        self.assertTrue(torch.equal(out_v1, out_v2))
-        self.assertTrue(torch.equal(out_k1[:, :, :4], keys[:, :, :4]))
-        self.assertTrue(torch.equal(out_k1[:, :, -8:], keys[:, :, 32:]))
-        mid_in = keys[:, :, 4:32]
-        mid_out = out_k1[:, :, 4:12]
-        matches = (mid_out.unsqueeze(3) == mid_in.unsqueeze(2)).all(dim=-1).any(dim=-1)
-        self.assertTrue(matches.all())
-
-    def test_multinomial_indices_sorted_unique_in_range(self):
-        sketch = RidgeSketch(compression_ratio=0.5, selection_method="multinomial")
-        torch.manual_seed(0)
-        scores = torch.rand(1, 2, 10) + 0.1
-        idx = sketch._select_indices_from_scores(scores, 4)
-        self.assertEqual(idx.shape, (1, 2, 4))
-        self.assertTrue((idx[..., 1:] > idx[..., :-1]).all())
-        self.assertTrue((idx >= 0).all() and (idx < 10).all())
-
+class TestRidgeTopkSelection(unittest.TestCase):
     def test_zero_score_rows_get_uniform_fallback(self):
         sketch = RidgeSketch(compression_ratio=0.5)
         scores = torch.zeros(1, 2, 10)

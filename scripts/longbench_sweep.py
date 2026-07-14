@@ -83,7 +83,8 @@ METHODS: dict[str, str] = {
 DEFAULT_RATIOS = [0.6, 0.9, 0.95]
 
 # Ridge gamma sweep. envelope_gamma is the dial on the query-side signal in
-# Ridge's default fixed_envelope combine_mode:
+# Ridge's fixed-envelope scoring (now the only combine mode; hardcoded in
+# RidgeSketch):
 #   score_i = max(p_ridge_i, envelope_gamma * p_query_i)
 # 0 = pure ridge (query muted); 1 = balanced (the press's default);
 # >1 tilts toward the query side. Each gamma runs at every ratio.
@@ -244,14 +245,14 @@ def main() -> None:
         for ratio in ratios:
             cells.append((label, key, ratio, f"{label}__r{ratio}", {}))
     # Ridge gamma sweep: envelope_gamma ∈ RIDGE_GAMMAS × each ratio.
-    # combine_mode is fixed_envelope by default so envelope_gamma is live;
-    # pin it here to be explicit/robust against upstream default changes.
+    # Fixed-envelope scoring is hardcoded in RidgeSketch, so envelope_gamma
+    # is the only kwarg needed (passing combine_mode would now TypeError).
     for gamma in RIDGE_GAMMAS:
         for ratio in ratios:
             cells.append((
                 "Ridge", "ridge", ratio,
                 f"Ridge_g{gamma}__r{ratio}",
-                {"envelope_gamma": float(gamma), "combine_mode": "fixed_envelope"},
+                {"envelope_gamma": float(gamma)},
             ))
 
     print(f"Model:   {args.model}")
