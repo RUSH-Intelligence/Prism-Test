@@ -1,0 +1,67 @@
+# ============================================================================
+# top_k_sampling baseline — deterministic knorm top-k core + uniform random tail
+# ============================================================================
+# Runs the model through ResearchAdapter with the `top_k_sampling` KV
+# compressor (Door 3) and NO context-extension attention method.  Per head it
+# keeps int(T·(1−ratio)) tokens: the top `top_frac` fraction of the keep-budget
+# by key-norm score (-||k||, KnormSketch semantics) plus a uniform random
+# sample without replacement from the remaining tokens.  top_frac=1.0 reduces
+# to the pure `knorm` baseline; top_frac=0.0 to pure uniform-random.
+#
+#   python -m eval_harness.cli run --config_file ./evaluate/evaluate_kv_top_k_sampling.yaml
+#
+# The default model is 128k-native so ruler16k positions are in-window — the
+# run isolates the effect of CACHE COMPRESSION, not context extension.
+
+benchmark: ruler16k
+subsets: null                  # null = all 13 RULER subsets
+
+backend: research
+
+# Gated HF repo: accept the Meta license on the Hub and authenticate
+# (HF_TOKEN / `huggingface-cli login`) before running.
+model: meta-llama/Llama-3.1-8B-Instruct
+
+# Runtime
+tensor_parallel_size: 1        # vLLM-only; ignored by the research backend
+dtype: bfloat16
+max_model_len: 131072
+gpu_memory_utilization: 0.9    # vLLM-only; ignored by the research backend
+trust_remote_code: true
+enable_prefix_caching: true    # vLLM-only; ignored by the research backend
+
+# Generation
+max_new_tokens: 128
+temperature: 0.0               # greedy
+top_p: 1.0
+system_prompt: null
+seed: 42
+
+# Evaluation limits (max_requests applies PER SUBSET)
+max_requests: 100
+fraction: 1.0
+query_aware: false
+
+# Sketch-specific subdir: the auto-named run dir encodes benchmark/model/
+# backend but NOT the sketch, so distinct output_dir per compressor.
+output_dir: ./results/kv_top_k_sampling
+
+llm_kwargs:
+  # No attention/eager requirement — knorm scoring + random sampling work
+  # under sdpa or flash_attention_2 alike.
+  attn_implementation: sdpa
+
+  research_config:
+    kv_compressor: top_k_sampling
+    compression_ratio: 0.8          # fraction of the cache PRUNED per head
+    kv_compressor_kwargs:
+      top_frac: 0.75                # fraction of the keep-budget that is
+                                    # deterministic knorm top-k; the rest is
+                                    # a uniform random tail sample
+      seed: 42                      # per-call generator; never touches global RNG
+    max_context_length: null        # null -> fall back to max_model_len above
+    log_cache_seq_len: true
+
+    # --- Attention method: OFF (this file isolates KV compression) ---------
+    attention_method: none
+    attention_method_kwargs: {}

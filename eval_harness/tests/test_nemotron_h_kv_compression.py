@@ -399,6 +399,8 @@ class TestNemotronHCompressionAttentionOnly(unittest.TestCase):
         # compactor's non-causal scorer rotates re-projected queries; on NemotronH
         # (no rotary_emb / no position_embeddings) it uses an identity rotation.
         # sketch_dimension < head_dim so the leverage Gram is full-rank on the fake.
+        # Sinks 8/4 override the 16/64 defaults: at T=80 the defaults protect the
+        # whole prompt and compress() would no-op (whole-prompt guard).
         model, cache, attn_idx, sentinels = _build_model_and_cache(T=self.T, seed=13)
         sketch = CompactorSketch(
             compression_ratio=self.RATIO, sketch_dimension=4,
