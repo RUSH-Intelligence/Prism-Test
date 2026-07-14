@@ -240,6 +240,30 @@ def main() -> None:
     ap.add_argument("--ridge-rotate-queries", default=None,
                     help="Comma list of bools (true/false) to sweep RidgeSketch.rotate_queries. "
                          "Default: omitted (use the press default, False = upstream-faithful).")
+    ap.add_argument("--ridge-sink-size", type=int, default=None,
+                    help="Scalar override for RidgeSketch.sink_size across every "
+                         "Ridge cell in the sweep. Repo default is 8; the upstream "
+                         "RidgePress reference uses 4. Default: omitted (use the "
+                         "press default).")
+    ap.add_argument("--ridge-local-size", type=int, default=None,
+                    help="Scalar override for RidgeSketch.local_size across every "
+                         "Ridge cell in the sweep. Repo default is 64; the upstream "
+                         "RidgePress reference uses 28. Default: omitted (use the "
+                         "press default).")
+    # --- Verified KV compression (VerifiedSketch) -----------------------
+    # `--methods verified` wraps an inner compressor (default ridge) and splits
+    # the kept budget: det_fraction from the inner's top-k, the rest uniform
+    # random from the inner's evicted pool. The inner Ridge is configured from
+    # the SAME --ridge-* flags above (gamma/sink/local/rotate-queries/...), so a
+    # verified sweep is a det_fraction axis layered on the usual Ridge grid.
+    ap.add_argument("--verified-det-fractions", default="1.0,0.9,0.8,0.7,0.5,0.0",
+                    help="Comma list of det_fraction values for the Verified sweep "
+                         "(fraction of the kept budget filled by the inner compressor; "
+                         "the rest is uniform random). 1.0 == plain inner, 0.0 == "
+                         "pure random (+ inner's forced sink/local). Default: "
+                         "'1.0,0.9,0.8,0.7,0.5,0.0'.")
+    ap.add_argument("--verified-inner", default="ridge",
+                    help="Inner compressor wrapped by VerifiedSketch (default: ridge).")
     ap.add_argument("--max-requests", type=int, default=None, help="Cap rows per subset")
     ap.add_argument("--max-model-len", type=int, default=None)
     ap.add_argument("--skip-full", action="store_true", help="Do not run the Full baseline")
@@ -261,13 +285,25 @@ def main() -> None:
     if args.methods:
         wanted = {m.strip() for m in args.methods.split(",")}
         methods = {lbl: key for lbl, key in METHODS.items() if key in wanted}
+        include_ridge = "ridge" in wanted
+        include_verified = "verified" in wanted
     else:
         methods = dict(METHODS)
+        include_ridge = True
+        include_verified = False
 
     ridge_gammas = ([float(g) for g in args.ridge_gammas.split(",")]
                     if args.ridge_gammas else list(RIDGE_GAMMAS))
+    # Verified reuses the same gamma grid for its inner Ridge, but the ridge
+    # block below zeroes ``ridge_gammas`` when ridge isn't a requested method —
+    # snapshot the list here so the verified block is unaffected.
+    verified_gammas = list(ridge_gammas)
     ridge_lambdas: list[float | None] = ([float(x) for x in args.ridge_lambdas.split(",")]
                                          if args.ridge_lambdas else list(RIDGE_LAMBDAS))
+
+    verified_det_fractions = [float(x) for x in args.verified_det_fractions.split(",")]
+    for _d in verified_det_fractions:
+        assert 0.0 <= _d <= 1.0, f"--verified-det-fractions: {_d} must be in [0, 1]"
 
     def _parse_bools(s: str | None) -> list[bool | None]:
         """Accept 'true,false' etc.; return [None] when not provided so the
@@ -307,6 +343,8 @@ def main() -> None:
     # --ridge-lambdas is not set, RIDGE_LAMBDAS == [None] → single row at the
     # press default 1e-4 and the cell_id omits the lambda tag (back-compat with
     # prior manifests).
+    if not include_ridge:
+        ridge_gammas = []
     for gamma in ridge_gammas:
         for lam in ridge_lambdas:
             for rq in ridge_rotate_queries:
@@ -319,8 +357,59 @@ def main() -> None:
                     if rq is not None:
                         extras["rotate_queries"] = bool(rq)
                         cell_id += f"_rq{'T' if rq else 'F'}"
+                    if args.ridge_sink_size is not None:
+                        extras["sink_size"] = int(args.ridge_sink_size)
+                        cell_id += f"_sk{int(args.ridge_sink_size)}"
+                    if args.ridge_local_size is not None:
+                        extras["local_size"] = int(args.ridge_local_size)
+                        cell_id += f"_lo{int(args.ridge_local_size)}"
                     cell_id += f"__r{ratio}"
                     cells.append(("Ridge", "ridge", ratio, cell_id, extras))
+
+    # Verified sweep: det_fraction × (the same Ridge inner grid) × ratio. The
+    # inner Ridge is configured from the SAME --ridge-* knobs used above, but
+    # nested under `inner_kwargs`; det_fraction + inner + sample_seed sit at the
+    # top level of kv_compressor_kwargs. det == 0 mutes the inner's scoring
+    # (only its forced sink/local survive), so gamma is skipped there — one
+    # gamma-free anchor cell per ratio.
+    if include_verified:
+        for det in verified_det_fractions:
+            det_gammas: list[float | None] = verified_gammas if det > 0.0 else [None]
+            for gamma in det_gammas:
+                for lam in ridge_lambdas:
+                    for rq in ridge_rotate_queries:
+                        for ratio in ratios:
+                            inner_kwargs: dict = {}
+                            if gamma is not None:
+                                inner_kwargs["envelope_gamma"] = float(gamma)
+                            if lam is not None:
+                                inner_kwargs["ridge_lambda"] = float(lam)
+                            if rq is not None:
+                                inner_kwargs["rotate_queries"] = bool(rq)
+                            if args.ridge_sink_size is not None:
+                                inner_kwargs["sink_size"] = int(args.ridge_sink_size)
+                            if args.ridge_local_size is not None:
+                                inner_kwargs["local_size"] = int(args.ridge_local_size)
+                            extras = {
+                                "inner": args.verified_inner,
+                                "det_fraction": float(det),
+                                "sample_seed": SWEEP_SEED,
+                                "inner_kwargs": inner_kwargs,
+                            }
+                            det_tag = f"{det:g}".replace(".", "p")
+                            cell_id = f"Verified_d{det_tag}"
+                            if gamma is not None:
+                                cell_id += f"_g{gamma:g}"
+                            if lam is not None:
+                                cell_id += f"_l{lam:g}"
+                            if rq is not None:
+                                cell_id += f"_rq{'T' if rq else 'F'}"
+                            if args.ridge_sink_size is not None:
+                                cell_id += f"_sk{int(args.ridge_sink_size)}"
+                            if args.ridge_local_size is not None:
+                                cell_id += f"_lo{int(args.ridge_local_size)}"
+                            cell_id += f"__r{ratio}"
+                            cells.append(("Verified", "verified", ratio, cell_id, extras))
 
     print(f"Model:   {args.model}")
     print(f"Tasks:   {len(subsets) if subsets else '<benchmark default>'} subsets")

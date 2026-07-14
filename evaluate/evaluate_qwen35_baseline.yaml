@@ -1,0 +1,59 @@
+# ============================================================================
+# Qwen3.5-9B correctness baseline — NO KV compression, small sample
+# ============================================================================
+# Purpose: verify the model loads through ResearchAdapter and produces sane
+# generations on both benchmarks before firing the 32-cell Ridge sweeps.
+#
+#   RULER16k (5 rows/subset, 3 NIAH subsets):
+#     python -m eval_harness.cli run --config_file evaluate/evaluate_qwen35_baseline.yaml
+#
+#   LongBench (5 rows/subset, default subsets):
+#     python -m eval_harness.cli run --config_file evaluate/evaluate_qwen35_baseline.yaml \
+#         --benchmark longbench --subsets ""
+#
+# Expected: near-perfect on niah_single_1 / niah_single_3 (needle-in-a-haystack
+# easy); LongBench numbers should look at least ballpark to Llama-3.1-8B's
+# published-in-repo values. If either benchmark scores near-zero the model
+# wiring is wrong (chat template, tokenizer, multimodal unwrap, thinking mode).
+
+benchmark: ruler16k
+subsets: niah_single_1,niah_single_3,niah_multikey_3
+
+backend: research
+
+model: Qwen/Qwen3.5-9B
+
+# Runtime
+tensor_parallel_size: 1
+dtype: bfloat16
+max_model_len: 131072
+gpu_memory_utilization: 0.9
+trust_remote_code: true
+enable_prefix_caching: true
+
+# Generation
+max_new_tokens: null
+temperature: 0.0
+top_p: 1.0
+system_prompt: null
+seed: 42
+
+# 5 rows per subset — enough to catch total failures, cheap to run.
+max_requests: 5
+fraction: 1.0
+query_aware: false
+
+output_dir: ./results/qwen35_baseline
+
+llm_kwargs:
+  attn_implementation: sdpa
+
+  research_config:
+    # NO KV compression — this is a "does the model itself work?" check.
+    kv_compressor: none
+    compression_ratio: 0.0
+    max_context_length: null
+    log_cache_seq_len: true
+
+    attention_method: none
+    attention_method_kwargs: {}

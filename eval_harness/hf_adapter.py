@@ -22,6 +22,11 @@ except ImportError:
     Mistral3ForConditionalGeneration = None  # type: ignore[assignment]
 
 try:
+    from transformers import Qwen3_5ForConditionalGeneration
+except ImportError:
+    Qwen3_5ForConditionalGeneration = None  # type: ignore[assignment]
+
+try:
     from transformers import FineGrainedFP8Config
 except ImportError:
     FineGrainedFP8Config = None  # type: ignore[assignment]
@@ -289,6 +294,7 @@ def _load_model(model_name: str, load_kwargs: dict[str, Any]) -> PreTrainedModel
     explicit_impl = load_kwargs.pop("attn_implementation", None)
     use_gemma3_conditional = False
     use_mistral3_conditional = False
+    use_qwen35_conditional = False
 
     try:
         cfg = AutoConfig.from_pretrained(model_name, trust_remote_code=load_kwargs.get("trust_remote_code", True))
@@ -299,6 +305,9 @@ def _load_model(model_name: str, load_kwargs: dict[str, Any]) -> PreTrainedModel
         )
         use_mistral3_conditional = Mistral3ForConditionalGeneration is not None and (
             "mistral3forconditionalgeneration" in architectures or model_type in {"mistral3", "ministral3"}
+        )
+        use_qwen35_conditional = Qwen3_5ForConditionalGeneration is not None and (
+            "qwen3_5forconditionalgeneration" in architectures or model_type == "qwen3_5"
         )
     except Exception:
         # If config probing fails, stay on AutoModelForCausalLM for compatibility.
@@ -320,6 +329,15 @@ def _load_model(model_name: str, load_kwargs: dict[str, Any]) -> PreTrainedModel
             load_kwargs,
             explicit_impl,
             family_label="Mistral3 conditional",
+        )
+
+    if use_qwen35_conditional:
+        return _load_conditional_model(
+            Qwen3_5ForConditionalGeneration,
+            model_name,
+            load_kwargs,
+            explicit_impl,
+            family_label="Qwen3.5 conditional",
         )
 
     if explicit_impl is not None:

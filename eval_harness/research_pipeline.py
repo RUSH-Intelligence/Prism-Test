@@ -136,7 +136,10 @@ class ResearchGenerationPipeline(Pipeline):
         # rather than crashing on AttributeError.
         chat_template = getattr(self.tokenizer, "chat_template", "<builtin>")
         if chat_template is None or not use_chat_template:
-            bos_token = getattr(self.tokenizer, "bos_token", "")
+            # ``or ""`` guards models like Qwen3.5 whose tokenizer exposes
+            # ``bos_token`` as an attribute set to ``None`` (getattr's default
+            # only fires when the attribute is missing, not when it is None).
+            bos_token = getattr(self.tokenizer, "bos_token", "") or ""
             context = bos_token + context
             question_suffix = "\n"
         else:

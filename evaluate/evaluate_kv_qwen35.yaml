@@ -1,0 +1,60 @@
+# ============================================================================
+# KV-compression baseline — Qwen3.5-9B (hybrid attention)
+# ============================================================================
+# Same shape as evaluate_kv_ministral.yaml. Qwen3.5-9B is a hybrid model
+# (32 layers: 24 Gated DeltaNet linear-attention layers + 8 full-softmax
+# "Gated Attention" layers in a 3:1 pattern). The KV-compression hook fires
+# ONLY on the 8 full-softmax layers (see kv_compression/base.py:93). The
+# linear-attention layers have no growing K/V cache to compress.
+#
+# Precision: BF16 native, no FP8 dequant needed.
+# Native context: 262k — RULER16k and LongBench both fit trivially.
+# Thinking mode: research_pipeline defaults enable_thinking=False, so Qwen's
+#   <think>...</think> traces are suppressed and the model emits direct answers
+#   (required for RULER/LongBench string-match scoring).
+#
+#   python -m eval_harness.cli run --config_file ./evaluate/evaluate_kv_qwen35.yaml
+
+benchmark: ruler16k
+subsets: niah_single_1,niah_single_3,niah_multikey_3
+
+backend: research
+
+model: Qwen/Qwen3.5-9B
+
+# Runtime
+tensor_parallel_size: 1
+dtype: bfloat16
+max_model_len: 131072
+gpu_memory_utilization: 0.9
+trust_remote_code: true
+enable_prefix_caching: true
+
+# Generation
+max_new_tokens: null
+temperature: 0.0
+top_p: 1.0
+system_prompt: null
+seed: 42
+
+# Evaluation limits (max_requests applies PER SUBSET — runner.py:79)
+max_requests: 200
+fraction: 1.0
+query_aware: false
+
+output_dir: ./results/kv
+
+llm_kwargs:
+  attn_implementation: sdpa
+
+  research_config:
+    kv_compressor: knorm
+    compression_ratio: 0.5
+    compression_interval: 512
+    target_size: 2048
+    hidden_states_buffer_size: 256
+    max_context_length: null
+    log_cache_seq_len: true
+
+    attention_method: none
+    attention_method_kwargs: {}
