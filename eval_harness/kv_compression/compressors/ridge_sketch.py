@@ -147,6 +147,11 @@ class RidgeSketch(KVCompressor):
         rotary = getattr(module, "rotary_emb", None)
         if rotary is None:
             return None
+        # NOTE: cache_position is the PHYSICAL cache slot. Before any pruning
+        # it coincides with the absolute position; after decode-time pruning
+        # (streaming_ridge) it diverges, so this fallback would rotate at the
+        # wrong angle. The primary path (position_embeddings kwarg, passed by
+        # HF from the pipeline's absolute position_ids) is always correct.
         cache_position = kwargs.get("cache_position") if kwargs else None
         if cache_position is not None:
             position_ids = cache_position.unsqueeze(0)
@@ -168,6 +173,61 @@ class RidgeSketch(KVCompressor):
         q_rot, q_pass = q[..., :rotary_dim], q[..., rotary_dim:]
         q_rot = (q_rot * cos_q) + (rotate_half(q_rot) * sin_q)
         return torch.cat([q_rot, q_pass], dim=-1)
+
+    def _project_and_pool_queries(
+        self,
+        module: nn.Module,
+        hidden_states: torch.Tensor,
+        H_kv: int,
+        D: int,
+        dtype: torch.dtype,
+        kwargs: Optional[dict] = None,
+    ) -> Optional[torch.Tensor]:
+        """q_proj + head reshape + GQA pooling (+ optional RoPE): [B, H_kv, T, D].
+
+        No length checks — callers align hidden_states/keys themselves. Shared
+        by the batch path (`_get_all_queries`) and the streaming decode path
+        (per-step accumulation in StreamingRidgeSketch).
+        """
+        try:
+            q = module.q_proj(hidden_states)
+        except Exception as exc:
+            logger.warning("Could not compute queries from q_proj: %s", exc)
+            return None
+
+        if q.shape[-1] % D != 0:
+            logger.warning("q_proj output dim %s is not divisible by head_dim %s", q.shape[-1], D)
+            return None
+
+        B, T = hidden_states.shape[0], hidden_states.shape[1]
+        H_q = q.shape[-1] // D
+        q = q.view(B, T, H_q, D).transpose(1, 2).contiguous()
+
+        if H_q == H_kv:
+            pass
+        elif H_q > H_kv and H_q % H_kv == 0:
+            group = H_q // H_kv
+            q = q.view(B, H_kv, group, T, D).mean(dim=2)
+        elif H_kv > H_q and H_kv % H_q == 0:
+            repeat = H_kv // H_q
+            q = q.repeat_interleave(repeat, dim=1)
+        else:
+            logger.warning("Incompatible query/KV head counts: H_q=%s, H_kv=%s", H_q, H_kv)
+            return None
+
+        q = q.to(dtype)
+
+        if self.rotate_queries:
+            cos_sin = self._position_embeddings(module, hidden_states, kwargs or {})
+            if cos_sin is not None:
+                q = self._apply_rope_to_queries(q, cos_sin[0], cos_sin[1])
+            else:
+                logger.warning(
+                    "rotate_queries=True but position embeddings are unavailable; "
+                    "falling back to un-rotated queries."
+                )
+
+        return q.contiguous()
 
     def _get_all_queries(
         self,
@@ -191,44 +251,9 @@ class RidgeSketch(KVCompressor):
             )
             return None
 
-        try:
-            q = module.q_proj(hidden_states)
-        except Exception as exc:
-            logger.warning("Could not compute queries from q_proj: %s", exc)
-            return None
-
-        if q.shape[-1] % D != 0:
-            logger.warning("q_proj output dim %s is not divisible by head_dim %s", q.shape[-1], D)
-            return None
-
-        H_q = q.shape[-1] // D
-        q = q.view(B, T, H_q, D).transpose(1, 2).contiguous()
-
-        if H_q == H_kv:
-            pass
-        elif H_q > H_kv and H_q % H_kv == 0:
-            group = H_q // H_kv
-            q = q.view(B, H_kv, group, T, D).mean(dim=2)
-        elif H_kv > H_q and H_kv % H_q == 0:
-            repeat = H_kv // H_q
-            q = q.repeat_interleave(repeat, dim=1)
-        else:
-            logger.warning("Incompatible query/KV head counts: H_q=%s, H_kv=%s", H_q, H_kv)
-            return None
-
-        q = q.to(keys.dtype)
-
-        if self.rotate_queries:
-            cos_sin = self._position_embeddings(module, hidden_states, kwargs or {})
-            if cos_sin is not None:
-                q = self._apply_rope_to_queries(q, cos_sin[0], cos_sin[1])
-            else:
-                logger.warning(
-                    "rotate_queries=True but position embeddings are unavailable; "
-                    "falling back to un-rotated queries."
-                )
-
-        return q.contiguous()
+        return self._project_and_pool_queries(
+            module, hidden_states, H_kv, D, keys.dtype, kwargs,
+        )
 
     def _compute_query_key_interaction(
         self,

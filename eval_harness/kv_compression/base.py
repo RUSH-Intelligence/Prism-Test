@@ -249,12 +249,15 @@ class KVCompressor:
         default_factory=lambda: frozenset({CompressionSchedule.POST_PREFILL}),
         kw_only=True,
     )
-    # Reserved: declared (and `operation` coerced in __post_init__) for
-    # forward-compatibility, but NOT yet consumed by any compressor or the
-    # pipeline.  `operation` is intended to let a compressor declare a non-evict
-    # op (e.g. quantize / merge); `decode_interval` is intended to throttle
-    # decode-time compression to every Nth step.  Setting either today has no
-    # effect — wire them up when a method actually needs them.
+    # `operation` is reserved (declared and coerced in __post_init__) but NOT
+    # yet consumed — it is intended to let a compressor declare a non-evict op
+    # (e.g. quantize / merge).  `decode_interval` throttles decode-time
+    # compression to every Nth token; the BASE hook does not consume it (it
+    # fires on every decode forward), so decode-schedule compressors must
+    # implement the throttling themselves (see streaming_ridge, the first
+    # consumer) and declare `decode_capable = True` — the pipeline refuses
+    # decode installs without that flag because an unthrottled
+    # ratio-of-current-length scorer geometrically collapses the cache.
     operation: CompressionOperation = field(
         default=CompressionOperation.EVICT, kw_only=True,
     )
