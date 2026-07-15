@@ -143,35 +143,67 @@ class TestPrefillEquivalence(unittest.TestCase):
 
 
 class TestStreamingExactness(unittest.TestCase):
-    def test_key_gram_tracks_all_keys_ever_seen(self):
+    def test_key_gram_folds_all_keys_at_events_only(self):
         module = _FakeAttnModule(seed=1)
         sketch = _mk_sketch(decode_interval=3)
         keys, _, _, cur_k, cur_v = _prefill(sketch, module, seed=3)
         all_new = []
-        for step in range(7):
+        # 6 steps at interval 3 -> events at steps 3 and 6; buffers drained.
+        for step in range(6):
             cur_k, cur_v, k_new = _decode_step(sketch, module, cur_k, cur_v, seed=10 + step)
             all_new.append(k_new)
-        # Gram == prefill keys + every decode key, INCLUDING evicted ones.
         full_history = torch.cat([keys] + all_new, dim=2)
+        # Gram == prefill keys + every decode key, INCLUDING evicted ones.
         torch.testing.assert_close(
             sketch._gram_k[0], _norm_gram(full_history), atol=1e-4, rtol=1e-4,
         )
+        self.assertEqual(sketch._pending_tokens[0], 0)
 
-    def test_streaming_tau_equals_batch_tau_over_full_history(self):
+        # Step 7: buffered only — Gram untouched until the next event.
+        gram_before = sketch._gram_k[0].clone()
+        cur_k, cur_v, _ = _decode_step(sketch, module, cur_k, cur_v, seed=17)
+        self.assertTrue(torch.equal(sketch._gram_k[0], gram_before))
+        self.assertEqual(sketch._pending_tokens[0], 1)
+
+    def test_event_tau_uses_full_history_gram(self):
         module = _FakeAttnModule(seed=1)
-        sketch = _mk_sketch(decode_interval=100)  # never fire; pure accumulation
+        sketch = _mk_sketch(decode_interval=5)
         keys, _, _, cur_k, cur_v = _prefill(sketch, module, seed=4)
         news = []
-        for step in range(5):
+        for step in range(5):  # exactly one event at step 5
             cur_k, cur_v, k_new = _decode_step(sketch, module, cur_k, cur_v, seed=20 + step)
             news.append(k_new)
         history = torch.cat([keys] + news, dim=2)
         probe = cur_k[:, :, 4:-8, :]  # current mid region
 
         tau_stream = sketch._tau_from_gram(probe, sketch._gram_k[0])
-        # batch reference: leverage against the exact full-history Gram
-        tau_batch = sketch._tau_from_gram(probe, _norm_gram(history))
-        torch.testing.assert_close(tau_stream, tau_batch, atol=1e-5, rtol=1e-5)
+        # reference: leverage against the directly-computed full-history Gram
+        tau_ref = sketch._tau_from_gram(probe, _norm_gram(history))
+        torch.testing.assert_close(tau_stream, tau_ref, atol=1e-5, rtol=1e-5)
+
+    def test_cholesky_tau_matches_explicit_inverse(self):
+        sketch = _mk_sketch()
+        torch.manual_seed(21)
+        hist = torch.randn(1, 2, 60, 8)
+        probe = torch.randn(1, 2, 10, 8)
+        gram = _norm_gram(hist)
+        tau = sketch._tau_from_gram(probe, gram)
+
+        k = probe.float()
+        k = k / k.norm(p=2, dim=-1, keepdim=True).clamp_min(sketch.eps)
+        eye = torch.eye(8).view(1, 1, 8, 8)
+        inv = torch.linalg.inv(gram + sketch.ridge_lambda * eye)
+        tau_ref = ((k @ inv) * k).sum(-1).clamp_min(0.0)
+        torch.testing.assert_close(tau, tau_ref, atol=1e-5, rtol=1e-5)
+
+    def test_tau_pinv_fallback_on_nonpd_gram(self):
+        sketch = _mk_sketch()
+        torch.manual_seed(22)
+        probe = torch.randn(1, 1, 5, 8)
+        bad_gram = -0.5 * torch.eye(8).view(1, 1, 8, 8)  # not PD -> cholesky fails
+        tau = sketch._tau_from_gram(probe, bad_gram)
+        self.assertTrue(torch.isfinite(tau).all())
+        self.assertTrue((tau >= 0).all())
 
 
 class TestDecodeCadenceAndBudget(unittest.TestCase):
@@ -208,10 +240,35 @@ class TestDecodeCadenceAndBudget(unittest.TestCase):
         sketch = _mk_sketch(decode_interval=4)
         _, _, _, cur_k, cur_v = _prefill(sketch, module, seed=7)
         cur_k, cur_v, _ = _decode_step(sketch, module, cur_k, cur_v, n_new=6, seed=50)
-        # 6 >= interval -> event fired immediately: int(106*0.5)=53
+        # 6 >= interval -> event fired immediately: int(106*0.5)=53,
+        # and the interval REMAINDER survives: 6 % 4 = 2.
         self.assertEqual(cur_k.shape[2], 53)
-        self.assertEqual(sketch._since_event[0], 0)
+        self.assertEqual(sketch._since_event[0], 2)
         self.assertEqual(sketch._tokens_seen[0], 106)
+
+    def test_interval_remainder_keeps_event_phase(self):
+        module = _FakeAttnModule(seed=1)
+        sketch = _mk_sketch(decode_interval=4)
+        _, _, _, cur_k, cur_v = _prefill(sketch, module, seed=17)
+        self.assertEqual(cur_k.shape[2], 50)
+
+        # chunk of 3: no event (since=3), cache grows
+        cur_k, cur_v, _ = _decode_step(sketch, module, cur_k, cur_v, n_new=3, seed=51)
+        self.assertEqual(cur_k.shape[2], 53)
+        self.assertEqual(sketch._since_event[0], 3)
+        # chunk of 3: since=6 >= 4 -> event; remainder 2; keep int(106*0.5)=53
+        cur_k, cur_v, _ = _decode_step(sketch, module, cur_k, cur_v, n_new=3, seed=52)
+        self.assertEqual(cur_k.shape[2], 53)
+        self.assertEqual(sketch._since_event[0], 2)
+        # single token: since=3, no event
+        cur_k, cur_v, _ = _decode_step(sketch, module, cur_k, cur_v, seed=53)
+        self.assertEqual(cur_k.shape[2], 54)
+        self.assertEqual(sketch._since_event[0], 3)
+        # single token: since=4 -> event exactly 4 tokens after the previous
+        # boundary (phase preserved); keep int(108*0.5)=54
+        cur_k, cur_v, _ = _decode_step(sketch, module, cur_k, cur_v, seed=54)
+        self.assertEqual(cur_k.shape[2], 54)
+        self.assertEqual(sketch._since_event[0], 0)
 
     def test_sink_and_local_always_survive_decode_events(self):
         module = _FakeAttnModule(seed=1)
@@ -270,6 +327,113 @@ class TestQueryGramEMA(unittest.TestCase):
         expected = 0.5 * g0 + pend
         torch.testing.assert_close(sketch._gram_q[0], expected, atol=1e-5, rtol=1e-5)
         self.assertAlmostEqual(sketch._q_weight[0], 0.5 * T + 2)
+
+
+class TestDecodeRotationSafety(unittest.TestCase):
+    """rotate_queries=True at decode must never fabricate positions."""
+
+    def _rot_module(self):
+        m = _FakeAttnModule(hidden_dim=16, num_heads=2, head_dim=8,
+                            num_kv_heads=2, identity_q=True)
+        return m
+
+    def _cos_sin(self, n=1, seed=0):
+        torch.manual_seed(seed)
+        return torch.rand(1, n, 8), torch.rand(1, n, 8)
+
+    def test_position_embeddings_kwarg_is_used(self):
+        module = self._rot_module()
+        sketch = _mk_sketch(decode_interval=1, query_ema_beta=1.0)
+        sketch.rotate_queries = True
+        T, hd = 40, 16
+        torch.manual_seed(23)
+        keys = torch.randn(1, 2, T, 8)
+        values = torch.randn(1, 2, T, 8)
+        hidden = torch.randn(1, T, hd)
+        sketch.set_phase("prefill")
+        cur_k, cur_v = sketch.compress(module, hidden, keys, values, None, {})
+        sketch.set_phase("decode")
+        gq_before = sketch._gram_q[0].clone()
+
+        cos, sin = self._cos_sin(seed=24)
+        torch.manual_seed(25)
+        h_new = torch.randn(1, 1, hd)
+        k_new = torch.randn(1, 2, 1, 8)
+        keys2 = torch.cat([cur_k, k_new], dim=2)
+        values2 = torch.cat([cur_v, k_new], dim=2)
+        sketch.compress(module, h_new, keys2, values2, None,
+                        {"position_embeddings": (cos, sin)})
+
+        # identity q_proj, no pooling: q == reshaped hidden, then rotated
+        q = h_new.view(1, 1, 2, 8).transpose(1, 2)
+        q_rot = sketch._apply_rope_to_queries(q, cos, sin).float()
+        expected = gq_before + q_rot.transpose(-2, -1) @ q_rot
+        torch.testing.assert_close(sketch._gram_q[0], expected, atol=1e-5, rtol=1e-5)
+
+    def test_cache_position_rejected_after_prune(self):
+        module = self._rot_module()
+        sketch = _mk_sketch(decode_interval=1)
+        sketch.rotate_queries = True
+        sketch._pruned_in_decode[0] = True
+        module.rotary_emb = lambda x, pos: self._cos_sin(seed=26)
+        h = torch.randn(1, 1, 16)
+        out = sketch._decode_cos_sin(module, h, {"cache_position": torch.tensor([37])}, 0)
+        self.assertIsNone(out)
+
+    def test_cache_position_accepted_before_prune(self):
+        module = self._rot_module()
+        sketch = _mk_sketch(decode_interval=1)
+        sketch.rotate_queries = True
+        sketch._pruned_in_decode[0] = False
+        seen = {}
+
+        def rotary(x, pos):
+            seen["pos"] = pos
+            return self._cos_sin(seed=27)
+
+        module.rotary_emb = rotary
+        h = torch.randn(1, 1, 16)
+        out = sketch._decode_cos_sin(module, h, {"cache_position": torch.tensor([37])}, 0)
+        self.assertIsNotNone(out)
+        self.assertEqual(seen["pos"].tolist(), [[37]])
+
+    def test_unresolved_positions_accumulate_unrotated_with_single_warning(self):
+        module = self._rot_module()  # no rotary_emb attribute
+        sketch = _mk_sketch(decode_interval=2)
+        sketch.rotate_queries = True
+        T, hd = 40, 16
+        torch.manual_seed(28)
+        keys = torch.randn(1, 2, T, 8)
+        values = torch.randn(1, 2, T, 8)
+        hidden = torch.randn(1, T, hd)
+        sketch.set_phase("prefill")
+        cur_k, cur_v = sketch.compress(module, hidden, keys, values, None, {})
+        sketch.set_phase("decode")
+        gq_before = sketch._gram_q[0].clone()
+
+        hs = []
+        with self.assertLogs(
+            "eval_harness.kv_compression.compressors.streaming_ridge_sketch",
+            level="WARNING",
+        ) as cm:
+            for step in range(2):  # one event; no position source at all
+                torch.manual_seed(60 + step)
+                h_new = torch.randn(1, 1, hd)
+                k_new = torch.randn(1, 2, 1, 8)
+                hs.append(h_new)
+                keys2 = torch.cat([cur_k, k_new], dim=2)
+                values2 = torch.cat([cur_v, k_new], dim=2)
+                cur_k, cur_v = sketch.compress(module, h_new, keys2, values2, None, {})
+        self.assertEqual(len([m for m in cm.output if "un-rotated" in m]), 1)
+
+        # accumulated Gram equals the UN-rotated hand computation — positions
+        # were never fabricated from zero.
+        pend = torch.zeros(1, 2, 8, 8)
+        for h in hs:
+            q = h.view(1, 1, 2, 8).transpose(1, 2).float()
+            pend = pend + q.transpose(-2, -1) @ q
+        torch.testing.assert_close(sketch._gram_q[0], gq_before + pend,
+                                   atol=1e-5, rtol=1e-5)
 
 
 class TestLayersAndLifecycle(unittest.TestCase):

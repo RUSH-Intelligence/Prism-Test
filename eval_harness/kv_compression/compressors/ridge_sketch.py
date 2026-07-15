@@ -182,12 +182,21 @@ class RidgeSketch(KVCompressor):
         D: int,
         dtype: torch.dtype,
         kwargs: Optional[dict] = None,
+        cos_sin: Optional[tuple] = None,
+        resolve_positions: bool = True,
     ) -> Optional[torch.Tensor]:
         """q_proj + head reshape + GQA pooling (+ optional RoPE): [B, H_kv, T, D].
 
         No length checks — callers align hidden_states/keys themselves. Shared
         by the batch path (`_get_all_queries`) and the streaming decode path
-        (per-step accumulation in StreamingRidgeSketch).
+        (event-time block folding in StreamingRidgeSketch).
+
+        When ``rotate_queries`` is set, rotation uses ``cos_sin`` if provided;
+        otherwise (``resolve_positions=True``, the batch-path default) it is
+        resolved from kwargs/rotary_emb. ``resolve_positions=False`` with no
+        ``cos_sin`` skips rotation silently — decode callers resolve absolute
+        positions themselves and handle their own warnings (the kwargs
+        fallback would fabricate zero-based positions at decode).
         """
         try:
             q = module.q_proj(hidden_states)
@@ -218,14 +227,15 @@ class RidgeSketch(KVCompressor):
         q = q.to(dtype)
 
         if self.rotate_queries:
-            cos_sin = self._position_embeddings(module, hidden_states, kwargs or {})
+            if cos_sin is None and resolve_positions:
+                cos_sin = self._position_embeddings(module, hidden_states, kwargs or {})
+                if cos_sin is None:
+                    logger.warning(
+                        "rotate_queries=True but position embeddings are unavailable; "
+                        "falling back to un-rotated queries."
+                    )
             if cos_sin is not None:
                 q = self._apply_rope_to_queries(q, cos_sin[0], cos_sin[1])
-            else:
-                logger.warning(
-                    "rotate_queries=True but position embeddings are unavailable; "
-                    "falling back to un-rotated queries."
-                )
 
         return q.contiguous()
 
