@@ -45,6 +45,18 @@ import pandas as pd
 from eval_harness.benchmarks.base import Benchmark, BenchmarkInfo
 from eval_harness.benchmarks.registry import register_benchmark
 
+def load_dataset(*args, **kwargs):
+    """Lazy proxy for :func:`datasets.load_dataset`.
+
+    CI installs no ``datasets`` package and registry auto-discovery imports
+    every benchmark module, so the import must not happen at module level;
+    tests also patch this module-level name.
+    """
+    from datasets import load_dataset as _load_dataset
+
+    return _load_dataset(*args, **kwargs)
+
+
 NEEDLE_DATASET = "alessiodevoto/paul_graham_essays"
 CONTEXT_WRAPPER = "This is a very long story book: <book> {context} </book>."
 DEFAULT_DEPTHS = list(range(0, 101, 10))
@@ -103,10 +115,6 @@ class NeedleInHaystackBenchmark(Benchmark):
         return depths
 
     def load(self, subsets: Optional[List[str]] = None) -> pd.DataFrame:
-        # Lazy: CI installs no `datasets`; registry auto-discovery
-        # imports every benchmark module (repo convention).
-        from datasets import load_dataset
-
         depths = self._parse_depths(self.resolve_subsets(subsets))
         seed = load_dataset(NEEDLE_DATASET, split="test").to_pandas().iloc[0]
 

@@ -41,6 +41,18 @@ import pandas as pd
 from eval_harness.benchmarks.base import Benchmark, BenchmarkInfo
 from eval_harness.benchmarks.registry import register_benchmark
 
+def load_dataset(*args, **kwargs):
+    """Lazy proxy for :func:`datasets.load_dataset`.
+
+    CI installs no ``datasets`` package and registry auto-discovery imports
+    every benchmark module, so the import must not happen at module level;
+    tests also patch this module-level name.
+    """
+    from datasets import load_dataset as _load_dataset
+
+    return _load_dataset(*args, **kwargs)
+
+
 MATH500_DATASET = "alessiodevoto/math500"
 
 
@@ -69,10 +81,6 @@ class Math500Benchmark(Benchmark):
         )
 
     def load(self, subsets: Optional[List[str]] = None) -> pd.DataFrame:
-        # Lazy: CI installs no `datasets`; registry auto-discovery
-        # imports every benchmark module (repo convention).
-        from datasets import load_dataset
-
         del subsets  # single-subset benchmark
         df = load_dataset(MATH500_DATASET, split="test").to_pandas()
         # The dataset ships context/answer_prefix/max_new_tokens; default them
