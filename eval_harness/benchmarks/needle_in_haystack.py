@@ -41,7 +41,6 @@ auto-discovery does not require it (install with ``pip install rouge``).
 from typing import Dict, List, Optional
 
 import pandas as pd
-from datasets import load_dataset
 
 from eval_harness.benchmarks.base import Benchmark, BenchmarkInfo
 from eval_harness.benchmarks.registry import register_benchmark
@@ -104,6 +103,10 @@ class NeedleInHaystackBenchmark(Benchmark):
         return depths
 
     def load(self, subsets: Optional[List[str]] = None) -> pd.DataFrame:
+        # Lazy: CI installs no `datasets`; registry auto-discovery
+        # imports every benchmark module (repo convention).
+        from datasets import load_dataset
+
         depths = self._parse_depths(self.resolve_subsets(subsets))
         seed = load_dataset(NEEDLE_DATASET, split="test").to_pandas().iloc[0]
 

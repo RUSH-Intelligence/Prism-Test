@@ -37,7 +37,6 @@ kvpress keys (``correct``, ``answered``, ``accuracy``, ``total``).
 from typing import Dict, List, Optional
 
 import pandas as pd
-from datasets import load_dataset
 
 from eval_harness.benchmarks.base import Benchmark, BenchmarkInfo
 from eval_harness.benchmarks.registry import register_benchmark
@@ -70,6 +69,10 @@ class Math500Benchmark(Benchmark):
         )
 
     def load(self, subsets: Optional[List[str]] = None) -> pd.DataFrame:
+        # Lazy: CI installs no `datasets`; registry auto-discovery
+        # imports every benchmark module (repo convention).
+        from datasets import load_dataset
+
         del subsets  # single-subset benchmark
         df = load_dataset(MATH500_DATASET, split="test").to_pandas()
         # The dataset ships context/answer_prefix/max_new_tokens; default them

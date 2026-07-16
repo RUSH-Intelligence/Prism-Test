@@ -35,7 +35,6 @@ Deviation from kvpress: metrics add the Prism-conventional ``overall_score``
 from typing import Dict, List, Optional
 
 import pandas as pd
-from datasets import load_dataset
 
 from eval_harness.benchmarks.base import Benchmark, BenchmarkInfo
 from eval_harness.benchmarks.registry import register_benchmark
@@ -69,6 +68,10 @@ class Aime2025Benchmark(Benchmark):
         )
 
     def load(self, subsets: Optional[List[str]] = None) -> pd.DataFrame:
+        # Lazy: CI installs no `datasets`; registry auto-discovery
+        # imports every benchmark module (repo convention).
+        from datasets import load_dataset
+
         del subsets  # single-subset benchmark
         df = load_dataset(AIME25_DATASET, split="test").to_pandas()
         if "context" not in df.columns:
