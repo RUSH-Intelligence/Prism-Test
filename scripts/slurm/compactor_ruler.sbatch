@@ -92,6 +92,12 @@ MAXREQ="${MAXREQ:-100}"
 OFFSET="${OFFSET:-0}"
 MODEL="${MODEL:-meta-llama/Llama-3.1-8B-Instruct}"
 KWARGS="${KWARGS:-{\}}"
+# MAXNEW: max_new_tokens ("null" = use the benchmark's per-row budgets —
+# required for reasoning benchmarks like math500/aime25; default 128 keeps
+# prior RULER-run behavior). GROUPBY: group_by_context (set "false" for
+# decode-time compression on shared-trivial-context benchmarks).
+MAXNEW="${MAXNEW:-128}"
+GROUPBY="${GROUPBY:-true}"
 
 mkdir -p "$OUTDIR"
 
@@ -113,13 +119,14 @@ max_model_len: ${MAXLEN}
 gpu_memory_utilization: 0.9
 trust_remote_code: true
 enable_prefix_caching: true
-max_new_tokens: 128
+max_new_tokens: ${MAXNEW}
 temperature: 0.0
 top_p: 1.0
 system_prompt: null
 seed: 42
 max_requests: ${MAXREQ}
 request_offset: ${OFFSET}
+group_by_context: ${GROUPBY}
 fraction: 1.0
 query_aware: false
 output_dir: ${OUTDIR}

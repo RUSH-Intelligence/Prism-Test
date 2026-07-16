@@ -216,8 +216,20 @@ class EvalRunner:
         self.df = self.df.copy()
         self.df["predicted_answer"] = None
 
-        grouped = self.df.groupby("context", sort=False)
-        for context, group in tqdm(grouped, total=self.df["context"].nunique(), desc="Generating"):
+        if self.config.group_by_context:
+            grouped = self.df.groupby("context", sort=False)
+            n_groups = self.df["context"].nunique()
+        else:
+            # Row-per-group: required for decode-time KV compression on
+            # benchmarks whose rows share one trivial context (math500/aime25
+            # ship context == " " for every row — grouping them would put all
+            # questions behind one prefill, which decode compression forbids).
+            grouped = (
+                (group["context"].iloc[0], group)
+                for _, group in self.df.groupby(self.df.index, sort=False)
+            )
+            n_groups = len(self.df)
+        for context, group in tqdm(grouped, total=n_groups, desc="Generating"):
             if self.config.backend == "rag":
                 questions = [str(row["question"]) for _, row in group.iterrows()]
                 assert self.adapter is not None
