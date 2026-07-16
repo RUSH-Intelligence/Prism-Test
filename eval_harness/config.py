@@ -44,7 +44,7 @@ class EvalConfig:
     request_offset: int = 0
     # When False, each row generates as its own group instead of grouping rows
     # that share an identical context. Needed for decode-time KV compression on
-    # benchmarks whose rows all carry one trivial context (math500 / aime25):
+    # benchmarks whose rows all carry one trivial context (math500 / aime2025):
     # context-grouping would put every question behind a single prefill, and
     # decode compression is incompatible with multi-question generation.
     group_by_context: bool = True

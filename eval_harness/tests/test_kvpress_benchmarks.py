@@ -24,9 +24,9 @@ from unittest import mock
 
 import pandas as pd
 
-from eval_harness.benchmarks.aime25 import (
+from eval_harness.benchmarks.aime2025 import (
     AIME25_DATASET,
-    Aime25Benchmark,
+    Aime2025Benchmark,
     extract_boxed_last,
 )
 from eval_harness.benchmarks.math500 import (
@@ -164,7 +164,7 @@ class TestScoreParityWithKvpress(unittest.TestCase):
         self._assert_parity(Math500Benchmark, _REF_MATH500, _BATTERY_MATH500_CORRECT)
 
     def test_aime25_score_matches_reference(self):
-        self._assert_parity(Aime25Benchmark, _REF_AIME25, _BATTERY_AIME25_CORRECT)
+        self._assert_parity(Aime2025Benchmark, _REF_AIME25, _BATTERY_AIME25_CORRECT)
 
     def test_first_vs_last_divergence_on_single_row(self):
         # The one behavioral difference between the two benchmarks.
@@ -174,7 +174,7 @@ class TestScoreParityWithKvpress(unittest.TestCase):
         self.assertEqual(_REF_MATH500.calculate_metrics(df)["correct"], 0)
         self.assertEqual(_REF_AIME25.calculate_metrics(df)["correct"], 1)
         self.assertEqual(_score(Math500Benchmark, df)["correct"], 0)
-        self.assertEqual(_score(Aime25Benchmark, df)["correct"], 1)
+        self.assertEqual(_score(Aime2025Benchmark, df)["correct"], 1)
 
 
 # ---------------------------------------------------------------------------
@@ -241,7 +241,7 @@ class TestExtractionQuirks(unittest.TestCase):
 # 2 + 3. Scorer edge cases and metrics shape (both boxed benchmarks).
 # ---------------------------------------------------------------------------
 class TestBoxedScorerEdgeCases(unittest.TestCase):
-    BENCHMARKS = ((Math500Benchmark, "math500"), (Aime25Benchmark, "aime25"))
+    BENCHMARKS = ((Math500Benchmark, "math500"), (Aime2025Benchmark, "aime2025"))
 
     def test_none_predicted_answer_does_not_crash(self):
         df = pd.DataFrame([{"predicted_answer": None, "answer": "7"}])
@@ -302,7 +302,7 @@ class TestBoxedScorerEdgeCases(unittest.TestCase):
         # Independent of the reference checkout: pin the exact battery counts.
         df = _battery_df()
         res_math = _score(Math500Benchmark, df)
-        res_aime = _score(Aime25Benchmark, df)
+        res_aime = _score(Aime2025Benchmark, df)
         self.assertEqual(res_math["correct"], _BATTERY_MATH500_CORRECT)
         self.assertEqual(res_aime["correct"], _BATTERY_AIME25_CORRECT)
         self.assertEqual(res_math["answered"], _BATTERY_ANSWERED)
@@ -586,14 +586,14 @@ class TestLoaderColumnMapping(unittest.TestCase):
 
     def test_aime25_injects_defensive_defaults(self):
         raw = pd.DataFrame({"question": ["p1"], "answer": ["70"]})
-        with mock.patch("eval_harness.benchmarks.aime25.load_dataset") as ld:
+        with mock.patch("eval_harness.benchmarks.aime2025.load_dataset") as ld:
             ld.return_value.to_pandas.return_value = raw
-            df = object.__new__(Aime25Benchmark).load()
+            df = object.__new__(Aime2025Benchmark).load()
         ld.assert_called_once_with(AIME25_DATASET, split="test")
         self.assertTrue((df["context"] == " ").all())
         self.assertTrue((df["answer_prefix"] == "").all())
         self.assertTrue((df["max_new_tokens"] == 32000).all())
-        self.assertTrue((df["task"] == "aime25").all())
+        self.assertTrue((df["task"] == "aime2025").all())
 
     @staticmethod
     def _needle_seed(**overrides) -> pd.DataFrame:
@@ -657,7 +657,9 @@ class TestRegistryResolution(unittest.TestCase):
         from eval_harness.benchmarks.registry import get_benchmark
 
         self.assertIsInstance(get_benchmark("math500"), Math500Benchmark)
-        self.assertIsInstance(get_benchmark("aime25"), Aime25Benchmark)
+        self.assertIsInstance(get_benchmark("aime2025"), Aime2025Benchmark)
+        # back-compat alias
+        self.assertIsInstance(get_benchmark("aime25"), Aime2025Benchmark)
         self.assertIsInstance(
             get_benchmark("needle_in_haystack"), NeedleInHaystackBenchmark
         )

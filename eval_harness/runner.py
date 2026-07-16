@@ -221,7 +221,7 @@ class EvalRunner:
             n_groups = self.df["context"].nunique()
         else:
             # Row-per-group: required for decode-time KV compression on
-            # benchmarks whose rows share one trivial context (math500/aime25
+            # benchmarks whose rows share one trivial context (math500/aime2025
             # ship context == " " for every row — grouping them would put all
             # questions behind one prefill, which decode compression forbids).
             grouped = (
