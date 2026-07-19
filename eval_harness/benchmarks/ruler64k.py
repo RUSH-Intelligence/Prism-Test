@@ -107,6 +107,30 @@ RULER_SUBSETS = [
 ]
 
 
+def _local_variant_parquet(variant: str):
+    """Return the locally-cached parquet for a ruler-full variant, or None.
+
+    The hub streaming path (load_dataset(..., streaming=True)) reads blobs
+    through HfFileSystem range requests, which are currently denied (HTTP 403)
+    for this xet-backed repo. When the repo has already been snapshot-fetched
+    (hf_hub_download / snapshot_download, which use the working xet protocol),
+    read the local parquet directly with the fsspec local filesystem — no
+    HfFileSystem, no CDN. Returns None if the snapshot is absent so the caller
+    falls back to hub streaming.
+    """
+    try:
+        from huggingface_hub import snapshot_download
+        snap = snapshot_download(
+            repo_id="tonychenxyz/ruler-full", repo_type="dataset",
+            local_files_only=True,
+        )
+    except Exception:
+        return None
+    import os
+    path = os.path.join(snap, variant, "validation-00000-of-00001.parquet")
+    return path if os.path.exists(path) else None
+
+
 def _collect_rows_for_context_length(subsets: List[str], context_length: int) -> pd.DataFrame:
     from datasets import load_dataset
 
@@ -114,7 +138,11 @@ def _collect_rows_for_context_length(subsets: List[str], context_length: int) ->
     rows: List[Dict[str, object]] = []
 
     for variant in ["plain", "memwrap"]:
-        ds = load_dataset("tonychenxyz/ruler-full", variant, split="validation", streaming=True)
+        local_pq = _local_variant_parquet(variant)
+        if local_pq is not None:
+            ds = load_dataset("parquet", data_files=local_pq, split="train", streaming=True)
+        else:
+            ds = load_dataset("tonychenxyz/ruler-full", variant, split="validation", streaming=True)
         for sample in ds:
             category = str(sample.get("category", ""))
             marker = f"_{context_length}"

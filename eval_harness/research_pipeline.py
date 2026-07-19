@@ -214,8 +214,35 @@ class ResearchGenerationPipeline(Pipeline):
         cache: Optional[Cache] = None,
         cache_adapter: Optional[CacheAdapter] = None,
     ):
-        if isinstance(kv_compressor, (DecodingSketch, PrefillDecodingSketch)) and len(input_tensors["questions_ids"]) > 1:
-            raise ValueError("DecodingSketch is not compatible with multiple questions. Please specify one question.")
+        compressor_fires_on_decode = kv_compressor is not None and (
+            isinstance(kv_compressor, (DecodingSketch, PrefillDecodingSketch))
+            or kv_compressor.fires_on_decode
+        )
+        if (
+            kv_compressor is not None
+            and not isinstance(kv_compressor, (DecodingSketch, PrefillDecodingSketch))
+            and kv_compressor.fires_on_decode
+            and not getattr(kv_compressor, "decode_capable", False)
+        ):
+            # The base forward_hook fires on EVERY decode step and generic
+            # scorers budget int(k_len * (1 - ratio)) of the CURRENT length —
+            # installing one at decode geometrically collapses the cache
+            # within a few tokens. Only compressors that declare themselves
+            # decode_capable (throttled, tokens-ever-seen budgeting, e.g.
+            # streaming_ridge) may take the decode schedule.
+            raise ValueError(
+                f"{type(kv_compressor).__name__} declares the 'decode' schedule "
+                "but is not decode-capable (no interval throttling / absolute "
+                "budgeting). Remove 'decode' from compression_schedule or use a "
+                "decode-capable compressor such as 'streaming_ridge'."
+            )
+        if compressor_fires_on_decode and len(input_tensors["questions_ids"]) > 1:
+            # Decode-time pruning shrinks the cache below the per-question
+            # checkpoint length, corrupting restore_after_question's slice.
+            raise ValueError(
+                "Decode-time KV compression is not compatible with multiple "
+                "questions. Please specify one question."
+            )
 
         context_ids = input_tensors["context_ids"].to(self.model.device)
         context_length = context_ids.shape[1]
@@ -238,7 +265,15 @@ class ResearchGenerationPipeline(Pipeline):
             else contextlib.nullcontext()
         )
 
-        perform_prefill_compression = kv_compressor is not None and not isinstance(kv_compressor, DecodingSketch)
+        # Capability-based gating: a compressor participates in prefill when its
+        # schedule says so (all bare compressors default to POST_PREFILL).
+        # DecodingSketch stays excluded by type — it is decode-only by design
+        # even though it inherits the POST_PREFILL schedule default.
+        perform_prefill_compression = (
+            kv_compressor is not None
+            and not isinstance(kv_compressor, DecodingSketch)
+            and kv_compressor.fires_on_prefill
+        )
 
         # Hook ordering: attention-method hooks install FIRST (outermost context
         # manager), then KV-compressor hooks install SECOND.  Since forward hooks
@@ -275,7 +310,10 @@ class ResearchGenerationPipeline(Pipeline):
             if use_attention_method:
                 attention_method.on_prefill_end()
 
-            perform_decoding_compression = kv_compressor is not None and isinstance(kv_compressor, (DecodingSketch, PrefillDecodingSketch))
+            # Decode-context install: the legacy DecodingSketch family by type,
+            # plus any compressor whose schedule declares DECODE (e.g.
+            # streaming_ridge fires on both post_prefill and decode).
+            perform_decoding_compression = compressor_fires_on_decode
             if kv_compressor is not None:
                 kv_compressor.set_phase("decode")
             with kv_compressor(self.model) if perform_decoding_compression else contextlib.nullcontext():

@@ -90,30 +90,32 @@ class EvalRunner:
         df: pd.DataFrame,
         max_requests: int | None,
         max_requests_per_subset: Dict[str, int] | None,
+        request_offset: int = 0,
     ) -> pd.DataFrame:
-        if max_requests is None and not max_requests_per_subset:
+        offset = max(0, int(request_offset))
+        if max_requests is None and not max_requests_per_subset and offset == 0:
             return df
         if max_requests is not None and max_requests <= 0:
             return df.head(0)
 
         subset_limits = max_requests_per_subset or {}
 
-        # Apply request cap per task/subset when available.
+        # Apply per-subset offset + request cap: rows [offset : offset+limit].
         if "task" in df.columns:
             parts: List[pd.DataFrame] = []
             for task, task_df in df.groupby("task", sort=False):
                 limit = subset_limits.get(str(task), max_requests)
                 if limit is None:
-                    parts.append(task_df)
+                    parts.append(task_df.iloc[offset:])
                 elif limit <= 0:
                     parts.append(task_df.head(0))
                 else:
-                    parts.append(task_df.head(limit))
+                    parts.append(task_df.iloc[offset:offset + limit])
             return pd.concat(parts, ignore_index=True) if parts else df.head(0)
 
         if max_requests is None:
-            return df
-        return df.head(max_requests)
+            return df.iloc[offset:]
+        return df.iloc[offset:offset + max_requests]
 
     def _load_dataset(self) -> None:
         subsets = None
@@ -134,6 +136,7 @@ class EvalRunner:
             df,
             self.config.max_requests,
             self.config.max_requests_per_subset,
+            self.config.request_offset,
         )
 
         for col in ["context", "question"]:
@@ -213,8 +216,20 @@ class EvalRunner:
         self.df = self.df.copy()
         self.df["predicted_answer"] = None
 
-        grouped = self.df.groupby("context", sort=False)
-        for context, group in tqdm(grouped, total=self.df["context"].nunique(), desc="Generating"):
+        if self.config.group_by_context:
+            grouped = self.df.groupby("context", sort=False)
+            n_groups = self.df["context"].nunique()
+        else:
+            # Row-per-group: required for decode-time KV compression on
+            # benchmarks whose rows share one trivial context (math500/aime2025
+            # ship context == " " for every row — grouping them would put all
+            # questions behind one prefill, which decode compression forbids).
+            grouped = (
+                (group["context"].iloc[0], group)
+                for _, group in self.df.groupby(self.df.index, sort=False)
+            )
+            n_groups = len(self.df)
+        for context, group in tqdm(grouped, total=n_groups, desc="Generating"):
             if self.config.backend == "rag":
                 questions = [str(row["question"]) for _, row in group.iterrows()]
                 assert self.adapter is not None

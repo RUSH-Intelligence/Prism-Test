@@ -173,7 +173,7 @@ Shipped sketches (mostly faithful ports of kvpress 0.5.1 presses — each module
 | `leverage`               | Prefill             | Approximate statistical leverage scores of pre-RoPE keys via Gaussian sketch + Cholesky (Compactor component). |
 | `non_causal_attention`   | Prefill             | Compactor's non-causal chunked-attention column-sum scorer (component). |
 | `compactor`              | Prefill             | Full Compactor: z-normalized blend of leverage scores + non-causal attention sums over the sink-protected interior. |
-| `ridge`                  | Prefill             | Value-aware query-ridge scoring (research-fork `RidgePress`, not upstream kvpress); sink + local window always kept. |
+| `ridge`                  | Prefill             | Value-aware query-ridge scoring (research-fork `RidgePress`, not upstream kvpress); keys are L2-normalized before the ridge leverage (deviation — query-side ω and ‖v‖ stay on raw tensors); sink + local window always kept. |
 | `random_sketch_press`    | Prefill             | Research-fork `RandomSketchPress`; upstream dead-code bug replicated faithfully, so it behaves identically to `ridge` (pinned by tests). |
 | `expected_attention`     | Prefill             | Predicts future attention from pre-RoPE query mean/covariance rotated to averaged future positions; optional ‖V‖ rescale. |
 | `expected_attention_stats` † | Prefill         | `expected_attention` with pre-computed per-layer calibration query statistics (HF hub repo or local `stats_folder`). |

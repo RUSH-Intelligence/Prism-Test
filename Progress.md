@@ -1,8 +1,12 @@
 # Prism-Test — Project Progress
 
-*Last updated: 2026-06-22. Adds Mamba-attention hybrid (NemotronH) KV-compression
-support and refreshes the architecture description to the current **three-door**
-model. Note: earlier revisions called Door 2 "prefill methods"
+*Last updated: 2026-07-15. Adds decode-time streaming KV compression
+(`streaming_ridge`), the kvpress reasoning/needle benchmark ports
+(`math500`, `aime2025`, `needle_in_haystack`) validated on Qwen3-8B, and the
+key-normalized ridge rewrite (see "Recent changes"). Previous update
+(2026-06-22) added Mamba-attention hybrid (NemotronH) KV-compression
+support and refreshed the architecture description to the current
+**three-door** model. Note: earlier revisions called Door 2 "prefill methods"
 (`eval_harness/prefill_methods/`) and Door 3 "sketches"; those now live in
 `eval_harness/attention_methods/` and `eval_harness/kv_compression/`. The
 faithful DCA/ReAttention narrative below is unchanged in substance.*
@@ -13,6 +17,50 @@ Enable research on custom **prefill**, **KV-cache compression**, and **decode
 attention** methods — letting them run and be tested in an error-free way across
 standard models *and* hybrid (Mamba-attention) models, on the long-context
 benchmark suite (RULER, LOFT, LongBench, InfiniteBench, GSM-Infinite, …).
+
+## Recent changes (2026-07-15)
+
+- **Ridge rewrite (`kv_compressor: ridge`)**: keys are now L2-normalized before
+  the ridge-leverage computation (tau measures key-direction diversity,
+  magnitude-invariant; the query-side omega and value norms stay on raw
+  tensors — deliberate deviation from the kvpress research-fork reference).
+  The production-dead alpha-selection machinery (19 fields, 11 methods) was
+  stripped; fixed-envelope scoring `max(tau_c, gamma*omega_c)*||v||^p` with
+  top-k selection is the only path. `envelope_gamma` is the live knob (per-task
+  tuning infrastructure: `scripts/slurm/launch_ridge_gamma_tune.sh` +
+  `scripts/ridge_ruler_report.py`, with disjoint tune/eval splits via the new
+  `EvalConfig.request_offset`).
+- **Decode-time streaming compression (`kv_compressor: streaming_ridge`)**:
+  prefill event is bitwise-identical to `ridge`; during decode it compresses
+  every `decode_interval` (default 32) generated tokens using two d x d
+  streaming statistics — an append-only full-history key-direction Gram and a
+  per-event-EMA query Gram (the question's queries fold in, so post-question
+  events are question-aware). Budgets are `int(tokens_ever_seen * (1-ratio))`
+  (no geometric over-eviction); per-token decode overhead is O(1) buffering;
+  tau uses a Cholesky solve. Pipeline decode installs are now capability-based
+  (`decode_capable` flag) instead of `isinstance(DecodingSketch)`; unthrottled
+  compressors on the decode schedule are rejected loudly. Validated on
+  ruler16k (86.95 vs plain ridge 86.96 at r=0.5) with uniform per-layer cache
+  telemetry.
+- **kvpress benchmark ports** (`eval_harness/benchmarks/{math500,aime2025,
+  needle_in_haystack}.py`): faithful ports of the kvpress-evaluation
+  benchmarks with upstream scoring quirks replicated and documented
+  (first-vs-last `\boxed{}` extraction, first-`}` truncation, swapped ROUGE
+  argument order). `aime2025` REPLACES the earlier xAlg-AI variant (512-token
+  budget, integer extraction) with the kvpress-faithful 32k-budget last-boxed
+  variant; alias `aime25`. Differentially verified against the reference
+  scorers (212+ synthetic predictions, zero disagreements) plus a Qwen3-8B
+  tokenizer audit of the needle haystack construction. Validated end-to-end on
+  Qwen3-8B under both compression regimes: needle (prefill compression,
+  ROUGE-L 73.5 -> 55.9 across ratios 0 -> 0.75) and math500/aime2025
+  (decode compression via `streaming_ridge`, accuracy 57.5% -> 35.0% at
+  ratios 0 -> 0.5) — graceful, monotone degradation.
+- **Harness knobs**: `EvalConfig.request_offset` (disjoint per-subset row
+  slices, guarded against `fraction < 1`), `EvalConfig.group_by_context`
+  (row-per-group generation — required for decode compression on benchmarks
+  whose rows share one trivial context, e.g. math500/aime2025), sbatch
+  `OFFSET`/`MAXNEW`/`GROUPBY` envs, and `ruler64k/128k` local-parquet loading
+  (hub streaming 403s on the xet-backed repo).
 
 ## Where the project stands
 
