@@ -38,7 +38,7 @@
 #       --benchmark ruler16k --methods verified --skip-full \
 #       --ratios 0.6,0.8,0.9 \
 #       --ridge-gammas 0,0.5,1,1.5,2,2.5,3 \
-#       --ridge-rotate-queries false --ridge-normalize-keys true \
+#       --ridge-rotate-queries false \
 #       --ridge-sink-size 4 --ridge-local-size 28 \
 #       --verified-det-fractions 1.0,0.9,0.8,0.7,0.5,0.0 \
 #       --out-root results/ruler16k_verified/meta-llama--Llama-3.1-8B-Instruct \
@@ -113,7 +113,6 @@ ARGS=(
     --ratios "$RATIOS"
     --ridge-gammas "$RIDGE_GAMMAS"
     --ridge-rotate-queries false
-    --ridge-normalize-keys true
     --ridge-sink-size "$RIDGE_SINK_SIZE"
     --ridge-local-size "$RIDGE_LOCAL_SIZE"
     --verified-det-fractions "$DET_FRACTIONS"
@@ -133,7 +132,7 @@ CELL_LABEL=$(python scripts/longbench_sweep.py \
         --benchmark ruler16k --model "$MODEL" --template "$TEMPLATE" \
         --methods verified --skip-full --ratios "$RATIOS" \
         --ridge-gammas "$RIDGE_GAMMAS" \
-        --ridge-rotate-queries false --ridge-normalize-keys true \
+        --ridge-rotate-queries false \
         --ridge-sink-size "$RIDGE_SINK_SIZE" \
         --ridge-local-size "$RIDGE_LOCAL_SIZE" \
         --verified-det-fractions "$DET_FRACTIONS" \
