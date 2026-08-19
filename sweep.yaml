@@ -8,20 +8,46 @@
 # ════════════════════════════════════════════════════════════════════════
 
 # ── WHAT TO RUN (each a list; ALL combinations are run) ───────────────────
+# Uncomment a line to add it to the sweep. Commented entries below are the
+# models / benchmarks / methods / ratios we've ACTUALLY run before — toggle at will.
 models:
-  - meta-llama/Llama-3.1-8B-Instruct
-  # - Qwen/Qwen3.5-9B
+  - meta-llama/Llama-3.1-8B-Instruct              # primary
+  # - Qwen/Qwen3.5-9B                             # primary (current branch)
+  # - Qwen/Qwen2.5-7B-Instruct                    # 32k-native; needs max_model_len cap (see model_overrides)
+  # - mistralai/Ministral-3-3B-Instruct-2512      # needs dequantize_fp8 (see model_overrides)
+  # - mistralai/Ministral-3B-Instruct-2410
+  # - mistralai/Mistral-7B-Instruct-v0.2          # 32k-native; needs max_model_len cap (see model_overrides)
+  # - nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16       # hybrid Mamba/attn; keep attention_method none
+  # (Meta-Llama-3-8B is 8k-native — context-extension experiments only, not this KV sweep.)
 
 benchmarks:
-  - longbench
-  # - ruler16k
+  - longbench                                     # primary; subsets pinned below
+  # - ruler16k                                    # subsets pinned below
+  # - ruler64k                                    # 64k ctx; see benchmark_overrides
+  # - loft                                        # runs its own default subset list
+  # - aime            # aime2024 / aime2025 also registered
+  # - gsm_infinite_hard_128k    # _medium_128k / _symbolic_128k also registered
 
-methods:                          # compressors to test (see the roster in
-  - knorm                         # example_research.yaml / available_kv_compressors)
+methods:                          # compressors to test (registry names; see the roster
+  - knorm                         # in example_research.yaml / available_kv_compressors)
   - snapkv
-  - ridge
+  - ridge                         # fans out via the `ridge:` special grid below
+  # - compactor                   # prefill-only scorer; keep prefill_chunk_size null
+  # - cur
+  # - pyramidkv                   # ragged cache -> needs flash_attention_2
+  # - expected_attention
+  # - keydiff
+  # - streaming_llm
+  # - top_k_sampling
+  # - verified                    # wraps `inner`; fans out via the `verified:` grid below
 
-ratios: [0.6, 0.9, 0.95]          # fraction PRUNED (kept = 1 - ratio)
+ratios:                           # fraction PRUNED (kept = 1 - ratio). Comment/uncomment.
+  - 0.6
+  - 0.9
+  - 0.95
+  # - 0.2
+  # - 0.4
+  # - 0.8
 
 full_baseline: true               # also run ONE no-compression cell per (model,benchmark)
 
@@ -45,8 +71,13 @@ verified:
 # Per-model quirks go here as a few lines — no model ever needs its own file.
 # Keys: max_model_len, llm_kwargs (special load flags), template (rarely needed).
 model_overrides: {}
+  # --- sub-128k models: cap max_model_len or 128k places OOD positions ---
+  # mistralai/Mistral-7B-Instruct-v0.2:
+  #   max_model_len: 32768        # 32k-native
+  # Qwen/Qwen2.5-7B-Instruct:
+  #   max_model_len: 32768        # 32k-native (prior ruler16k-only run used 18000)
+  # --- FP8 checkpoint: stream to BF16 for apples-to-apples ---
   # mistralai/Ministral-3-3B-Instruct-2512:
-  #   max_model_len: 131072
   #   llm_kwargs:
   #     dequantize_fp8: true      # the ONE thing Ministral needs (FP8 -> BF16)
 
