@@ -1,12 +1,16 @@
 # ============================================================================
-# KV-compression baseline — research backend, KV compressor ONLY (no attention method)
+# SWEEP BASE CARD — the generic scaffold scripts/sweep.py clones per cell.
 # ============================================================================
-# Runs the model through ResearchAdapter with a KV compressor (Door 3)
-# installed as a post-attention forward hook, and NO context-extension
-# attention method.  Default: knorm (KVPress-style key-norm scoring) pruning
-# 50% of the prefill KV cache.
+# NOT model-specific: the `model:` below is a placeholder the sweep overwrites
+# from sweep.yaml's `models:` list, and it also overrides benchmark, subsets,
+# kv_compressor, compression_ratio, max_model_len, and output_dir per cell.
+# This file only supplies the shared boilerplate defaults (dtype, seed,
+# trust_remote_code, attn_implementation, the research_config scaffold). Per-
+# model quirks (e.g. Ministral's dequantize_fp8) live in sweep.yaml's
+# model_overrides.llm_kwargs — no model needs its own base file.
 #
-#   python -m eval_harness.cli run --config_file ./evaluate/evaluate_kv.yaml
+# It is also a valid standalone research/KV run card if you ever want one:
+#   python -m eval_harness.cli run --config_file ./evaluate/sweep_base.yaml
 #
 # The default model is 128k-native so ruler16k positions are in-window —
 # the run isolates the effect of CACHE COMPRESSION, not context extension.

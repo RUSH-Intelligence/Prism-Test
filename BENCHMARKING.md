@@ -65,9 +65,10 @@ Configs live in [evaluate/](evaluate/). The one you edit day-to-day is
 `evaluate.yaml` (research backend + KV compression). `example_research.yaml` is
 the full research surface — every door, with the attention_method × kv_compressor
 compatibility matrix; `example_hf.yaml` / `example_vllm.yaml` are clean
-no-method backend references; `evaluate_kv.yaml` / `evaluate_kv_ministral.yaml`
-are the sweep templates; retired one-off cards (dca, reattention, positional,
-nemotron, qwen35, …) live under `evaluate/archive/`. Run with:
+no-method backend references; `sweep_base.yaml` is the generic base card the
+cluster sweep clones per cell (see `sweep.yaml` + `scripts/submit_sweep.sh`);
+retired one-off cards (dca, reattention, positional, nemotron, qwen35, …) live
+under `evaluate/archive/`. Run with:
 
 ```bash
 python -m eval_harness.cli run                    # uses ./evaluate/evaluate.yaml

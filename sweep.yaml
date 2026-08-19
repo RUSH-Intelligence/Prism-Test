@@ -1,0 +1,81 @@
+# ════════════════════════════════════════════════════════════════════════
+# SWEEP CONFIG — edit this file, then run:   ./scripts/submit_sweep.sh
+#
+# Submits every combination below to SLURM: one array job per (model x
+# benchmark) pair, each array running the method x ratio grid (plus the
+# Ridge/Verified special grids). Preview first with:
+#     ./scripts/submit_sweep.sh --dry-run
+# ════════════════════════════════════════════════════════════════════════
+
+# ── WHAT TO RUN (each a list; ALL combinations are run) ───────────────────
+models:
+  - meta-llama/Llama-3.1-8B-Instruct
+  # - Qwen/Qwen3.5-9B
+
+benchmarks:
+  - longbench
+  # - ruler16k
+
+methods:                          # compressors to test (see the roster in
+  - knorm                         # example_research.yaml / available_kv_compressors)
+  - snapkv
+  - ridge
+
+ratios: [0.6, 0.9, 0.95]          # fraction PRUNED (kept = 1 - ratio)
+
+full_baseline: true               # also run ONE no-compression cell per (model,benchmark)
+
+# ── SPECIAL PER-METHOD SWEEPS ─────────────────────────────────────────────
+# Only fire if the method is in `methods:` above. Commented = use the method's
+# single default. Uncomment a list to fan it out into extra cells (all
+# combinations). `verified` wraps `inner` and reuses the Ridge dials for it.
+ridge:
+  # gammas:         [0, 0.5, 1, 1.5, 2, 2.5, 3]   # envelope_gamma
+  # lambdas:        [1.0e-4]                        # ridge_lambda
+  # rotate_queries: [false]
+  # sink_size:      8
+  # local_size:     64
+
+verified:
+  # det_fractions:  [1.0, 0.9, 0.8, 0.7, 0.5, 0.0]
+  # inner:          ridge
+
+# ── MODEL SIDE-TABLE (only the oddballs; others use the defaults below) ────
+# A model not listed here uses sweep_base.yaml + the shared defaults as-is.
+# Per-model quirks go here as a few lines — no model ever needs its own file.
+# Keys: max_model_len, llm_kwargs (special load flags), template (rarely needed).
+model_overrides: {}
+  # mistralai/Ministral-3-3B-Instruct-2512:
+  #   max_model_len: 131072
+  #   llm_kwargs:
+  #     dequantize_fp8: true      # the ONE thing Ministral needs (FP8 -> BF16)
+
+# ── BENCHMARK SIDE-TABLE (per-benchmark subsets / length) ──────────────────
+# A benchmark NOT listed here runs its own full default subset list. LongBench's
+# default is 34 tasks (incl. Chinese + `_e`); we pin it to the paper's 16 English
+# tasks so numbers match the Ridge Press sheet / prior sweeps. Remove/edit freely.
+benchmark_overrides:
+  longbench:
+    subsets: [narrativeqa, qasper, multifieldqa_en, hotpotqa, 2wikimqa, musique,
+              gov_report, qmsum, multi_news, trec, triviaqa, samsum,
+              passage_count, passage_retrieval_en, lcc, repobench-p]
+  # ruler16k:
+  #   subsets: [niah_single_1, niah_single_3, niah_multikey_3]
+  # ruler64k:
+  #   max_model_len: 66000
+
+# ── SHARED DEFAULTS ───────────────────────────────────────────────────────
+template: evaluate/sweep_base.yaml     # generic base card all cells start from
+max_model_len: 131072
+max_requests: 200
+# subsets: null   # global default subsets; null = each benchmark's own list
+
+# ── SLURM ─────────────────────────────────────────────────────────────────
+slurm:
+  partition: scavenger
+  qos: scavenger
+  account: scavenger
+  gpu: rtxa6000
+  cpus: 8
+  mem: 64G
+  time: "12:00:00"

@@ -47,7 +47,7 @@ evaluate/                # ready-made run configs: evaluate_{vllm,hf,kv,position
 python -m eval_harness.cli run                                    # uses ./evaluate/evaluate.yaml by default
 python -m eval_harness.cli run --config_file ./evaluate/evaluate.yaml
 # Full research surface (all doors, documented) lives in ./evaluate/example_research.yaml;
-# vanilla-backend refs in example_{hf,vllm}.yaml; sweep templates evaluate_kv{,_ministral}.yaml;
+# vanilla-backend refs in example_{hf,vllm}.yaml; sweep base card evaluate/sweep_base.yaml;
 # retired one-off cards under evaluate/archive/.
 # or override on CLI: --benchmark, --subsets, --backend, --model, --max_new_tokens, ...
 
