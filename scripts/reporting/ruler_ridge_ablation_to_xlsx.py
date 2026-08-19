@@ -34,7 +34,7 @@ from pathlib import Path
 import openpyxl
 from openpyxl.styles import Font
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent  # scripts/reporting/ -> repo root
 
 # RULER subset name -> short display header.
 SUBSET_TO_HEADER = {

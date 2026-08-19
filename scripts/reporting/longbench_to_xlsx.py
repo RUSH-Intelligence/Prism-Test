@@ -32,7 +32,7 @@ from pathlib import Path
 import openpyxl
 from openpyxl.styles import Font
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent  # scripts/reporting/ -> repo root
 
 # Subset name -> paper Table 1 column header.
 SUBSET_TO_HEADER = {

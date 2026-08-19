@@ -36,7 +36,7 @@ from pathlib import Path
 import openpyxl
 from openpyxl.styles import Font
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent  # scripts/reporting/ -> repo root
 
 # --- per-benchmark subset order + display headers --------------------------------
 RULER_SUBSETS = {

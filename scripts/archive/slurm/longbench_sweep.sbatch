@@ -28,7 +28,7 @@
 #SBATCH --gres=gpu:rtxa6000:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
-#SBATCH --time=24:00:00
+#SBATCH --time=12:00:00
 #SBATCH --output=logs/longbench_sweep/job_%A/slurm-%a.out
 #SBATCH --error=logs/longbench_sweep/job_%A/slurm-%a.err
 
@@ -91,6 +91,12 @@ MAX_MODEL_LEN="${MAX_MODEL_LEN:-}" # empty = template default (128K); set to mod
 TEMPLATE="${TEMPLATE:-}"           # empty = sweep script default (evaluate/evaluate_kv.yaml);
                                    # set to evaluate/evaluate_kv_ministral.yaml for the
                                    # Ministral-3 FP8 → BF16 dequantize variant.
+RATIOS="${RATIOS:-}"               # empty = sweep script default (0.6,0.9,0.95); set e.g.
+                                   # 0.6,0.8,0.9,0.95 to add the 0.8 column. NOTE: the cell
+                                   # count changes with the ratio list, so keep --array in
+                                   # sync (Full + 8 methods×R + Ridge 7γ×R cells).
+OUT_ROOT="${OUT_ROOT:-}"           # empty = sweep script default (results/longbench_sweep/<model>);
+                                   # set e.g. results/longbench/Qwen--Qwen3.5-9B to redirect.
 
 ARGS=(--model "$MODEL" --cell-index "$SLURM_ARRAY_TASK_ID" --resume)
 if [ -n "$MAX_REQS" ]; then
@@ -102,12 +108,22 @@ fi
 if [ -n "$TEMPLATE" ]; then
     ARGS+=(--template "$TEMPLATE")
 fi
+if [ -n "$RATIOS" ]; then
+    ARGS+=(--ratios "$RATIOS")
+fi
+if [ -n "$OUT_ROOT" ]; then
+    ARGS+=(--out-root "$OUT_ROOT")
+fi
 
 # Resolve the cell_id (e.g. "PyramidKv__r0.9") for this task index from
 # longbench_sweep.py --dry-run so the log file is greppable by method name.
 # Symlink <cell_id>.{out,err} -> slurm-<taskid>.{out,err} in the job folder so
 # both filename lookups work.
-CELL_LABEL=$(python scripts/longbench_sweep.py --model "$MODEL" --dry-run 2>/dev/null \
+LABEL_ARGS=(--model "$MODEL")
+if [ -n "$RATIOS" ]; then
+    LABEL_ARGS+=(--ratios "$RATIOS")
+fi
+CELL_LABEL=$(python scripts/longbench_sweep.py "${LABEL_ARGS[@]}" --dry-run 2>/dev/null \
     | awk -v idx="${SLURM_ARRAY_TASK_ID:-0}" '/^[[:space:]]*\[/ {
             gsub(/\[|\]/, "", $1); if ($1 == idx) { print $2; exit }
         }')
