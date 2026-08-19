@@ -43,8 +43,12 @@ evaluate/                # ready-made run configs: evaluate_{vllm,hf,kv,position
 ## Running
 
 ```bash
-# Eval
-python -m eval_harness.cli run --config_file ./evaluate/evaluate_common.yaml   # or evaluate_{vllm,hf,kv,positional,dca,reattention}.yaml
+# Eval — edit ./evaluate/evaluate.yaml (the daily research/KV card), then:
+python -m eval_harness.cli run                                    # uses ./evaluate/evaluate.yaml by default
+python -m eval_harness.cli run --config_file ./evaluate/evaluate.yaml
+# Full research surface (all doors, documented) lives in ./evaluate/example_research.yaml;
+# vanilla-backend refs in example_{hf,vllm}.yaml; sweep templates evaluate_kv{,_ministral}.yaml;
+# retired one-off cards under evaluate/archive/.
 # or override on CLI: --benchmark, --subsets, --backend, --model, --max_new_tokens, ...
 
 # Tests (from repo root)
@@ -197,7 +201,7 @@ per-head budget `int(T·(1−r))` with a **uniform random sample without replace
 remaining tokens; knobs `top_frac` (default 0.75) + `seed` (default 42, fresh per-call
 generator seeded `seed + layer_idx` — per-layer tails, never touches global RNG);
 `top_frac=1.0` reduces to `knorm`. No attention/RoPE
-requirements, composes with hybrids (config `evaluate/evaluate_kv_top_k_sampling.yaml`).
+requirements, composes with hybrids (config `evaluate/archive/evaluate_kv_top_k_sampling.yaml`).
 
 Constraints to keep in mind when wiring runs or reviewing changes:
 
@@ -238,7 +242,7 @@ Constraints to keep in mind when wiring runs or reviewing changes:
   queries, which is exactly what the model computes; `compactor` and `expected_attention`
   likewise reduce their RoPE step to identity when the module has no `rotary_emb`). Validated:
   `knorm`, `ridge`, `snapkv`, `pyramidkv`, `compactor`, `expected_attention`, `keydiff`
-  (config `evaluate/evaluate_nemotron_kv.yaml`; tests
+  (config `evaluate/archive/evaluate_nemotron_kv.yaml`; tests
   `tests/test_nemotron_h_kv_compression.py`). Keep `attention_method: none`. **Real runs need a
   CUDA GPU and a transformers build with the native `nemotron_h` architecture** (which threads
   `past_key_values` through `block.mixer` and uses a plain `DynamicCache`); `pyramidkv`'s ragged

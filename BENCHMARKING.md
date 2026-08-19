@@ -61,21 +61,24 @@ Rules of thumb:
 
 ## Configure a run
 
-Ready-made configs live in [evaluate/](evaluate/): `evaluate_vllm.yaml` /
-`evaluate_hf.yaml` (clean no-method baselines), `evaluate_kv.yaml`
-(KV-compression sketch only), `evaluate_dca.yaml` / `evaluate_reattention.yaml`
-(verified paper baselines), and `evaluate_common.yaml` (the full research
-surface, including the attention_method × kv_compressor compatibility matrix). Run with:
+Configs live in [evaluate/](evaluate/). The one you edit day-to-day is
+`evaluate.yaml` (research backend + KV compression). `example_research.yaml` is
+the full research surface — every door, with the attention_method × kv_compressor
+compatibility matrix; `example_hf.yaml` / `example_vllm.yaml` are clean
+no-method backend references; `evaluate_kv.yaml` / `evaluate_kv_ministral.yaml`
+are the sweep templates; retired one-off cards (dca, reattention, positional,
+nemotron, qwen35, …) live under `evaluate/archive/`. Run with:
 
 ```bash
-python -m eval_harness.cli run --config_file ./evaluate/evaluate_common.yaml
+python -m eval_harness.cli run                    # uses ./evaluate/evaluate.yaml
+python -m eval_harness.cli run --config_file ./evaluate/evaluate.yaml
 ```
 
 Or override any field on the CLI:
 
 ```bash
 python -m eval_harness.cli run \
-  --config_file ./evaluate/evaluate_common.yaml \
+  --config_file ./evaluate/evaluate.yaml \
   --benchmark ruler64k \
   --subsets qa_1,qa_2 \
   --backend research \
@@ -434,7 +437,7 @@ subsets: qasper
 backend: rag
 ```
 
-Then run normally with `python -m eval_harness.cli run --config_file <your_config>.yaml` — none of the shipped [evaluate/](evaluate/) configs uses `backend: rag`; copy `evaluate/evaluate_vllm.yaml` and set `backend: rag` plus the YAML keys above.
+Then run normally with `python -m eval_harness.cli run --config_file <your_config>.yaml` — none of the shipped [evaluate/](evaluate/) configs uses `backend: rag`; copy `evaluate/example_vllm.yaml` and set `backend: rag` plus the YAML keys above.
 
 #### 4. Tear down when done
 

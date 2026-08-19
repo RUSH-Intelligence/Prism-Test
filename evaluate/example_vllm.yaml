@@ -1,4 +1,8 @@
 # ============================================================================
+# EXAMPLE / REFERENCE ONLY — not a production run card. Kept to show how the
+# plain vLLM backend is configured. Your real runs use evaluate.yaml (research
+# backend). Copy from here only if you need a vanilla vllm run.
+# ============================================================================
 # Clean vLLM backend — vanilla model, no compression, no prefill method
 # ============================================================================
 # Runs the model through VLLMAdapter (eval_harness/vllm_adapter.py): the

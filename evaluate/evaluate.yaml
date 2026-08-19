@@ -1,0 +1,89 @@
+# ============================================================================
+# DAILY RUN CARD — edit this file, then run:
+#
+#     python -m eval_harness.cli run
+#
+# This is the one file you edit for a normal single run. It uses the research
+# backend with a KV compressor (Door 3) only — the everyday KV-compression
+# experiment (knorm / ridge / verified / compactor / snapkv / ...).
+#
+# Need a different door (positional extension, or a custom attention method
+# like DCA / ReAttention)? Those are research-backend features too — see
+# evaluate/example_research.yaml for the full menu with every door explained,
+# and paste the block you need into the research_config below.
+#
+# Backends other than research: see evaluate/example_hf.yaml (simple/debug) and
+# evaluate/example_vllm.yaml (fast, no research methods). Sweep runs use the
+# separate templates evaluate_kv.yaml / evaluate_kv_ministral.yaml (don't edit
+# those for one-off runs).
+# ============================================================================
+
+# --- What to run ------------------------------------------------------------
+# benchmark: aime, aime2024, aime2025, gsm_infinite_{hard,medium,symbolic}_128k,
+#   infinite_bench, mock_benchmark, ruler, ruler16k, ruler32k, ruler64k,
+#   ruler128k, longbench, longbenchv2, loft, loft_rag, loogle, prism1m,
+#   zero_scrolls
+benchmark: ruler16k
+# Comma-separated subset list; null = all of the benchmark's default subsets.
+subsets: niah_single_1,niah_single_3,niah_multikey_3
+
+# --- Model ------------------------------------------------------------------
+backend: research               # leave as research — KV compression needs it
+# Gated repo: accept the license on the HF Hub + authenticate (HF_TOKEN /
+# `huggingface-cli login`) first. 128k-native so ruler16k stays in-window and
+# the run isolates CACHE COMPRESSION, not context extension.
+model: meta-llama/Llama-3.1-8B-Instruct
+dtype: bfloat16
+max_model_len: 131072           # truncation cap; set to the model's native
+                                # context (128k here). Lower for smaller models.
+trust_remote_code: true
+
+# --- Generation -------------------------------------------------------------
+max_new_tokens: null            # null = use the benchmark's per-task length
+                                # (a global cap silently truncates summaries)
+temperature: 0.0                # greedy
+top_p: 1.0
+system_prompt: null
+seed: 42
+
+# --- Evaluation limits ------------------------------------------------------
+max_requests: 200               # rows PER SUBSET
+fraction: 1.0
+query_aware: false
+output_dir: ./results/kv        # where predictions.csv / metrics.json land
+
+# --- vLLM-only knobs (ignored by the research backend; leave as-is) ---------
+tensor_parallel_size: 1
+gpu_memory_utilization: 0.9
+enable_prefix_caching: true
+
+llm_kwargs:
+  attn_implementation: sdpa     # research backend's validated path.
+                                # NOTE: observed_attention / h2o need `eager`.
+  research_config:
+    # === Door 3: KV compression — the only door this card uses ==============
+    # kv_compressor: which method throws away part of the KV cache.
+    #   none      — off (full-cache baseline; set this for a "Full" run)
+    #   knorm     — key-norm scoring (simple, fast default)
+    #   ridge     — ridge-leverage scoring (your fixed-envelope method)
+    #   verified  — random-sample + inner method (needs the kwargs below)
+    #   compactor — SVD leverage + non-causal attention
+    #   snapkv / pyramidkv / expected_attention / keydiff / streaming_llm / cur ...
+    # Full roster + every method's kwargs are documented in example_research.yaml
+    # (or: `from eval_harness.kv_compression import available_kv_compressors`).
+    kv_compressor: knorm
+    compression_ratio: 0.5        # fraction PRUNED, in [0,1). kept = 1 - ratio.
+
+    # Uncomment for methods that take extra knobs (e.g. verified):
+    # kv_compressor_kwargs:
+    #   inner: ridge
+    #   det_fraction: 0.75
+    #   sample_seed: 42
+    # compression_schedule: post_prefill   # streaming | post_prefill | decode
+
+    max_context_length: null      # null -> fall back to max_model_len above
+    log_cache_seq_len: true       # log per-layer cache lengths so pruning shows
+
+    # Doors 1 (positional) and 2 (attention_method) are OFF on this card.
+    attention_method: none
+    attention_method_kwargs: {}

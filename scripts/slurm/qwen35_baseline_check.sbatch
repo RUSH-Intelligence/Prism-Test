@@ -42,7 +42,7 @@ if [ ! -f .venv/bin/activate ]; then
 fi
 source .venv/bin/activate
 
-CONFIG=evaluate/evaluate_qwen35_baseline.yaml
+CONFIG=evaluate/archive/evaluate_qwen35_baseline.yaml
 
 case "${SLURM_ARRAY_TASK_ID:-0}" in
     0)
