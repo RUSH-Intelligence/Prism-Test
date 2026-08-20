@@ -99,12 +99,27 @@ class VerifiedSketch(KVCompressor):
     det_fraction: float = 0.75
     min_tokens_to_compress: int = 0
     sample_seed: Optional[int] = None
+    # v2 (Step 1): MEASURE-ONLY output-error of the chosen keep-set. Purely
+    # observational — logs the per-layer "leftover" and never changes what is
+    # kept. Enable to collect the signal the adaptive split will later consume.
+    measure_coverage: bool = False
+    coverage_n_probe: int = 8
 
     def __post_init__(self):
         super().__post_init__()
         assert 0.0 <= self.compression_ratio < 1.0, "compression_ratio must be in [0, 1)"
         assert 0.0 <= self.det_fraction <= 1.0, "det_fraction must be in [0, 1]"
         assert self.min_tokens_to_compress >= 0, "min_tokens_to_compress must be >= 0"
+
+        # Accumulates per-layer coverage readings across the whole run (one per
+        # compress() call when measure_coverage is on); drained to coverage.json
+        # by the runner. Kept tiny (a few floats per compressed layer per prompt).
+        self._coverage_records: list = []
+        # Set by the runner (begin_prompt_group) before each context group so
+        # every reading is tagged with the df rows it belongs to — this is what
+        # lets us line coverage up against per-question correctness. None when
+        # the runner hasn't stamped one (e.g. direct unit-test calls).
+        self._current_group: Optional[tuple] = None
 
         # Resolve the wrapped compressor once (auto-discovery happens on lookup).
         self._inner: KVCompressor = get_kv_compressor(self.inner, **dict(self.inner_kwargs))
@@ -120,6 +135,15 @@ class VerifiedSketch(KVCompressor):
         # Forward so inners that download / build model-specific artifacts
         # (qfilter, kvzap, expected_attention_stats, ...) initialise.
         self._inner.post_init_from_model(model)
+
+    def begin_prompt_group(self, row_indices) -> None:
+        """Stamp the df rows whose context is about to be prefilled.
+
+        Called by the runner before each context group. Compression fires once
+        per context (shared by all questions in the group), so every coverage
+        reading until the next call belongs to exactly these rows.
+        """
+        self._current_group = tuple(int(i) for i in row_indices)
 
     @staticmethod
     def _recover_indices(full_keys: torch.Tensor, kept_keys: torch.Tensor) -> torch.Tensor:
@@ -145,6 +169,107 @@ class VerifiedSketch(KVCompressor):
         pos = torch.searchsorted(f_sorted, f_kept)         # left match (exact)
         pos = pos.clamp_(max=S - 1)
         return order.gather(-1, pos)                       # -> original positions
+
+    def _log_coverage(self, module, hidden_states, keys, values, keep_idx, kwargs):
+        """MEASURE-ONLY: log the output-error leftover of ``keep_idx``.
+
+        Wrapped so a measurement failure can never break a run — this path is
+        observational and must stay strictly side-effect-free w.r.t. the cache.
+        """
+        if not self.measure_coverage:
+            return
+        try:
+            from eval_harness.kv_compression.compressors.verified_coverage import (
+                measure_output_error,
+            )
+
+            report = measure_output_error(
+                module, hidden_states, keys, values, keep_idx, kwargs,
+                n_probe=self.coverage_n_probe,
+            )
+            if report is None:
+                return
+            layer_idx = getattr(module, "layer_idx", "?")
+            self._coverage_records.append({
+                "layer": layer_idx,
+                "group": self._current_group,
+                "worst": report.worst,
+                "mean": report.mean,
+                "n_keep": report.n_keep,
+                "n_total": report.n_total,
+            })
+            logger.info(
+                "[verified/coverage] layer=%s keep=%d/%d n_probe=%d "
+                "worst_rel_err=%.4f mean_rel_err=%.4f",
+                layer_idx, report.n_keep, report.n_total, report.n_probe,
+                report.worst, report.mean,
+            )
+        except Exception as exc:  # never let measurement break a run
+            logger.warning("[verified/coverage] measurement skipped: %s", exc)
+
+    def drain_coverage(self) -> Optional[dict]:
+        """Aggregate accumulated coverage readings into a compact summary.
+
+        Returns ``None`` when nothing was measured (measure_coverage off, or no
+        compression fired). The runner writes this to ``coverage.json`` next to
+        ``metrics.json``. Aggregates over EVERY compress() call in the run —
+        i.e. all prompts and (if a run bundles several) all subsets mixed. For
+        per-subset coverage, run subsets as separate cells so each gets its own
+        coverage.json.
+        """
+        records = self._coverage_records
+        if not records:
+            return None
+
+        def _mean(xs):
+            xs = list(xs)
+            return sum(xs) / len(xs) if xs else 0.0
+
+        per_layer: dict = {}
+        for r in records:
+            per_layer.setdefault(r["layer"], []).append(r)
+        per_layer_summary = {
+            str(layer): {
+                "worst_rel_err_mean": _mean(x["worst"] for x in rs),
+                "mean_rel_err_mean": _mean(x["mean"] for x in rs),
+                "n": len(rs),
+            }
+            for layer, rs in sorted(per_layer.items(), key=lambda kv: str(kv[0]))
+        }
+        # Per-prompt: group readings by the df rows they were stamped with, then
+        # average across layers → one coverage number per question. Every row in
+        # a shared-context group gets that group's number (they share the cache).
+        # This is the column to line up against per-question correctness.
+        per_group: dict = {}
+        for r in records:
+            if r.get("group"):
+                per_group.setdefault(r["group"], []).append(r)
+        per_prompt: dict = {}
+        for group_rows, rs in per_group.items():
+            worst = _mean(x["worst"] for x in rs)
+            mean = _mean(x["mean"] for x in rs)
+            for row_idx in group_rows:
+                per_prompt[str(row_idx)] = {
+                    "worst_rel_err": worst,
+                    "mean_rel_err": mean,
+                    "n_layers": len(rs),
+                }
+
+        summary = {
+            "method": "verified",
+            "inner": self.inner,
+            "det_fraction": self.det_fraction,
+            "n_records": len(records),
+            "n_layers": len(per_layer),
+            # Run-level headline: pair THIS with the benchmark score.
+            "worst_rel_err_mean": _mean(r["worst"] for r in records),
+            "mean_rel_err_mean": _mean(r["mean"] for r in records),
+            "per_layer": per_layer_summary,
+        }
+        if per_prompt:
+            # Keyed by df row index → joins directly onto predictions.csv.
+            summary["per_prompt"] = per_prompt
+        return summary
 
     def compress(
         self,
@@ -183,13 +308,15 @@ class VerifiedSketch(KVCompressor):
 
         n_det = det_keys.shape[2]
         n_rand = max(0, min(M - n_det, T - n_det))
-        if n_rand == 0:
-            # Inner already fills (or overfills) the budget — nothing to sample.
-            return det_keys.contiguous(), det_values.contiguous()
 
         # 2. Random tail: sample n_rand tokens uniformly from the evicted pool
         #    (positions the inner did NOT keep), per (batch, kv-head).
         det_idx = self._recover_indices(keys, det_keys)  # [B, H, n_det]
+
+        if n_rand == 0:
+            # Inner already fills (or overfills) the budget — nothing to sample.
+            self._log_coverage(module, hidden_states, keys, values, det_idx, kwargs)
+            return det_keys.contiguous(), det_values.contiguous()
         avail = torch.ones(B, H, T, dtype=torch.bool, device=keys.device)
         avail.scatter_(-1, det_idx, False)
 
@@ -203,6 +330,7 @@ class VerifiedSketch(KVCompressor):
 
         # 3. Union, restore temporal order, gather from the ORIGINAL cache.
         keep_idx = torch.cat([det_idx, rand_idx], dim=-1).sort(dim=-1).values
+        self._log_coverage(module, hidden_states, keys, values, keep_idx, kwargs)
         gather_idx = keep_idx.unsqueeze(-1).expand(-1, -1, -1, D)
         out_keys = keys.gather(2, gather_idx).contiguous()
         out_values = values.gather(2, gather_idx).contiguous()

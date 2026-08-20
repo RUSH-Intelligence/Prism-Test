@@ -29,9 +29,9 @@ benchmarks:
   # - gsm_infinite_hard_128k    # _medium_128k / _symbolic_128k also registered
 
 methods:                          # compressors to test (registry names; see the roster
-  - knorm                         # in example_research.yaml / available_kv_compressors)
-  - snapkv
-  - ridge                         # fans out via the `ridge:` special grid below
+  # - knorm                       # in example_research.yaml / available_kv_compressors)
+  # - snapkv
+  # - ridge                       # fans out via the `ridge:` special grid below
   # - compactor                   # prefill-only scorer; keep prefill_chunk_size null
   # - cur
   # - pyramidkv                   # ragged cache -> needs flash_attention_2
@@ -39,7 +39,7 @@ methods:                          # compressors to test (registry names; see the
   # - keydiff
   # - streaming_llm
   # - top_k_sampling
-  # - verified                    # wraps `inner`; fans out via the `verified:` grid below
+  - verified                      # det_fraction 1.0 = plain-ridge picks + coverage logging
 
 ratios:                           # fraction PRUNED (kept = 1 - ratio). Comment/uncomment.
   - 0.6
@@ -63,8 +63,10 @@ ridge:
   # local_size:     64
 
 verified:
-  # det_fractions:  [1.0, 0.9, 0.8, 0.7, 0.5, 0.0]
-  # inner:          ridge
+  det_fractions:  [1.0]         # 1.0 = plain-ridge selection (no random tail) + coverage
+  inner:          ridge
+  measure_coverage: true        # LOG-ONLY output-error per layer (changes nothing kept).
+  # det_fractions:  [1.0, 0.9, 0.8, 0.7, 0.5, 0.0]   # widen later to test the split itself
 
 # ── MODEL SIDE-TABLE (only the oddballs; others use the defaults below) ────
 # A model not listed here uses sweep_base.yaml + the shared defaults as-is.

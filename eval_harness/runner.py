@@ -230,6 +230,15 @@ class EvalRunner:
             )
             n_groups = len(self.df)
         for context, group in tqdm(grouped, total=n_groups, desc="Generating"):
+            # Stamp the compressor with this context group's df rows so any
+            # coverage readings can be tied back to the exact questions (no-op
+            # unless the compressor tracks it — e.g. VerifiedSketch).
+            begin_group = getattr(
+                getattr(self.adapter, "_kv_compressor", None), "begin_prompt_group", None
+            )
+            if callable(begin_group):
+                begin_group(list(group.index))
+
             if self.config.backend == "rag":
                 questions = [str(row["question"]) for _, row in group.iterrows()]
                 assert self.adapter is not None
@@ -354,6 +363,24 @@ class EvalRunner:
 
         with metrics_path.open("w", encoding="utf-8") as handle:
             json.dump(metrics, handle, indent=2)
+
+        # Generic compressor telemetry drain: any compressor exposing
+        # ``drain_coverage()`` (currently VerifiedSketch, measure_coverage on)
+        # gets its readings persisted next to metrics.json. Guarded so it never
+        # affects a normal run.
+        compressor = getattr(self.adapter, "_kv_compressor", None)
+        drain = getattr(compressor, "drain_coverage", None)
+        if callable(drain):
+            try:
+                coverage = drain()
+            except Exception as exc:  # telemetry must never fail a run
+                logger.warning("Coverage drain failed: %s", exc)
+                coverage = None
+            if coverage:
+                coverage_path = run_dir / "coverage.json"
+                with coverage_path.open("w", encoding="utf-8") as handle:
+                    json.dump(coverage, handle, indent=2)
+                logger.info("Saved coverage telemetry to %s", coverage_path)
 
         config_dump = asdict(self.config)
         with config_path.open("w", encoding="utf-8") as handle:

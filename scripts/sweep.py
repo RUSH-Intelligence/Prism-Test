@@ -189,6 +189,9 @@ def build_cells(cfg: dict, model: str, benchmark: str) -> list[tuple]:
     # 4. Verified: det_fraction x (Ridge inner grid) x ratio.
     if "verified" in methods:
         inner = verified.get("inner", "ridge")
+        # MEASURE-ONLY output-error logging (v2 Step 1): verified-cells only, so
+        # methods without a `measure_coverage` field never see the kwarg.
+        measure_coverage = bool(verified.get("measure_coverage", False))
         det_fractions = _as_list(verified.get("det_fractions")) or [None]
         for det in det_fractions:
             # det == 0 mutes the inner's scoring -> a single gamma-free anchor.
@@ -199,6 +202,8 @@ def build_cells(cfg: dict, model: str, benchmark: str) -> list[tuple]:
                         inner_kwargs, tag = _ridge_extras(gamma, lam, rq)
                         extras = {"inner": inner, "sample_seed": SWEEP_SEED,
                                   "inner_kwargs": inner_kwargs}
+                        if measure_coverage:
+                            extras["measure_coverage"] = True
                         det_tag = "" if det is None else f"_d{float(det):g}".replace(".", "p")
                         if det is not None:
                             extras["det_fraction"] = float(det)
