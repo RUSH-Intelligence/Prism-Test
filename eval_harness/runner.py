@@ -132,6 +132,10 @@ class EvalRunner:
         if self.config.fraction < 1.0:
             df = df.sample(frac=self.config.fraction, random_state=self.config.seed)
 
+        # Rows available after subset/fraction filtering, before the per-subset
+        # request cap — recorded in the completion stamp as ``loaded_before_cap``.
+        self._n_loaded_before_cap = int(len(df))
+
         df = self._apply_max_requests(
             df,
             self.config.max_requests,
@@ -347,7 +351,36 @@ class EvalRunner:
             self.config.benchmark,
             self.config.model,
         )
-        run_dir = self.config.get_results_dir()
+        # Fingerprint the run up front (model-free), so we can name the folder by
+        # it and skip if an identical, finished run already lives there.
+        spec = None
+        barcode = None
+        try:
+            from .run_spec import build_run_spec
+
+            spec = build_run_spec(self.config)
+            barcode = spec["fingerprint"]
+        except Exception as exc:
+            logger.warning("run_spec fingerprint failed (%s); no barcode/resume", exc)
+
+        run_dir = self.config.get_results_dir(barcode)
+
+        # Universal resume: identical settings already completed here -> skip
+        # (no model load, no generation).
+        if self.config.resume and barcode is not None:
+            from .run_spec import DONE_FILENAME
+
+            done_path = run_dir / DONE_FILENAME
+            if done_path.exists():
+                try:
+                    stored = json.loads(done_path.read_text(encoding="utf-8")).get("fingerprint")
+                except (OSError, ValueError):
+                    stored = None
+                if stored == barcode:
+                    logger.info("Already complete (fingerprint %s) — skipping: %s",
+                                barcode, run_dir)
+                    return run_dir
+
         predictions_path = run_dir / "predictions.csv"
         metrics_path = run_dir / "metrics.json"
         config_path = run_dir / "config.yaml"
@@ -387,6 +420,41 @@ class EvalRunner:
             import yaml
 
             yaml.safe_dump(config_dump, handle, sort_keys=False)
+
+        # Canonical, fingerprinted settings receipt + completion stamp
+        # (foundation for robust sweep resume). Best-effort: these must never
+        # fail a real run. The DONE stamp is written LAST, so its presence proves
+        # predictions + metrics + receipt all completed.
+        try:
+            from .run_spec import build_run_spec, build_done_marker, write_done_marker
+
+            if spec is None:                     # fingerprinting failed up top; retry
+                spec = build_run_spec(self.config)
+            with (run_dir / "run_spec.json").open("w", encoding="utf-8") as handle:
+                json.dump(spec, handle, indent=2)
+            logger.info("Saved run-spec to %s", run_dir / "run_spec.json")
+
+            per_subset = None
+            if self.df is not None and "task" in self.df.columns:
+                per_subset = self.df["task"].value_counts().to_dict()
+            requested_subsets = None
+            if self.config.subsets:
+                requested_subsets = sorted(
+                    s.strip() for s in self.config.subsets.split(",") if s.strip())
+            marker = build_done_marker(
+                fingerprint=spec["fingerprint"],
+                actual_samples=int(len(self.df)) if self.df is not None else 0,
+                overall_score=metrics.get("overall_score") if isinstance(metrics, dict) else None,
+                max_requests=self.config.max_requests,
+                max_requests_per_subset=self.config.max_requests_per_subset,
+                requested_subsets=requested_subsets,
+                per_subset_actual=per_subset,
+                loaded_before_cap=getattr(self, "_n_loaded_before_cap", None),
+            )
+            done_path = write_done_marker(run_dir, marker)   # LAST write
+            logger.info("Saved completion stamp to %s", done_path)
+        except Exception as exc:
+            logger.warning("run_spec/DONE generation failed: %s", exc)
 
         logger.info("Saved predictions to %s", predictions_path)
         logger.info("Saved metrics to %s", metrics_path)

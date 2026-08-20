@@ -50,6 +50,11 @@ logger = logging.getLogger(__name__)
 class PositionalMethod:
     """Base class for Door-1 positional methods (identity by default)."""
 
+    # Behavior version — bump in a subclass when this method's output changes
+    # without a config knob change; folds into the run-spec barcode (forces a
+    # rerun). Bare int, not a dataclass field. See CLAUDE.md.
+    VERSION = 1
+
     mscale: float = 1.0
 
     # Whether :meth:`compute_inv_freq` actually varies with ``seq_len``.  The

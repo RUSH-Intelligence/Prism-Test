@@ -15,6 +15,11 @@ class BenchmarkInfo:
 
 
 class Benchmark(ABC):
+    # Behavior version — bump in a subclass when this benchmark's data, prompt
+    # construction, or scoring changes; folds into the run-spec barcode (forces
+    # a rerun of results built with the old behavior). See CLAUDE.md.
+    VERSION = 1
+
     @property
     @abstractmethod
     def info(self) -> BenchmarkInfo:

@@ -199,7 +199,8 @@ class ResearchAdapter(HFAdapter):
             )
         return get_prefill_method(name, **kw)
 
-    def _build_kv_compressor(self, cfg: ResearchConfig) -> Optional[KVCompressor]:
+    @staticmethod
+    def _build_kv_compressor(cfg: ResearchConfig) -> Optional[KVCompressor]:
         name = (cfg.kv_compressor or "none").strip().lower()
         if name in {"none", "no_sketch", "no_press"}:
             return None
@@ -336,3 +337,20 @@ class ResearchAdapter(HFAdapter):
         self._attention_method = self._build_attention_method(cfg)
         self._kv_compressor = self._build_kv_compressor(cfg)
         self._max_context_length = cfg.max_context_length or self._max_context_length
+
+
+# ---------------------------------------------------------------------------
+# Model-free door construction (shared with run_spec's barcode)
+# ---------------------------------------------------------------------------
+def build_doors(cfg: "ResearchConfig"):
+    """Construct the three doors (positional, attention, kv_compressor) from a
+    ``ResearchConfig`` WITHOUT a model. This is exactly what ``ResearchAdapter``
+    builds during setup (the model is attached separately, afterwards, and only
+    hangs tensors on these objects). ``run_spec`` reuses this so the barcode it
+    computes from a config is identical to the one the live run would produce —
+    no drift, no model load."""
+    return (
+        ResearchAdapter._build_positional_method(cfg),
+        ResearchAdapter._build_attention_method(cfg),
+        ResearchAdapter._build_kv_compressor(cfg),
+    )

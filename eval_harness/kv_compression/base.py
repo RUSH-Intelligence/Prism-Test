@@ -241,6 +241,13 @@ class KVCompressor:
     in :attr:`schedule`.
     """
 
+    # Behavior version. Bump in a subclass (e.g. ``VERSION = 2``) when you change
+    # what this compressor OUTPUTS without changing a config knob — a bug fix, a
+    # scoring/selection tweak. It folds into the run-spec barcode, so a bump
+    # forces a rerun instead of reusing an old result. (Bare int, not annotated,
+    # so it is NOT a dataclass field / knob.) See CLAUDE.md.
+    VERSION = 1
+
     # kw_only so subclasses (the ported compressors) can still declare REQUIRED
     # positional fields like ``press: ScorerKVCompressor`` without hitting the
     # "non-default argument follows default argument" dataclass error — the old

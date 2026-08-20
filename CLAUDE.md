@@ -258,6 +258,25 @@ Constraints to keep in mind when wiring runs or reviewing changes:
 
 ## Conventions
 
+- **Run-spec barcode + version bumps (sweep resume).** Every run writes a
+  `run_spec.json` (canonical, fingerprinted settings receipt) and, dead-last, a
+  `DONE.json` completion stamp (`eval_harness/run_spec.py`). The sweep and the
+  runner name each result folder `…__<fingerprint>` and skip a rerun only when a
+  `DONE.json` with a **matching** fingerprint already exists — so identical work
+  is skipped and *any* changed setting lands in a NEW folder (old preserved,
+  never overwritten). The fingerprint is a pure function of the config (built
+  model-free via `research_adapter.build_doors`, so the sweep's barcode ==
+  the run's), and it covers **every resolved knob including untouched defaults**.
+  Therefore: **if you change a config value/knob, the barcode changes by itself
+  — do nothing.** The barcode canNOT see a pure *code-behavior* change (a bug
+  fix / formula tweak with the same settings), so for that: **bump the
+  component's `VERSION`** — a bare class int on `KVCompressor` / `AttentionMethod`
+  / `PrefillMethod` / `PositionalMethod` / `Benchmark` (default 1), or
+  `run_spec.FRAMEWORK_VERSION` for shared-pipeline changes. `VERSION` folds into
+  the barcode (scoped to the active component) → forces a rerun. It is a bare
+  int (no annotation) so it is never a dataclass field/knob. The git commit +
+  dirty flag are recorded in `run_spec.json['code']` as a provenance audit trail
+  but are NOT in the barcode.
 - Tests bypass model loading via `object.__new__(Adapter)` plus fake modules — never load real weights in unit tests.
 - Position IDs everywhere are *absolute* (token's position in the full sequence), not chunk-relative.
 - New benchmarks: drop into `eval_harness/benchmarks/`, subclass `base.Benchmark`, register in `registry.py`.

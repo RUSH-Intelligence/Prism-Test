@@ -51,6 +51,16 @@ class EvalConfig:
     query_aware: bool = False
     output_dir: str = "./results"
 
+    # Resume: skip this run if a completed, identical run (matching fingerprint)
+    # already exists in its result folder. On by default so re-running the same
+    # thing is a no-op; pass CLI --force (sets this False) to redo it.
+    resume: bool = True
+    # When True, ``output_dir`` IS the exact run folder — write straight into it
+    # (no descriptive name, no numbered subdirs). The sweep sets this because it
+    # already chose a barcode-named leaf. Off = the runner appends a descriptive,
+    # barcode-suffixed subfolder (still flat).
+    output_dir_exact: bool = False
+
     # Opt-in run-to-run determinism. When False (default), only the basic seeds
     # (random/numpy/torch.manual_seed) are pinned — matches main behavior. When
     # True, also pins torch.use_deterministic_algorithms, cudnn.deterministic,
@@ -100,10 +110,15 @@ class EvalConfig:
                 cleaned[name] = ivalue
             self.max_requests_per_subset = cleaned
 
-    def get_results_dir(self) -> Path:
+    def get_results_dir(self, barcode: Optional[str] = None) -> Path:
         base = Path(self.output_dir)
-        base.mkdir(parents=True, exist_ok=True)
 
+        # Caller (the sweep) already chose the exact, barcode-named leaf folder.
+        if self.output_dir_exact:
+            base.mkdir(parents=True, exist_ok=True)
+            return base
+
+        base.mkdir(parents=True, exist_ok=True)
         components = [
             self.benchmark,
             self.model.replace("/", "--"),
@@ -119,13 +134,13 @@ class EvalConfig:
         if self.query_aware:
             components.append("query_aware")
 
-        run_dir = base / "__".join([c for c in components if c])
-        if run_dir.exists():
-            idx = 1
-            while (run_dir / str(idx)).exists():
-                idx += 1
-            run_dir = run_dir / str(idx)
-
+        name = "__".join([c for c in components if c])
+        # Barcode suffix makes the folder unique-by-settings: same settings reuse
+        # (overwrite/resume) the same folder, different settings get their own.
+        # No numbered subdirs — the folder IS the run (flat).
+        if barcode:
+            name = f"{name}__{barcode}"
+        run_dir = base / name
         run_dir.mkdir(parents=True, exist_ok=True)
         return run_dir
 

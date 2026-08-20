@@ -241,6 +241,11 @@ def build_run_config(base: dict, *, model: str, benchmark: str, kv_compressor: s
     if max_requests is not None:
         c["max_requests"] = max_requests
     c["output_dir"] = _extended(out_root / cell_id)
+    # The sweep owns the exact barcode-named leaf folder (set in run_one_cell)
+    # and makes its own skip decision, so the runner writes straight in and does
+    # not second-guess resume.
+    c["output_dir_exact"] = True
+    c["resume"] = False
 
     llm = dict(c.get("llm_kwargs") or {})
     rc = dict(llm.get("research_config") or {})
@@ -275,6 +280,33 @@ def build_run_config(base: dict, *, model: str, benchmark: str, kv_compressor: s
 def find_metrics(out_dir: Path) -> Path | None:
     hits = sorted(out_dir.rglob("metrics.json"), key=lambda p: p.stat().st_mtime)
     return hits[-1] if hits else None
+
+
+def find_done(out_dir: Path) -> Path | None:
+    """Newest completion stamp under ``out_dir`` (written dead-last by a run;
+    its presence proves the run finished)."""
+    hits = sorted(out_dir.rglob("DONE.json"), key=lambda p: p.stat().st_mtime)
+    return hits[-1] if hits else None
+
+
+def barcode_for_run_cfg(run_cfg: dict) -> str:
+    """Compute the run's fingerprint from EXACTLY the config that will run —
+    model-free, identical to what the run itself writes (see run_spec)."""
+    from dataclasses import fields
+    from eval_harness.config import EvalConfig
+    from eval_harness.run_spec import build_run_spec
+    valid = {f.name for f in fields(EvalConfig)}
+    ev = EvalConfig(**{k: v for k, v in run_cfg.items() if k in valid})
+    return build_run_spec(ev)["fingerprint"]
+
+
+def done_fingerprint(done_path: Path | None) -> str | None:
+    if not done_path:
+        return None
+    try:
+        return json.loads(Path(done_path).read_text(encoding="utf-8")).get("fingerprint")
+    except (OSError, ValueError):
+        return None
 
 
 def _total_samples(metrics_path: Path | None) -> int | None:
@@ -314,21 +346,36 @@ def run_one_cell(cfg: dict, cfg_path: Path, model: str, benchmark: str,
     out_root.mkdir(parents=True, exist_ok=True)
     (out_root / "manifest.cells").mkdir(parents=True, exist_ok=True)
     frag = out_root / "manifest.cells" / f"cell_{cell_index:03d}.json"
-    cell_dir = out_root / cell_id
 
-    existing = find_metrics(cell_dir) if cell_dir.exists() else None
+    # Build the exact config first, then fingerprint it: the barcode goes in the
+    # FOLDER NAME, so any change to a setting (external OR internal) lands in a
+    # NEW folder and never overwrites the old one. Resume = "is there a finished
+    # stamp for THIS barcode's folder?".
+    run_cfg = build_run_config(
+        base, model=model, benchmark=benchmark, kv_compressor=key,
+        ratio=ratio or 0.0, subsets=bset["subsets"], out_root=out_root,
+        cell_id=cell_id, max_requests=cfg.get("max_requests"),
+        max_model_len=max_model_len, extra_kv_kwargs=extras or None,
+        extra_llm_kwargs=mset["llm_kwargs"] or None)
+    barcode = barcode_for_run_cfg(run_cfg)
+    cell_id_bc = f"{cell_id}__{barcode}"
+    cell_dir = out_root / cell_id_bc
+    run_cfg["output_dir"] = _extended(cell_dir)
+
+    done = find_done(cell_dir) if cell_dir.exists() else None
+    # Skip only if the stamp is present AND its full fingerprint matches (the
+    # folder name is the barcode, so this is belt-and-suspenders vs collisions).
+    matched = resume and done is not None and done_fingerprint(done) == barcode
+
     elapsed = None
-    if resume and existing is not None:
-        print(f"[cell {cell_index}] {cell_id}: resume — found {existing}")
-        metrics_path, rc = existing, 0
+    if matched:
+        decision = "skip-match"
+        metrics_path, rc = find_metrics(cell_dir), 0
+        print(f"[cell {cell_index}] {cell_id_bc}: resume — finished stamp matches, skipping")
     else:
-        print(f"[cell {cell_index}] {cell_id}: running  ({model} / {benchmark})", flush=True)
-        run_cfg = build_run_config(
-            base, model=model, benchmark=benchmark, kv_compressor=key,
-            ratio=ratio or 0.0, subsets=bset["subsets"], out_root=out_root,
-            cell_id=cell_id, max_requests=cfg.get("max_requests"),
-            max_model_len=max_model_len, extra_kv_kwargs=extras or None,
-            extra_llm_kwargs=mset["llm_kwargs"] or None)
+        decision = "rerun" if done is not None else "run"
+        why = "stamp present but no match" if done is not None else "no finished stamp"
+        print(f"[cell {cell_index}] {cell_id_bc}: running ({why})  ({model} / {benchmark})", flush=True)
         tmp_yaml = out_root / f"_cell_config_{os.getpid()}.yaml"
         tmp_yaml.write_text(yaml.safe_dump(run_cfg, sort_keys=False), encoding="utf-8")
         t0 = time.time()
@@ -345,17 +392,23 @@ def run_one_cell(cfg: dict, cfg_path: Path, model: str, benchmark: str,
         per = f"{elapsed / samples:.2f}s/sample" if samples else "n/a"
         print(f"    -> {elapsed:.1f}s wall, {samples or '?'} samples ({per})", flush=True)
 
+    # A cell is OK if a completion stamp exists for this barcode (the hard
+    # signal), regardless of whether we skipped or just ran it.
+    final_done = find_done(cell_dir)
+    ok = (done_fingerprint(final_done) == barcode)
     record = {
         "index": cell_index, "model": model, "benchmark": benchmark,
-        "label": label, "kv_compressor": key, "ratio": ratio, "cell_id": cell_id,
-        "kv_compressor_kwargs": extras or None, "returncode": rc,
+        "label": label, "kv_compressor": key, "ratio": ratio,
+        "cell_id": cell_id, "cell_id_barcoded": cell_id_bc, "fingerprint": barcode,
+        "decision": decision, "kv_compressor_kwargs": extras or None, "returncode": rc,
         "elapsed_sec": round(elapsed, 1) if elapsed else None,
         "total_samples": _total_samples(metrics_path),
         "metrics": str(metrics_path) if metrics_path else None,
-        "ok": rc == 0 and metrics_path is not None,
+        "done": str(final_done) if final_done else None,
+        "ok": ok,
     }
     frag.write_text(json.dumps(record, indent=2), encoding="utf-8")
-    return 0 if record["ok"] else 1
+    return 0 if ok else 1
 
 
 # ============================================================================

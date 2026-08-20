@@ -44,6 +44,8 @@ def _build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--system_prompt", default=None)
     run_parser.add_argument("--max_requests", type=int, default=None)
     run_parser.add_argument("--fraction", type=float, default=None)
+    run_parser.add_argument("--force", action="store_true",
+                            help="Re-run even if an identical completed result exists")
 
     return parser
 
@@ -65,6 +67,8 @@ def main() -> None:
         "system_prompt": args.system_prompt,
         "max_requests": args.max_requests,
         "fraction": args.fraction,
+        # --force turns resume off for this run; otherwise leave the config default.
+        "resume": False if args.force else None,
     }
 
     # Fail fast with a clean one-liner instead of a traceback (message mirrors
