@@ -1,8 +1,13 @@
 # Improving Ridge — rotation, normalization, lambda, and query subsetting
 
-This project’s goal is to **make Ridge work better** than the upstream-faithful
-default. We run controlled sweeps on RULER16k, change one family of knobs at a
-time, and record scores in [`Ridge Press.xlsx`](../Ridge%20Press.xlsx).
+Ridge is **our own KV compressor** (leverage-scored keys + prefill-query `omega`
+importance + fixed-envelope combination + value weighting — see the authorship
+note in [`ridge_explained.md`](ridge_explained.md)). This project’s goal is to
+**make our Ridge compressor work better** than its original faithful default. We
+run controlled sweeps on RULER16k, change one family of knobs at a time, and
+record scores in [`Ridge Press.xlsx`](../Ridge%20Press.xlsx). Throughout this
+note, "original" / "reference" means **our own earlier implementation**
+(`RidgePress` in our kvpress fork), not any third-party code.
 
 For *how* Ridge works (tau, omega, RoPE, combine modes), see
 [`ridge_explained.md`](ridge_explained.md). This note is about **what we
@@ -16,9 +21,9 @@ These are the Ridge deviations / tuning axes this effort cares about:
 
 | Knob | Config field | What it does |
 |------|--------------|--------------|
-| **Query rotation** | `rotate_queries` | Spin fresh queries with RoPE before omega so they match already-rotated cached keys. Default **off** (upstream-faithful mismatch). |
+| **Query rotation** | `rotate_queries` | Spin fresh queries with RoPE before omega so they match already-rotated cached keys. Default **off** (matches our original reference). |
 | **L2 key normalization (tau)** | `normalize_keys_for_tau` | L2-normalize keys before building `K^T K` for tau leverage. Stops “big vector along a popular axis” from scoring high just because of magnitude. Default **off**. |
-| **Ridge lambda** | `ridge_lambda` | Regularizer in `(K^T K + λI)⁻¹`. Upstream default **1e-4**. |
+| **Ridge lambda** | `ridge_lambda` | Regularizer in `(K^T K + λI)⁻¹`. Reference default **1e-4**. |
 | **Query selection method** | `omega_query_selector` | How to pick which prefill queries feed omega: `all` (default), `top_norm`, `leverage`, or `random`. |
 | **Query keep fraction** | `omega_query_fraction` | Fraction of queries **kept** per head before forming omega’s Gram (e.g. 0.1 = keep 10%). Default **1.0** = all queries. |
 
@@ -35,7 +40,7 @@ defaults unless noted in the sweep scripts. We hold compression schedule at
 **Part A — lambda sweep** (`results/ruler16k_sweep/`)
 
 - Swept: **`ridge_lambda`** × envelope settings (lambda was the hypothesis).
-- Fixed: upstream rotate/normalize defaults, all queries for omega.
+- Fixed: original rotate/normalize defaults, all queries for omega.
 - Sheet: `RULER16k-Ridge-Llama-3.1-8B` (and Ministral counterpart).
 - Launcher: `scripts/slurm/ruler_ridge_sweep.sbatch`
 
@@ -47,8 +52,8 @@ defaults unless noted in the sweep scripts. We hold compression schedule at
 - Sheets: `Ridge2x2-Llama-3.1-8B-r0p6`, `Ridge2x2-Llama-3.1-8B-r0p8` (+ Ministral).
 - Launcher: `scripts/slurm/ruler_ridge_2x2_sweep.sbatch`
 
-**Track 1 question:** *Among faithful upstream defaults, which tau/omega hygiene
-fixes actually move RULER16k scores?*
+**Track 1 question:** *Starting from our original faithful defaults, which
+tau/omega hygiene fixes actually move RULER16k scores?*
 
 ### Track 2 — query subsetting for omega
 
@@ -93,7 +98,7 @@ uniqueness, not raw magnitude on a crowded axis.
 λ regularizes the Gram inverse so tau stays numerically stable. Changing λ also
 smooths or sharpens how aggressively tau distinguishes keys.
 
-**Hypothesis:** upstream’s default may not be optimal for long-context RULER
+**Hypothesis:** our original default may not be optimal for long-context RULER
 prompts.
 
 ### Query selection + fraction (`omega_query_selector`, `omega_query_fraction`)
@@ -116,7 +121,7 @@ tabs exist for Track 1; Track 2 Llama run is complete (264/264 cells).
 Across lambdas at the same settings, RULER16k averages move by **~0.2 points**
 or less. No lambda value consistently wins.
 
-**Takeaway:** keep **`ridge_lambda = 1e-4`** (upstream default). Do not spend
+**Takeaway:** keep **`ridge_lambda = 1e-4`** (reference default). Do not spend
 sweep budget here.
 
 ### 2. Query rotation — **does not matter (practically)**
@@ -171,7 +176,7 @@ this doc:
 kv_compressor: ridge
 kv_compressor_kwargs:
   normalize_keys_for_tau: true   # the meaningful win
-  rotate_queries: false          # flat; upstream-faithful is fine
+  rotate_queries: false          # flat; original default is fine
   ridge_lambda: 1.0e-4           # flat; keep default
   # query subsetting: optional for compute only, not for quality
   omega_query_selector: all      # default; subsetting didn't help scores
@@ -185,13 +190,13 @@ showed tau quality improves most when keys are normalized before leverage.
 
 ---
 
-## Track 3 — upstream sink/local verification
+## Track 3 — original sink/local verification
 
 **Motivation.** The `Llama-3.1-8B` comparison sheet in `Ridge Press.xlsx`
 reports "Ridge (envelope)" at **84.30** (r=0.6) / **73.31** (r=0.8) on
 RULER-16K — ~1.7 pts above what looked at first like our Track 1 winner.
 `ridge_explained.md` §6 flags that this repo defaults `sink_size=8,
-local_size=64` while the upstream RidgePress reference uses `sink_size=4,
+local_size=64` while our original RidgePress reference uses `sink_size=4,
 local_size=28`. Initial hypothesis: that alone explains the gap.
 
 **Sweep** (`results/ruler16k_sweep_upstream_sink/`)
@@ -206,9 +211,9 @@ local_size=28`. Initial hypothesis: that alone explains the gap.
 **Result.** Sink/local was a red herring; the gap itself was an accounting
 artifact.
 
-- Moving to upstream 4/28 shifted the best single-γ number by ~0.1 pt in
+- Moving to the original 4/28 shifted the best single-γ number by ~0.1 pt in
   either direction — noise.
-- `normalize_keys_for_tau=True` still gives ~+2 pts on top of the upstream
+- `normalize_keys_for_tau=True` still gives ~+2 pts on top of the original
   sink baseline (80.33 → 82.61 single-γ at r=0.6), matching the gain we saw
   at sink=8/local=64. Portable improvement.
 
@@ -226,8 +231,8 @@ Re-scoring our sink=4, nkT sweep with the sheet's per-task-best-γ recipe:
 | Config | r=0.6 best-per-task-γ (13 tasks) | r=0.8 best-per-task-γ (13 tasks) |
 |--------|----------------------------------|----------------------------------|
 | Sheet "Ridge (envelope)" target | 84.30 | 73.31 |
-| Sink=4, **nkT** (upstream sink + our fix) | **84.79** | **73.89** |
-| Sink=4, nkF (upstream-faithful baseline) | 82.13 | 68.37 |
+| Sink=4, **nkT** (original sink + our fix) | **84.79** | **73.89** |
+| Sink=4, nkF (original-faithful baseline) | 82.13 | 68.37 |
 
 **Our improved Ridge slightly beats the sheet's Ridge (envelope) on its own
 accounting** — by ~0.5 pts at both ratios. The gap doesn't exist; we were
@@ -319,7 +324,7 @@ normalizing keys before tau (`normalize_keys_for_tau=True`) is the only knob
 that clearly improves scores** — worth ~+2 pts single-γ / ~+3–5 pts
 per-task-best-γ, portable across sink/local settings. Ridge lambda, query
 rotation, query subsetting (method and keep fraction), and sink/local matching
-upstream (4/28 vs 8/64) are all flat or harmful. Leverage-based query
+our original defaults (4/28 vs 8/64) are all flat or harmful. Leverage-based query
 selection at low keep fractions is the one configuration to avoid. The old
 "Ridge (envelope)" 84.30 turned out to be **per-task-best-γ** scoring, not
 single-γ; on that same accounting our improved Ridge lands at **84.79**

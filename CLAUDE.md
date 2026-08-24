@@ -181,9 +181,10 @@ scoring stats, ONE shared seed-42 PHI; NOT the kvpress CompactorPress math of ea
 revisions. Remaining structural deviations, documented in the docstring: uniform per-head
 top-k instead of the paper's ragged "calibrated" (token×head) allocation — impossible in a
 rectangular HF cache — and framework ratio semantics `int(T·(1−r))` per head), `ridge`
-(fixed-envelope only after the 2026-07 strip; keys L2-normalized before ridge leverage —
-deliberate deviation, ω/‖v‖ raw), `random_sketch_press` (research-fork; dead-code bug
-replicated ⇒ ≡ `ridge`),
+(**our own compressor**, not a kvpress port: leverage-scored keys + prefill-query ω
+importance + fixed-envelope combination + value weighting; fixed-envelope only after the
+2026-07 strip; keys L2-normalized before ridge leverage — deliberate deviation, ω/‖v‖ raw),
+`random_sketch_press` (our reference fork; dead-code bug replicated ⇒ ≡ `ridge`),
 `expected_attention`, `expected_attention_stats`, `snapkv`, `pyramidkv`, `tova`,
 `observed_attention`, `h2o` (Heavy Hitter Oracle, arXiv:2306.14048 — raw accumulated-attention
 sum + recent-window force-keep; like `observed_attention` it needs `attn_implementation: eager`),

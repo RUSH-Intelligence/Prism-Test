@@ -6,6 +6,17 @@ ridge run's numbers and have a sense of what every knob is doing.
 
 Code lives in [ridge_sketch.py](../eval_harness/kv_compression/compressors/ridge_sketch.py).
 
+> **Authorship.** The Ridge KV compressor described here is **our own method.**
+> The scoring recipe — ridge-leverage scoring of the keys, L2-normalizing keys so
+> leverage measures direction diversity, the `omega` query-importance term built
+> from the prefill queries, the fixed-envelope `max(tau, γ·omega)` combination,
+> and value-norm weighting — is our design. It builds on established building
+> blocks (statistical / ridge leverage scores, RoPE, the kvpress press
+> interface), but the compressor itself is ours. Where this doc says "reference"
+> or "original", it means **our own earlier implementation** (`RidgePress` in our
+> kvpress fork); the in-framework `ridge` reproduces it bit-for-bit except for the
+> documented improvements (e.g. key normalization).
+
 ---
 
 ## 1. What the KV cache even is
@@ -517,10 +528,10 @@ the rest is what gets picked from the middle by score.
 
 ### Heads-up on defaults
 
-`sink=8, local=64` in this repo **differ from the upstream RidgePress
-reference**, which used `sink=4, local=28`. If you're comparing this codebase's
+`sink=8, local=64` in this repo **differ from our original RidgePress
+reference implementation**, which used `sink=4, local=28`. If you're comparing this codebase's
 numbers against a saved baseline, that difference alone can move results. To
-reproduce the upstream: pass `sink_size=4, local_size=28`.
+reproduce the original window layout: pass `sink_size=4, local_size=28`.
 
 ### `compression_ratio` is fraction PRUNED, not kept
 
@@ -765,12 +776,13 @@ So queries and keys use **different clock conventions**. The omega number
 still gets computed, but it's not quite what the real attention layer
 would compute when the model actually runs. It's a slightly off proxy.
 
-**Why default to the mismatch?** The upstream reference code did it that
-way and this port is faithful to upstream bit-for-bit.
+**Why default to the mismatch?** Our original RidgePress reference did it that
+way, and the in-framework version reproduces that behavior bit-for-bit so the two
+implementations stay directly comparable.
 
 **`rotate_queries=True`** = "also spin the queries to match the keys."
 Now both clocks agree → omega faithfully matches real attention. Off by
-default; opt-in deviation from upstream.
+default; opt-in deviation from our original reference default.
 
 Effect on numbers: usually small but real. Flipping it changes which
 tokens end up at the top of the score and which get cut.
@@ -996,8 +1008,8 @@ Avoids fiddly behavior on tiny caches.
 
 Two ridge runs disagree? Check, in order:
 
-1. Different `sink_size` / `local_size` — repo default 8/64 vs upstream 4/28
-   moves results.
+1. Different `sink_size` / `local_size` — repo default 8/64 vs our original
+   reference's 4/28 moves results.
 2. `compression_ratio` confusion — it's fraction **pruned**, not kept.
 3. Different `combine_mode` — envelope vs additive picks different winners.
 4. `rotate_queries` flipped — changes omega values.
