@@ -63,6 +63,8 @@ DECODE_STEPS="${DECODE_STEPS:-128}"
 REPEATS="${REPEATS:-5}"
 WARMUP="${WARMUP:-2}"
 KWARGS="${KWARGS:-{\}}"
+# JSON list (or @file.json) of method variants, e.g. rarekv at several (P, L).
+VARIANTS="${VARIANTS:-}"
 TRC="${TRC:-true}"
 DEQUANT="${DEQUANT:-false}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
@@ -72,6 +74,8 @@ echo "================ kv_perf ================"
 echo "host=$(hostname) job=${SLURM_JOB_ID} name=${SLURM_JOB_NAME:-?}"
 echo "MODEL=$MODEL CONTEXT=$CONTEXT METHODS=$METHODS RATIOS=$RATIOS ATTN=$ATTN DTYPE=$DTYPE"
 echo "DECODE_STEPS=$DECODE_STEPS REPEATS=$REPEATS WARMUP=$WARMUP OUTDIR=$OUTDIR"
+echo "VARIANTS=${VARIANTS:-<none>}"
+echo "REPO_DIR=${REPO_DIR:-/scratch/sj157/Prism-Test}"
 python --version
 nvidia-smi --query-gpu=name,driver_version,memory.total,clocks.max.sm,power.limit --format=csv || true
 
@@ -82,16 +86,21 @@ if nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | grep 
     exit 3
 fi
 
-cd /scratch/sj157/Prism-Test
-export PYTHONPATH="/scratch/sj157/Prism-Test:${PYTHONPATH:-}"
+# REPO_DIR lets a sweep run from a frozen git worktree. Each cell is its own
+# subprocess that re-imports the repo, so editing the working tree mid-sweep
+# changes what later cells measure (and can crash one on a half-applied edit).
+REPO_DIR="${REPO_DIR:-/scratch/sj157/Prism-Test}"
+cd "$REPO_DIR"
+export PYTHONPATH="$REPO_DIR:${PYTHONPATH:-}"
 # python invoked directly, NOT via srun: srun's spank hooks re-inject xalt's
 # stale libcrypto and undo the LD_PRELOAD fix above.
-python scripts/bench_kv_perf.py \
+python "$REPO_DIR/scripts/bench_kv_perf.py" \
     --model "$MODEL" --model-key "$MODEL_KEY" \
     --methods "$METHODS" --ratios "$RATIOS" --context-lengths "$CONTEXT" \
     --attn-impl "$ATTN" --dtype "$DTYPE" --max-model-len "$MAXLEN" \
     --decode-steps "$DECODE_STEPS" --repeats "$REPEATS" --warmup-repeats "$WARMUP" \
     --kv-kwargs "$KWARGS" --out-dir "$OUTDIR" --isolation cell --resume \
+    ${VARIANTS:+--method-variants "$VARIANTS"} \
     $( [[ "$TRC" == "true" ]] && echo --trust-remote-code || echo --no-trust-remote-code ) \
     $( [[ "${DEQUANT:-false}" == "true" ]] && echo --dequantize-fp8 ) \
     --tag "job${SLURM_JOB_ID}" $EXTRA_ARGS

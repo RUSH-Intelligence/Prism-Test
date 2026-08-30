@@ -55,6 +55,11 @@ def parse_args(argv=None):
     p.add_argument("--no-trust-remote-code", dest="trust_remote_code", action="store_false")
     p.add_argument("--dequantize-fp8", action="store_true")
     p.add_argument("--kv-kwargs", default="{}", help="JSON dict merged into kv_compressor_kwargs")
+    p.add_argument("--method-variants", default=None,
+                   help='JSON list (or @file.json) of extra cells that parameterise one method, '
+                        'e.g. \'[{"label":"p6l80","method":"rarekv",'
+                        '"kwargs":{"n_planes":6,"n_tables":80}}]\'. Each becomes its own cell '
+                        'and its own result dir; --kv-kwargs is merged in underneath.')
     p.add_argument("--budget-rule", default="strict", choices=["strict", "ragged_mean"])
     p.add_argument("--prompt-seed", type=int, default=42)
     p.add_argument("--no-compression-stage", dest="measure_compression",
@@ -79,6 +84,17 @@ def expand(args):
     ratios = [float(r) for r in args.ratios.split(",") if r.strip()]
     ctxs = [int(c) for c in args.context_lengths.split(",") if c.strip()]
     kwargs = json.loads(args.kv_kwargs) if args.kv_kwargs else {}
+
+    variants = []
+    if args.method_variants:
+        spec = args.method_variants
+        if spec.startswith("@"):
+            spec = Path(spec[1:]).read_text()
+        for v in json.loads(spec):
+            if "method" not in v:
+                raise SystemExit(f"--method-variants entry missing 'method': {v}")
+            variants.append((v["method"], v.get("label", ""), dict(v.get("kwargs", {}))))
+
     cells = []
     for ctx in ctxs:
         common = dict(model_key=key, hf_model=args.model, context_tokens=ctx,
@@ -91,6 +107,12 @@ def expand(args):
             for r in ratios:
                 cells.append(PerfCell(method=m, compression_ratio=r,
                                       kv_compressor_kwargs=dict(kwargs), **common))
+        for m, vlabel, vkwargs in variants:
+            for r in ratios:
+                merged = dict(kwargs)
+                merged.update(vkwargs)
+                cells.append(PerfCell(method=m, compression_ratio=r, variant=vlabel,
+                                      kv_compressor_kwargs=merged, **common))
     return cells
 
 

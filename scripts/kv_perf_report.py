@@ -73,7 +73,7 @@ def _reaudit(p):
     try:
         cell = _PerfCell(
             model_key=c.get("model_key", ""), hf_model=c.get("hf_model", ""),
-            method=c.get("method", "none"),
+            method=c.get("method", "none"), variant=c.get("variant", ""),
             compression_ratio=float(c.get("compression_ratio") or 0.0),
             context_tokens=int(c.get("context_tokens") or 0),
             attn_impl=c.get("attn_impl", ""), dtype=c.get("dtype", ""),
@@ -115,7 +115,9 @@ def rows_from(payloads):
             "run_dir": str(cell_dir),
             "model_key": c.get("model_key"), "label": c.get("label"),
             "hf_model": c.get("hf_model"), "context_tokens": ctx,
-            "method": c.get("method"), "ratio": c.get("compression_ratio"),
+            "method": c.get("method"), "variant": c.get("variant", ""),
+            "display_name": c.get("display_name") or c.get("method"),
+            "ratio": c.get("compression_ratio"),
             "is_anchor": c.get("is_anchor"), "attn_impl": c.get("attn_impl"),
             "dtype": c.get("dtype"), "anchor_key": c.get("anchor_key"),
             "prefill_ms_median": pre, "prefill_ms_p95": _g(p, "prefill", "summary", "p95"),
@@ -159,8 +161,8 @@ def grid(rows, value_key, spec=".2f", model=None):
     rs = [r for r in rows if model is None or r["model_key"] == model]
     ctxs = sorted({r["context_tokens"] for r in rs})
     methods, seen = [], set()
-    for r in sorted(rs, key=lambda r: (not r["is_anchor"], r["method"], r["ratio"])):
-        name = "full KV" if r["is_anchor"] else f'{r["method"]} r{r["ratio"]:g}'
+    for r in sorted(rs, key=lambda r: (not r["is_anchor"], r["method"], r["variant"], r["ratio"])):
+        name = r["display_name"]
         if name not in seen:
             seen.add(name)
             methods.append(name)
@@ -169,8 +171,7 @@ def grid(rows, value_key, spec=".2f", model=None):
     for name in methods:
         cells = []
         for c in ctxs:
-            m = [r for r in rs if r["context_tokens"] == c
-                 and (("full KV" if r["is_anchor"] else f'{r["method"]} r{r["ratio"]:g}') == name)]
+            m = [r for r in rs if r["context_tokens"] == c and r["display_name"] == name]
             cells.append(fmt(m[0][value_key], spec) if m else DASH)
         bold = "**" if name == "full KV" else ""
         out.append(f"| {bold}{name}{bold} | " + " | ".join(cells) + " |")

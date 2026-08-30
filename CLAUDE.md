@@ -191,6 +191,21 @@ arXiv:2502.07861) — a discrepancy-theory self-balancing walk that selects a ba
 `[sink | middle-coreset | window]` token subset and **reweights surviving values**; knobs are
 `itrs` (halvings; `compression_ratio` maps to it) + `gamma`/`temp`/`beta`/`block_size`/`n_sink`/
 `window_size`, `post_prefill` schedule.
+One LSH baseline: `rarekv` (`RareKVSketch`) — same family as `keydiff` (query-free,
+attention-free key scoring) but scores *rarity* instead of similarity-to-mean. Keys are hashed
+into `L` tables of `R = 2^P` buckets by signed random hyperplanes; the score is the **inverse
+collision density**
+`s_i = (eps + (1/L)·Σ_l (C_{l,h_l(k_i)} − 1)/(N−1))^(−alpha) · ‖v_i‖^gamma`,
+so a key sharing its bucket with many others is redundant and evicted first, while a key that
+hashes alone is kept. Knobs `n_planes` (P), `n_tables` (L), `alpha`, `eps`,
+`value_norm_power` (gamma), `seed`, `per_layer_planes` (default True → planes seeded
+`seed + layer_idx`, never touching the global RNG), `max_bucket_slots` (guard on
+`B·H_kv·L·2^P`). Fully vectorised: one `[D, L·P]` GEMM for all tables, one broadcast bit-pack,
+and a SINGLE `scatter_add_` histogram over a flattened `(group, bucket)` index space — no
+Python loop, no `.item()` host sync. Counting is integer, so it is bit-reproducible.
+No RoPE/attention requirement, so it composes with hybrids. Peak transient is the fp32
+projection, `B·H_kv·T·L·P·4` bytes (~2.3 GB at 128K, P=10, L=60).
+
 One simple hybrid baseline: `top_k_sampling` (`TopKSamplingSketch`) — keeps a deterministic
 top-`top_frac·budget` core by key-norm score (KnormSketch semantics) and fills the rest of the
 per-head budget `int(T·(1−r))` with a **uniform random sample without replacement** from the
