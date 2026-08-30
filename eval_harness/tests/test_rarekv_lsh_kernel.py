@@ -143,5 +143,40 @@ class TestTritonBitIdentical(unittest.TestCase):
                 self.assertTrue(torch.equal(a, b))
 
 
+@unittest.skipUnless(CUDA, "needs CUDA")
+class TestCudaPath(unittest.TestCase):
+    """The CUDA extension is the preferred path; it must agree exactly."""
+
+    def setUp(self):
+        if rarekv_lsh._cuda_ext() is None:
+            self.skipTest("CUDA extension could not be built (no nvcc?)")
+
+    def test_bit_identical_across_the_profiled_grid(self):
+        for P, L in CONFIGS:
+            for T in (1, 999, 4096):
+                with self.subTest(P=P, L=L, T=T):
+                    R = 1 << P
+                    b = _buckets(8, T, L, R, device="cuda")
+                    self.assertTrue(torch.equal(
+                        rarekv_lsh.collision_sums_cuda(b, R), collision_sums_torch(b, R)))
+
+    def test_dispatch_prefers_cuda(self):
+        """Even at R=1024, where the Triton path would regress, CUDA is chosen."""
+        b = _buckets(2, 4096, 60, 1024, device="cuda")
+        self.assertTrue(torch.equal(rarekv_lsh.collision_sums(b, 1024),
+                                    collision_sums_torch(b, 1024)))
+        self.assertFalse(should_use_triton(1024, torch.device("cuda")))
+
+    def test_all_three_paths_agree(self):
+        for P, L in CONFIGS:
+            with self.subTest(P=P, L=L):
+                R = 1 << P
+                b = _buckets(4, 2048, L, R, device="cuda")
+                ref = collision_sums_torch(b, R)
+                self.assertTrue(torch.equal(rarekv_lsh.collision_sums_cuda(b, R), ref))
+                if should_use_triton(R, b.device):
+                    self.assertTrue(torch.equal(rarekv_lsh.collision_sums_triton(b, R), ref))
+
+
 if __name__ == "__main__":
     unittest.main()

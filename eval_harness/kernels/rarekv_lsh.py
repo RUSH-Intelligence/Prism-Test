@@ -36,7 +36,12 @@ while risking a last-ulp difference between Triton's ``pow`` and torch's.
 
 from __future__ import annotations
 
+import logging
+import os
+
 import torch
+
+logger = logging.getLogger(__name__)
 
 try:
     import triton
@@ -47,6 +52,44 @@ except Exception:                                                # noqa: BLE001
     triton = None
     tl = None
     HAVE_TRITON = False
+
+
+# ---------------------------------------------------------------- CUDA ----
+# The CUDA extension is the preferred path: it is faster than Triton on EVERY
+# measured config, and it is the only variant with no bad case. Two reasons,
+# both measured on an H200:
+#   * thread-per-key gather on the [BH, L, T] layout (from SOCKET's
+#     soft_hash_score.cu) -- coalesced bucket loads, worth 2-8.6x over the
+#     [BH, T, L] layout with everything else held fixed;
+#   * a shared-memory privatised histogram -- atomicAdd into R ints of SRAM
+#     (<= 4 KB even at R=1024), so it absorbs bucket skew at ALL R. The Triton
+#     tl.histogram version regressed BELOW torch at R=1024 and had to fall back.
+_CUDA_EXT = None
+_CUDA_TRIED = False
+
+
+def _cuda_ext():
+    """JIT-load the extension once. Returns None if it cannot be built.
+
+    NOTE: the first build costs ~100 s of nvcc. torch caches it under
+    TORCH_EXTENSIONS_DIR, which MUST be a persistent path -- a per-job scratch
+    dir would rebuild on every SLURM job and swamp the speedup on short cells.
+    """
+    global _CUDA_EXT, _CUDA_TRIED
+    if _CUDA_TRIED:
+        return _CUDA_EXT
+    _CUDA_TRIED = True
+    if os.environ.get("PRISM_RAREKV_CUDA", "1") == "0" or not torch.cuda.is_available():
+        return None
+    try:
+        from torch.utils.cpp_extension import load
+        src = os.path.join(os.path.dirname(__file__), "csrc", "rarekv_collide.cu")
+        _CUDA_EXT = load(name="rarekv_collide", sources=[src],
+                         extra_cuda_cflags=["-O3", "--use_fast_math"], verbose=False)
+    except Exception as exc:                                     # noqa: BLE001
+        logger.info("rarekv CUDA extension unavailable (%s); falling back", exc)
+        _CUDA_EXT = None
+    return _CUDA_EXT
 
 
 DEFAULT_BLOCK = 2048
@@ -122,9 +165,29 @@ def collision_sums_torch(bucket: torch.Tensor, n_buckets: int) -> torch.Tensor:
     return counts.gather(1, idx).view(BH, T, L).sum(dim=2, dtype=torch.int32)
 
 
+def collision_sums_cuda(bucket: torch.Tensor, n_buckets: int) -> torch.Tensor:
+    """``bucket`` [BH, T, L] -> csum [BH, T]. Transposes to the L-major layout."""
+    ext = _cuda_ext()
+    if ext is None:
+        raise RuntimeError("rarekv CUDA extension unavailable")
+    # The transpose costs ~0.3-0.6 ms/layer at T=128K, already included in every
+    # measurement quoted above; the CUDA path still wins on every config. Folding
+    # it into the bit-pack would make it ~free -- a worthwhile follow-up. Note we
+    # do NOT reformulate the GEMM as planes.T @ keys.T to get L-major directly:
+    # that changes the cuBLAS call, which can flip a near-zero projection's sign
+    # and break bit-identity. Not worth trading a proven invariant for 0.3 ms.
+    return ext.collide(bucket.permute(0, 2, 1).contiguous(), n_buckets)
+
+
 def collision_sums(bucket: torch.Tensor, n_buckets: int, *, prefer_triton: bool = True,
                    block: int = DEFAULT_BLOCK) -> torch.Tensor:
-    """Dispatch to whichever path is faster; both give bit-identical results."""
+    """Fastest available path. All three are BIT-IDENTICAL, so this is pure speed.
+
+    Order: CUDA (best everywhere) -> Triton (only where BLOCK/R is large enough
+    to pay for itself) -> torch (always correct, no build dependency).
+    """
+    if bucket.is_cuda and prefer_triton and _cuda_ext() is not None:
+        return collision_sums_cuda(bucket, n_buckets)
     if prefer_triton and should_use_triton(n_buckets, bucket.device, block):
         return collision_sums_triton(bucket, n_buckets, block=block)
     return collision_sums_torch(bucket, n_buckets)
