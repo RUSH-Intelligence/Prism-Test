@@ -1,0 +1,30 @@
+# Model matrix for the KV-compression PERFORMANCE sweep (throughput / latency / memory).
+# Read by scripts/slurm/launch_kv_perf.sh (set MATRIX=scripts/kv_perf_models.tsv), so the
+# per-model flag set is defined exactly once. Tab-separated; '#' and blank lines ignored.
+#
+# Columns:
+#   key        short name used in result paths and job names
+#   hf_model   HF id
+#   attn       attn_implementation. PINNED, never left to the loader: hf_adapter.py:376-386
+#              silently falls back FA2 -> sdpa, and a fallback makes the cell incomparable.
+#              dtype+attn are part of the anchor key for exactly this reason.
+#   dtype      first-order timing variable, so it is explicit and part of the cell identity
+#   trc        trust_remote_code
+#   dequant    dequantize_fp8 (FP8 checkpoints only; streams to BF16 at load)
+#   maxlen     max_model_len
+#   contexts   comma list of context token counts, or 'all'
+#   walltimes  comma list aligned positionally to `contexts`
+#   label      display name
+#
+# Values are copied from the validated combos in scripts/full_kv_models.tsv, not guessed.
+# Context caps: a cell must leave room for the question block + decode steps inside the
+# model's window, so the top length is below max_position_embeddings (the driver refuses
+# to silently truncate). Qwen3-8B stops at 32768: its 40960 window makes 64k/128k pure
+# extrapolation, the same restriction the RULER matrix encodes.
+#
+key	hf_model	attn	dtype	trc	dequant	maxlen	contexts	walltimes	label
+llama8b	meta-llama/Llama-3.1-8B-Instruct	flash_attention_2	bfloat16	true	false	131072	8192,16384,32768,65536,130816	0:45:00,0:50:00,1:10:00,1:40:00,3:00:00	Llama-3.1-8B
+ministral8b	mistralai/Ministral-3-8B-Instruct-2512	flash_attention_2	bfloat16	true	true	131072	8192,16384,32768,65536,130816	0:50:00,1:00:00,1:20:00,2:00:00,3:30:00	Ministral-3-8B
+qwen35_9b	Qwen/Qwen3.5-9B	flash_attention_2	bfloat16	true	false	131072	8192,16384,32768,65536,130816	0:50:00,1:00:00,1:20:00,2:00:00,3:30:00	Qwen3.5-9B
+qwen3_8b	Qwen/Qwen3-8B	flash_attention_2	bfloat16	true	false	40960	8192,16384,32768	0:45:00,0:50:00,1:10:00	Qwen3-8B
+nemotron4b	nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16	sdpa	bfloat16	false	false	120832	8192,16384,32768,65536	0:40:00,0:45:00,1:00:00,1:30:00	Nemotron-3-Nano-4B
