@@ -9,6 +9,7 @@ from torch import nn
 
 from eval_harness.kv_compression.registry import register_kv_compressor
 from eval_harness.kv_compression.base import ScorerKVCompressor
+from eval_harness.kernels.rarekv_lsh import collision_sums
 
 
 @register_kv_compressor("rarekv", aliases=["rare_kv"])
@@ -164,6 +165,7 @@ class RareKVSketch(ScorerKVCompressor):
     seed: int = 42
     per_layer_planes: bool = True
     max_bucket_slots: int = 1 << 26
+    use_triton: bool = True
     _plane_cache: Dict[Tuple[int, int], torch.Tensor] = field(
         default_factory=dict, init=False, repr=False, compare=False
     )
@@ -311,25 +313,22 @@ class RareKVSketch(ScorerKVCompressor):
         bucket = packed.sum(-1, dtype=torch.int32)          # [B*H*T, L]; dtype= or it
         del packed                                          # promotes to int64 via a copy
 
-        # 3. Collision counts. Folding the per-table offset into the NATURAL
-        #    [B*H, T, L] layout lets one 2-D scatter_add_ count every
-        #    (batch, head, table) histogram at once -- no loop over tables, and no
-        #    transposing clone (a [T,L]->[L,T] copy of 8-byte elements is
-        #    uncoalesced and costs ~1 ms/layer at 128K).
-        bucket = bucket.view(B * H, T, L)
-        bucket.add_(torch.arange(L, device=device, dtype=torch.int32) * R)
-        idx = bucket.view(B * H, T * L).to(torch.int64)      # scatter needs int64
-        counts = torch.zeros(B * H, L * R, device=device, dtype=torch.int32)
-        # Stride-0 expand, not a materialised ones tensor: scatter_add_ only reads
-        # src, so this saves a full-size alloc and its fill kernel.
-        ones = torch.ones(1, device=device, dtype=torch.int32).expand_as(idx)
-        counts.scatter_add_(1, idx, ones)
-        collisions = counts.gather(1, idx).view(B * H, T, L)  # includes self
+        # 3+4. Collision counts, then sum over L. Both are integer, so both are
+        #    order-independent -- which is what lets the Triton path be
+        #    BIT-IDENTICAL rather than merely close.
+        #
+        #    torch path: one 2-D scatter_add_ with the table offset folded into the
+        #    natural [B*H, T, L] layout (no loop over tables, and no [T,L]->[L,T]
+        #    transposing clone, which is uncoalesced and costs ~1 ms/layer at 128K).
+        #    triton path: a block-privatised histogram, which cuts global atomics
+        #    per (b,h,l) from T to (T/BLOCK)*R. That reduction factor is BLOCK/R, so
+        #    it is taken only for small R -- see kernels/rarekv_lsh.should_use_triton.
+        #    Measured on H200: 7.8x at R=8, 1.3x at R=256, 0.8x (slower) at R=1024.
+        csum = collision_sums(bucket.view(B * H, T, L), R, prefer_triton=self.use_triton)
 
-        # 4. Inverse collision density. mean_l[(C-1)/(N-1)] == (mean_l C - 1)/(N-1),
-        #    so reduce over L FIRST and scale the small result: the naive order
-        #    allocates three full [B*H*T*L] fp32 temporaries.
-        csum = collisions.sum(dim=2, dtype=torch.int32)       # [B*H, T]
+        # mean_l[(C-1)/(N-1)] == (mean_l C - 1)/(N-1), so reduce over L FIRST and
+        # scale the small result: the naive order allocates three full
+        # [B*H*T*L] fp32 temporaries.
         density = (csum.float() / L - 1.0) / float(max(T - 1, 1))
         scores = (self.eps + density).pow(-self.alpha).view(B, H, T)
 
