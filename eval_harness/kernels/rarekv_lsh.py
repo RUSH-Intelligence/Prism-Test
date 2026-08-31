@@ -118,7 +118,7 @@ if HAVE_TRITON:
         l = pid_bhl % L
         offs = pid_t * BLOCK + tl.arange(0, BLOCK)
         mask = offs < T
-        b = tl.load(BUCKET + bh * stride_bh + offs * L + l, mask=mask, other=0)
+        b = tl.load(BUCKET + bh * stride_bh + offs * L + l, mask=mask, other=0).to(tl.int32)
         # masked so padding lanes do not land in bin 0
         h = tl.histogram(b, R, mask=mask)
         tl.atomic_add(COUNTS + pid_bhl * R + tl.arange(0, R), h)
@@ -132,7 +132,7 @@ if HAVE_TRITON:
         mask = offs < T
         acc = tl.zeros([BLOCK], dtype=tl.int32)
         for l in range(L):
-            b = tl.load(BUCKET + bh * stride_bh + offs * L + l, mask=mask, other=0)
+            b = tl.load(BUCKET + bh * stride_bh + offs * L + l, mask=mask, other=0).to(tl.int32)
             acc += tl.load(COUNTS + (bh * L + l) * R + b, mask=mask, other=0)
         tl.store(CSUM + bh * T + offs, acc, mask=mask)
 
@@ -157,7 +157,9 @@ def collision_sums_triton(bucket: torch.Tensor, n_buckets: int,
 def collision_sums_torch(bucket: torch.Tensor, n_buckets: int) -> torch.Tensor:
     """Reference path: one 2-D scatter_add_ with the table offset folded in."""
     BH, T, L = bucket.shape
-    b = bucket + torch.arange(L, device=bucket.device, dtype=bucket.dtype) * n_buckets
+    # Upcast BEFORE folding in the offset: bucket may be int16, and the offset
+    # reaches (L-1)*R = 60416 at L=60, R=1024, which overflows int16.
+    b = bucket.to(torch.int32) + torch.arange(L, device=bucket.device, dtype=torch.int32) * n_buckets
     idx = b.view(BH, T * L).to(torch.int64)
     counts = torch.zeros(BH, L * n_buckets, device=bucket.device, dtype=torch.int32)
     ones = torch.ones(1, device=bucket.device, dtype=torch.int32).expand_as(idx)

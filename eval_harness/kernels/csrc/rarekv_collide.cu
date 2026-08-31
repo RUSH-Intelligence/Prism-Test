@@ -12,7 +12,8 @@
 // Global atomic traffic per (bh,l) drops from T to (#blocks * #non-empty bins).
 // Shared memory is only R ints (<= 4 KB at R=1024), so this works for ALL R --
 // unlike a per-tile dense histogram, whose cost grows with R.
-__global__ void hist_kernel(const int* __restrict__ buckets,   // [BH, L, T]
+template<typename BT>
+__global__ void hist_kernel(const BT* __restrict__ buckets,    // [BH, L, T]
                             int* __restrict__ counts,          // [BH*L, R]
                             int T, int R)
 {
@@ -24,7 +25,7 @@ __global__ void hist_kernel(const int* __restrict__ buckets,   // [BH, L, T]
     const long base = (long)bhl * T;
     const int stride = gridDim.x * blockDim.x;
     for (int t = blockIdx.x * blockDim.x + threadIdx.x; t < T; t += stride) {
-        atomicAdd(&smem[buckets[base + t]], 1);      // coalesced load
+        atomicAdd(&smem[(int)buckets[base + t]], 1);  // coalesced load
     }
     __syncthreads();
     for (int i = threadIdx.x; i < R; i += blockDim.x)
@@ -34,8 +35,8 @@ __global__ void hist_kernel(const int* __restrict__ buckets,   // [BH, L, T]
 // ---- 2. Thread-per-key scoring: each thread owns one key, independently ----
 // Directly modelled on soft_hash_score.cu's kernel, with the query-probability
 // table swapped for integer collision counts (so the sum is exact).
-template<int L>
-__global__ void gather_kernel_t(const int* __restrict__ buckets,  // [BH, L, T]
+template<typename BT, int L>
+__global__ void gather_kernel_t(const BT* __restrict__ buckets,   // [BH, L, T]
                                 const int* __restrict__ counts,   // [BH*L, R]
                                 int* __restrict__ csum,           // [BH, T]
                                 int T, int R)
@@ -46,13 +47,14 @@ __global__ void gather_kernel_t(const int* __restrict__ buckets,  // [BH, L, T]
     int s = 0;
     #pragma unroll
     for (int l = 0; l < L; ++l) {
-        const int r = buckets[((long)bh * L + l) * T + t];        // coalesced
+        const int r = (int)buckets[((long)bh * L + l) * T + t];   // coalesced
         s += counts[((long)bh * L + l) * R + r];                  // random within a small table
     }
     csum[(long)bh * T + t] = s;
 }
 
-__global__ void gather_kernel_dyn(const int* __restrict__ buckets, const int* __restrict__ counts,
+template<typename BT>
+__global__ void gather_kernel_dyn(const BT* __restrict__ buckets, const int* __restrict__ counts,
                                   int* __restrict__ csum, int T, int R, int L)
 {
     const int t = blockIdx.x * blockDim.x + threadIdx.x;
@@ -61,7 +63,7 @@ __global__ void gather_kernel_dyn(const int* __restrict__ buckets, const int* __
     int s = 0;
     #pragma unroll 8
     for (int l = 0; l < L; ++l) {
-        const int r = buckets[((long)bh * L + l) * T + t];
+        const int r = (int)buckets[((long)bh * L + l) * T + t];
         s += counts[((long)bh * L + l) * R + r];
     }
     csum[(long)bh * T + t] = s;
@@ -69,33 +71,52 @@ __global__ void gather_kernel_dyn(const int* __restrict__ buckets, const int* __
 
 static inline int cdiv(int a, int b) { return (a + b - 1) / b; }
 
+template<typename BT>
+static void launch(const BT* bptr, int* cptr, int* sptr, int BH, int L, int T, int R,
+                   int hist_threads, int hist_blocks, int gather_threads)
+{
+
+    int hb = hist_blocks > 0 ? hist_blocks : std::min(cdiv(T, hist_threads), 512);
+    dim3 hgrid(hb, BH * L);
+    hist_kernel<BT><<<hgrid, hist_threads, R * sizeof(int)>>>(bptr, cptr, T, R);
+
+    dim3 ggrid(cdiv(T, gather_threads), BH);
+    switch (L) {
+        case 40: gather_kernel_t<BT,40><<<ggrid, gather_threads>>>(bptr, cptr, sptr, T, R); break;
+        case 50: gather_kernel_t<BT,50><<<ggrid, gather_threads>>>(bptr, cptr, sptr, T, R); break;
+        case 60: gather_kernel_t<BT,60><<<ggrid, gather_threads>>>(bptr, cptr, sptr, T, R); break;
+        case 80: gather_kernel_t<BT,80><<<ggrid, gather_threads>>>(bptr, cptr, sptr, T, R); break;
+        default: gather_kernel_dyn<BT><<<ggrid, gather_threads>>>(bptr, cptr, sptr, T, R, L); break;
+    }
+}
+
 torch::Tensor collide_cuda(torch::Tensor buckets, int64_t R, int64_t hist_threads,
                            int64_t hist_blocks, int64_t gather_threads)
 {
-    TORCH_CHECK(buckets.is_cuda() && buckets.is_contiguous() && buckets.dtype() == torch::kInt32,
-                "buckets must be a contiguous int32 CUDA tensor [BH, L, T]");
+    TORCH_CHECK(buckets.is_cuda() && buckets.is_contiguous(),
+                "buckets must be a contiguous CUDA tensor [BH, L, T]");
+    const auto dt = buckets.scalar_type();
+    TORCH_CHECK(dt == torch::kInt16 || dt == torch::kInt32,
+                "buckets must be int16 or int32; got ", dt);
+    // int16 buckets (SOCKET's choice) halve the traffic on the ONE tensor that
+    // dominates it -- read twice and written once, 240 -> 120 MiB at T=128K,L=60.
+    // counts and csum stay int32 on purpose: a bucket can hold up to T keys
+    // (131072) and csum reaches L*T, both far past int16's 32767.
+    TORCH_CHECK(dt != torch::kInt16 || R <= 32768,
+                "int16 buckets require R <= 32768 (P <= 15); got R=", R);
     const int BH = (int)buckets.size(0), L = (int)buckets.size(1), T = (int)buckets.size(2);
     auto opt = torch::TensorOptions().dtype(torch::kInt32).device(buckets.device());
     auto counts = torch::zeros({(long)BH * L, (long)R}, opt);
     auto csum = torch::empty({BH, T}, opt);
-
-    const int* bptr = buckets.data_ptr<int>();
     int* cptr = counts.data_ptr<int>();
     int* sptr = csum.data_ptr<int>();
 
-    int hb = (int)hist_blocks > 0 ? (int)hist_blocks
-                                  : std::min(cdiv(T, (int)hist_threads), 512);
-    dim3 hgrid(hb, BH * L);
-    hist_kernel<<<hgrid, (int)hist_threads, R * sizeof(int)>>>(bptr, cptr, T, (int)R);
-
-    dim3 ggrid(cdiv(T, (int)gather_threads), BH);
-    switch (L) {
-        case 40: gather_kernel_t<40><<<ggrid, (int)gather_threads>>>(bptr, cptr, sptr, T, (int)R); break;
-        case 50: gather_kernel_t<50><<<ggrid, (int)gather_threads>>>(bptr, cptr, sptr, T, (int)R); break;
-        case 60: gather_kernel_t<60><<<ggrid, (int)gather_threads>>>(bptr, cptr, sptr, T, (int)R); break;
-        case 80: gather_kernel_t<80><<<ggrid, (int)gather_threads>>>(bptr, cptr, sptr, T, (int)R); break;
-        default: gather_kernel_dyn<<<ggrid, (int)gather_threads>>>(bptr, cptr, sptr, T, (int)R, L); break;
-    }
+    if (dt == torch::kInt16)
+        launch<int16_t>((const int16_t*)buckets.data_ptr<int16_t>(), cptr, sptr,
+                        BH, L, T, (int)R, (int)hist_threads, (int)hist_blocks, (int)gather_threads);
+    else
+        launch<int>(buckets.data_ptr<int>(), cptr, sptr,
+                    BH, L, T, (int)R, (int)hist_threads, (int)hist_blocks, (int)gather_threads);
     return csum;
 }
 
