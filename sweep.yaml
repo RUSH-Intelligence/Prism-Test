@@ -21,33 +21,33 @@ models:
   # (Meta-Llama-3-8B is 8k-native — context-extension experiments only, not this KV sweep.)
 
 benchmarks:
-  - longbench                                     # primary; subsets pinned below
-  # - ruler16k                                    # subsets pinned below
+  # - longbench                                     # primary; subsets pinned below
+  - ruler16k                                    # subsets pinned below
   # - ruler64k                                    # 64k ctx; see benchmark_overrides
   # - loft                                        # runs its own default subset list
   # - aime            # aime2024 / aime2025 also registered
   # - gsm_infinite_hard_128k    # _medium_128k / _symbolic_128k also registered
 
 methods:                          # compressors to test (registry names; see the roster
-  # - knorm                       # in example_research.yaml / available_kv_compressors)
-  # - snapkv
-  # - ridge                       # fans out via the `ridge:` special grid below
-  # - compactor                   # prefill-only scorer; keep prefill_chunk_size null
-  # - cur
+  - knorm                       # in example_research.yaml / available_kv_compressors)
+  - snapkv
+  - ridge                       # fans out via the `ridge:` special grid below
+  - compactor                   # prefill-only scorer; keep prefill_chunk_size null
+  - cur
   # - pyramidkv                   # ragged cache -> needs flash_attention_2
   # - expected_attention
   # - keydiff
   # - streaming_llm
   # - top_k_sampling
-  - verified                      # det_fraction 1.0 = plain-ridge picks + coverage logging
+  # - verified                      # det_fraction 1.0 = plain-ridge picks + coverage logging
 
 ratios:                           # fraction PRUNED (kept = 1 - ratio). Comment/uncomment.
   - 0.6
+  - 0.8
   - 0.9
-  - 0.95
+  # - 0.95
   # - 0.2
   # - 0.4
-  # - 0.8
 
 full_baseline: true               # also run ONE no-compression cell per (model,benchmark)
 
@@ -56,7 +56,7 @@ full_baseline: true               # also run ONE no-compression cell per (model,
 # single default. Uncomment a list to fan it out into extra cells (all
 # combinations). `verified` wraps `inner` and reuses the Ridge dials for it.
 ridge:
-  # gammas:         [0, 0.5, 1, 1.5, 2, 2.5, 3]   # envelope_gamma
+  gammas:         [0, 0.5, 1, 1.5, 2, 2.5, 3]   # envelope_gamma
   # lambdas:        [1.0e-4]                        # ridge_lambda
   # rotate_queries: [false]
   # sink_size:      8
@@ -88,12 +88,14 @@ model_overrides: {}
 # default is 34 tasks (incl. Chinese + `_e`); we pin it to the paper's 16 English
 # tasks so numbers match the Ridge Press sheet / prior sweeps. Remove/edit freely.
 benchmark_overrides:
-  longbench:
-    subsets: [narrativeqa, qasper, multifieldqa_en, hotpotqa, 2wikimqa, musique,
-              gov_report, qmsum, multi_news, trec, triviaqa, samsum,
-              passage_count, passage_retrieval_en, lcc, repobench-p]
-  # ruler16k:
-  #   subsets: [niah_single_1, niah_single_3, niah_multikey_3]
+  # longbench:
+  #   subsets: [narrativeqa, qasper, multifieldqa_en, hotpotqa, 2wikimqa, musique,
+  #             gov_report, qmsum, multi_news, trec, triviaqa, samsum,
+  #             passage_count, passage_retrieval_en, lcc, repobench-p]
+  ruler16k:
+    subsets: [cwe, fwe, niah_multikey_1, niah_multikey_2, niah_multikey_3,
+              niah_multiquery, niah_multivalue, niah_single_1, niah_single_2,
+              niah_single_3, qa_1, qa_2, vt]
   # ruler64k:
   #   max_model_len: 66000
 
