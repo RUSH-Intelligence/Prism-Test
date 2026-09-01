@@ -18,16 +18,20 @@ import torch
 
 from eval_harness.kernels import rarekv_lsh
 from eval_harness.kernels.rarekv_lsh import (
-    DEFAULT_BLOCK, MIN_REDUCTION, collision_sums, collision_sums_torch, should_use_triton,
+    DEFAULT_BLOCK, MIN_REDUCTION, bucket_dtype, collision_sums, collision_sums_lmajor,
+    collision_sums_torch, should_use_triton,
 )
 
 CUDA = torch.cuda.is_available()
-CONFIGS = [(2, 40), (3, 50), (8, 50), (6, 80), (10, 60)]      # the profiled (P, L) grid
+# the profiled (P, L) grid, plus the L=70/100 target grid the unrolled gather
+# kernel now has explicit `case` arms for
+CONFIGS = [(2, 40), (3, 50), (8, 50), (6, 80), (10, 60), (6, 70), (5, 100), (9, 100)]
 
 
-def _buckets(BH, T, L, R, seed=0, device="cpu"):
+def _buckets(BH, T, L, R, seed=0, device="cpu", dtype=torch.int32):
     g = torch.Generator(device=device).manual_seed(seed)
-    return torch.randint(0, R, (BH, T, L), generator=g, device=device, dtype=torch.int32)
+    b = torch.randint(0, R, (BH, T, L), generator=g, device=device, dtype=torch.int32)
+    return b.to(dtype)
 
 
 class TestTorchReference(unittest.TestCase):
@@ -66,6 +70,40 @@ class TestTorchReference(unittest.TestCase):
         self.assertTrue(torch.equal(b, before))
 
 
+class TestSubWordBuckets(unittest.TestCase):
+    """uint8/int16 ids are what the packing kernels emit; the torch path must eat them."""
+
+    def test_torch_path_upcasts_before_folding_in_the_table_offset(self):
+        """The offset reaches (L-1)*R, which overflows both sub-word dtypes."""
+        BH, T, L, R = 2, 64, 60, 256
+        ref = _buckets(BH, T, L, R, seed=5)
+        for dt in (torch.uint8, torch.int16, torch.int32):
+            with self.subTest(dtype=dt):
+                self.assertTrue(torch.equal(collision_sums_torch(ref.to(dt), R),
+                                            collision_sums_torch(ref, R)))
+
+    def test_bucket_dtype_matches_what_the_torch_path_accepts(self):
+        for P in (1, 8, 9, 15):
+            dt = bucket_dtype(P)
+            b = _buckets(2, 32, 4, 1 << P, seed=P, dtype=dt)
+            self.assertEqual(b.dtype, dt)
+            csum = collision_sums_torch(b, 1 << P)
+            self.assertEqual(csum.dtype, torch.int32)
+
+
+class TestLMajorEntryPoint(unittest.TestCase):
+    """`collision_sums_lmajor` must agree with the T-major reference on any device."""
+
+    def test_matches_the_t_major_reference(self):
+        for P, L in CONFIGS:
+            with self.subTest(P=P, L=L):
+                R = 1 << P
+                b = _buckets(3, 257, L, R, seed=P + L, dtype=bucket_dtype(P))
+                lm = b.permute(0, 2, 1).contiguous()
+                self.assertTrue(torch.equal(collision_sums_lmajor(lm, R),
+                                            collision_sums_torch(b, R)))
+
+
 class TestDispatch(unittest.TestCase):
     """The kernel only wins when the atomic-reduction factor BLOCK/R is large."""
 
@@ -87,6 +125,27 @@ class TestDispatch(unittest.TestCase):
         if not rarekv_lsh.HAVE_TRITON:
             self.skipTest("triton not installed")
         self.assertTrue(should_use_triton(1024, torch.device("cuda"), block=8192))
+
+
+@unittest.skipUnless(CUDA and rarekv_lsh.HAVE_TRITON, "needs CUDA + triton")
+class TestTritonIsActuallyExercised(unittest.TestCase):
+    """Closes a real hole: `collision_sums` tries the CUDA extension FIRST.
+
+    On any node where the extension builds, every test that went through
+    `collision_sums` (or through `RareKVSketch.score`) exercised CUDA, never
+    Triton. These call `collision_sums_triton` directly so the Triton kernel is
+    genuinely covered wherever it is installed.
+    """
+
+    def test_triton_directly_across_the_grid(self):
+        for P, L in CONFIGS:
+            if not should_use_triton(1 << P, torch.device("cuda")):
+                continue
+            with self.subTest(P=P, L=L):
+                R = 1 << P
+                b = _buckets(4, 3000, L, R, seed=P, device="cuda")
+                self.assertTrue(torch.equal(rarekv_lsh.collision_sums_triton(b, R),
+                                            collision_sums_torch(b, R)))
 
 
 @unittest.skipUnless(CUDA and rarekv_lsh.HAVE_TRITON, "needs CUDA + triton")
@@ -160,12 +219,69 @@ class TestCudaPath(unittest.TestCase):
                     self.assertTrue(torch.equal(
                         rarekv_lsh.collision_sums_cuda(b, R), collision_sums_torch(b, R)))
 
+    def test_sub_word_bucket_dtypes(self):
+        """uint8 (P<=8) and int16 (9<=P<=15) are what the packing kernels emit.
+
+        P=15 is the one that exercises the histogram's shared-memory opt-in:
+        R*4 = 131072 B is far past the 48 KB default per-block cap, so without
+        `cudaFuncSetAttribute` this cell fails the launch with `invalid argument`
+        rather than returning a wrong answer.
+        """
+        for P, L in ((5, 100), (6, 70), (8, 50), (9, 100), (15, 5)):
+            with self.subTest(P=P, L=L):
+                R = 1 << P
+                if not rarekv_lsh.hist_smem_ok(R, torch.device("cuda")):
+                    self.skipTest(f"R={R} exceeds this device's opt-in shared memory")
+                ref = _buckets(4, 2049, L, R, seed=P, device="cuda")
+                want = collision_sums_torch(ref, R)
+                sub = ref.to(bucket_dtype(P))
+                self.assertTrue(torch.equal(rarekv_lsh.collision_sums_cuda(sub, R), want))
+                lm = sub.permute(0, 2, 1).contiguous()
+                self.assertTrue(torch.equal(collision_sums_lmajor(lm, R), want))
+
+    def test_uint8_is_refused_above_R_256(self):
+        b = _buckets(2, 64, 4, 256, device="cuda").to(torch.uint8)
+        with self.assertRaises(RuntimeError):
+            rarekv_lsh._kernel_ext().collide(b.permute(0, 2, 1).contiguous(), 512)
+
+    def test_hist_blocks_override_does_not_change_the_answer(self):
+        """The new hist_blocks heuristic is integer-only, hence exact at any value."""
+        b = _buckets(4, 8192, 60, 1024, device="cuda")
+        lm = b.permute(0, 2, 1).contiguous()
+        want = collision_sums_torch(b, 1024)
+        ext = rarekv_lsh._kernel_ext()
+        for hb in (0, 1, 4, 64, 512):
+            with self.subTest(hist_blocks=hb):
+                self.assertTrue(torch.equal(ext.collide(lm, 1024, 256, hb, 256), want))
+
     def test_dispatch_prefers_cuda(self):
         """Even at R=1024, where the Triton path would regress, CUDA is chosen."""
         b = _buckets(2, 4096, 60, 1024, device="cuda")
         self.assertTrue(torch.equal(rarekv_lsh.collision_sums(b, 1024),
                                     collision_sums_torch(b, 1024)))
         self.assertFalse(should_use_triton(1024, torch.device("cuda")))
+
+    def test_full_score_at_every_kernel_P(self):
+        """End to end, not just `collide`: P=14/15 must not die at the histogram.
+
+        The pack kernel happily emits int16 ids up to P=15, so a config that
+        `bucket_dtype` and `KERNEL_MAX_PLANES` both advertise has to survive the
+        collision histogram too -- which needs 65536/131072 B of shared memory.
+        """
+        from types import SimpleNamespace
+        from eval_harness.kv_compression import get_kv_compressor
+        mod = SimpleNamespace(layer_idx=0, head_dim=64)
+        g = torch.Generator(device="cuda").manual_seed(5)
+        k = torch.randn(1, 2, 1024, 64, device="cuda", dtype=torch.bfloat16, generator=g)
+        v = torch.randn(1, 2, 1024, 64, device="cuda", dtype=torch.bfloat16, generator=g)
+        for P in (12, 13, 14, 15):
+            with self.subTest(P=P):
+                kw = dict(compression_ratio=0.9, n_planes=P, n_tables=4,
+                          max_bucket_slots=1 << 26)
+                a = get_kv_compressor("rarekv", lsh_mode="pack", **kw)
+                b = get_kv_compressor("rarekv", lsh_mode="torch", **kw)
+                self.assertTrue(torch.equal(a.score(mod, None, k, v, None, {}),
+                                            b.score(mod, None, k, v, None, {})))
 
     def test_all_three_paths_agree(self):
         for P, L in CONFIGS:

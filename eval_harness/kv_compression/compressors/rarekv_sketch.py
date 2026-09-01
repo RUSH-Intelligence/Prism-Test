@@ -1,5 +1,6 @@
 """RareKV: rarity-based KV eviction via locality-sensitive hashing."""
 
+import logging
 import math
 from dataclasses import dataclass, field
 from typing import Dict, Tuple
@@ -9,7 +10,12 @@ from torch import nn
 
 from eval_harness.kv_compression.registry import register_kv_compressor
 from eval_harness.kv_compression.base import ScorerKVCompressor
-from eval_harness.kernels.rarekv_lsh import collision_sums
+from eval_harness.kernels.rarekv_lsh import (
+    KERNEL_MAX_PLANES, collision_sums_lmajor, lsh_buckets, planes_to_planes_t,
+    resolve_mode,
+)
+
+logger = logging.getLogger(__name__)
 
 
 @register_kv_compressor("rarekv", aliases=["rare_kv"])
@@ -52,9 +58,12 @@ class RareKVSketch(ScorerKVCompressor):
     Implementation notes
     --------------------
     - **Fully vectorised, no Python loops.** The ``L`` tables are folded into a
-      single ``[D, L*P]`` GEMM, bit-packing is one broadcast multiply-and-sum,
-      and the collision histogram over all ``(batch, head, table)`` groups is a
-      *single* ``scatter_add_`` into a flattened ``(group, bucket)`` index space.
+      single ``[D, L*P]`` GEMM; the sign test, the bit-pack and the transpose into
+      the collision kernel's L-major layout are ONE fused CUDA kernel
+      (``lsh_mode="pack"``, the default; ``kernels/csrc/rarekv_pack.cu``); the
+      collision histogram over all ``(batch, head, table)`` groups is a *single*
+      privatised histogram (or, on the reference path, a single ``scatter_add_``
+      into a flattened ``(group, bucket)`` index space).
     - **Reproducible and sync-free.** Counting uses integer ``scatter_add_``:
       CUDA atomics reorder additions, but integer addition is exact, so the
       histogram is bit-identical run to run. (For *this* kernel an fp32
@@ -68,10 +77,31 @@ class RareKVSketch(ScorerKVCompressor):
       PyTorch's CUDA-nondeterministic list without ``CUBLAS_WORKSPACE_CONFIG``,
       and ``EvalConfig.deterministic`` defaults to False. Measured impact is nil
       (fp32 sign-flip rate <= 8e-8; the retained set never changed across 5
-      configs). **TF32 is the real hazard**: enabling
-      ``torch.backends.cuda.matmul.allow_tf32`` raises the flip rate ~1000x and
-      moves up to 1.1% of retained tokens. ``profiling/environment.py`` records
-      these flags; nothing pins them.
+      configs). That is exactly why ``lsh_mode="pack"`` leaves the GEMM alone and
+      fuses only what comes after it: everything downstream of the sign test is
+      integer, so Tier 1 is **unconditionally bit-identical** to the pure-torch
+      path -- ``torch.equal``, not ``allclose``.
+
+      **The live float exposure is the reduced-precision-reduction flag**, not
+      TF32. TF32 cannot touch the production bf16 GEMM at all (bf16's 8
+      significand bits sit strictly inside tf32's 10); the "~1000x flip rate"
+      figure describes an **fp32** K cache, which only the fp32 fallback path
+      produces. ``NVIDIA_TF32_OVERRIDE=0`` is still pinned in every launcher --
+      it guards that fallback and costs nothing -- but the flag that can move the
+      shipped bf16 path is
+      ``torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction``,
+      which defaults True and is unpinned: were cuBLAS to select a split-k
+      algorithm, today's own path would flip ~4.4e-04 of signs.
+      ``profiling/environment.py`` records all of these; nothing pins them, and
+      pinning them would silently move every already-published rarekv number.
+
+      **``lsh_mode="fused"`` (Tier 2) is a different contract.** It removes the
+      projection entirely by doing the GEMM on tensor cores inside the packing
+      kernel, so it cannot be bit-identical to cuBLAS. It is bit-identical to a
+      *declared reference* (fp32 accumulation over strictly ascending 16-wide k
+      chunks on sm_90a -- see ``kernels/csrc/rarekv_fused.cu``), and its
+      divergence from the shipped path is measured and published by
+      ``scripts/bench_rarekv_kernel.py``, not asserted away. It is opt-in.
     - **Planes never touch the global RNG.** They are drawn from an explicitly
       seeded CPU generator and moved to device, so they are identical on any GPU
       or driver, and reproducible across processes. They are cached per
@@ -80,15 +110,37 @@ class RareKVSketch(ScorerKVCompressor):
       mixed-attention hybrids (NemotronH applies no RoPE) out of the box and has
       no ``attn_implementation`` requirement.
 
-    Peak transient memory is ``~5 * B * H_kv * T * L * P`` bytes: the projection
-    in the cache dtype (2 B/elem) plus the int32 bit-pack (4 B/elem, with the
-    projection freed first). At ``T=128K, H_kv=8, L=60, P=10`` that is ~1.8 GB.
-    Writing this the obvious way — keeping the fp32 projection alive across an
-    int64 cast and an int64 product — costs **20 B/elem, i.e. ~12.6 GB**, which
-    is why the ordering in :meth:`score` is deliberate and should not be
-    "simplified". ``__post_init__`` rejects configurations whose bucket table
-    would exceed ``max_bucket_slots``, and configurations whose ``eps**-alpha``
-    would overflow fp32.
+    Peak transient memory, per element of ``B * H_kv * T * L * P``:
+
+    ==================  ==========  ================================
+    ``lsh_mode``        bytes/elem  ``T=128K, H_kv=8, L=60, P=10``
+    ==================  ==========  ================================
+    ``"torch"``         5           2.93 GiB
+    ``"pack"``          2 + b/P     1.29 GiB
+    ``"fused"``         b/P         0.12 GiB
+    ==================  ==========  ================================
+
+    where ``b`` is the bucket-id width (1 byte for ``P <= 8``, 2 for
+    ``9 <= P <= 16``). The torch figure is the projection in the cache dtype
+    (2 B/elem) plus the int32 bit-pack (4 B/elem) with the projection freed
+    first, so the two never peak together; ``"pack"`` keeps only the projection
+    plus the packed ids, and ``"fused"`` keeps only the ids. Writing the torch
+    form the obvious way — keeping the projection alive across an int64 cast and
+    an int64 product — costs **20 B/elem, i.e. ~11.7 GiB**, which is why the
+    ordering in :func:`~eval_harness.kernels.rarekv_lsh.buckets_from_proj_torch`
+    is deliberate and should not be "simplified". ``gemm_chunk_rows`` bounds the
+    projection term of ``"pack"`` independently of ``T``.
+
+    None of this is an OOM story: the prefill peak is set in the MLP
+    (~120 kB/token measured), and ``rarekv`` p6l80 raised ``peak_alloc_prefill``
+    by only 7.87 MB over ``keydiff`` despite a 2.51 GB transient. What the
+    reduction buys is **headroom returned** (a few percent to ~18% of the prefill
+    peak, more on MHA models where ``H_kv=32``), plus the removal of the ceiling
+    that kept ``L`` and ``P`` small.
+
+    ``__post_init__`` rejects configurations whose bucket table would exceed
+    ``max_bucket_slots``, and configurations whose ``eps**-alpha`` would overflow
+    fp32.
 
     Caveats worth knowing before reading results
     --------------------------------------------
@@ -155,6 +207,40 @@ class RareKVSketch(ScorerKVCompressor):
         ``False`` to share one plane set across all layers.
     max_bucket_slots : int, default=2**26
         Guard on ``B * H_kv * L * 2**P``, the size of the collision histogram.
+    use_triton : bool, default=True
+        Allow the compiled collision paths (CUDA extension, then Triton). False
+        forces ``collision_sums_torch``. Kept under its historical name; the
+        CUDA extension is preferred over Triton wherever it builds.
+    lsh_mode : {"pack", "fused", "torch"}, default="pack"
+        How bucket ids are produced. ``"pack"`` (Tier 1) keeps the cuBLAS GEMM
+        and fuses the sign/pack/transpose into one kernel — **bit-identical** to
+        ``"torch"``, which is the reference. ``"fused"`` (Tier 2) also fuses the
+        GEMM onto tensor cores, removing the projection entirely; it is
+        bit-identical to a declared reference but NOT to cuBLAS, so it is opt-in
+        and its divergence must be published alongside any result that used it.
+        ``"torch"`` is the ATen sequence, always available. The env var
+        ``PRISM_RAREKV_LSH`` overrides this per run in BOTH directions (``score``
+        resolves it before deciding whether to build the fused operand), and
+        ``PRISM_RAREKV_CUDA=0`` forces ``"torch"``. ``"fused"`` silently degrades to ``"pack"`` (never
+        straight to ``"torch"``) when its preconditions do not hold; the resolved
+        path is logged once per layer and recorded in ``lsh_paths``.
+    block_m : int, default=0
+        Rows per CTA in the packing kernel; ``0`` uses the kernel default (128).
+        An autotune knob — 128 or 256. Cannot change the answer, but it does
+        double the kernel's shared-memory request (``block_m * rk_nbs(L*P)``
+        bytes): at ``L*P >= 1289`` only ``block_m=128`` fits a 48 KB device, and
+        past the device's opt-in limit ``lsh_buckets`` routes to the (identical)
+        torch sequence rather than failing the launch. Irrelevant on the target
+        grid, where ``L*P <= 900``.
+    gemm_chunk_rows : int, default=0
+        ``0`` (default) issues ONE cuBLAS call for the projection. A positive
+        value chunks it along M so the projection never materialises in full,
+        bounding the ``"pack"`` transient at ``gemm_chunk_rows * L * P * 2``
+        bytes. Chunking along M cannot change any output element's reduction
+        order over ``D``; the only exposure is cuBLAS re-selecting an algorithm
+        at the smaller M, which is an empirical question — hence this ships off
+        and is gated by the benchmark's ``gemm_chunk_exact`` column. No effect on
+        ``"fused"`` (which has no projection) or ``"torch"``.
     """
 
     n_planes: int = 8
@@ -166,9 +252,13 @@ class RareKVSketch(ScorerKVCompressor):
     per_layer_planes: bool = True
     max_bucket_slots: int = 1 << 26
     use_triton: bool = True
-    _plane_cache: Dict[Tuple[int, int], torch.Tensor] = field(
+    lsh_mode: str = "pack"          # "pack" (Tier 1, bit-identical) | "fused" | "torch"
+    block_m: int = 0                # 0 = kernel default (128); autotune knob, 128 | 256
+    gemm_chunk_rows: int = 0        # 0 = single cuBLAS call (Tier 1c is opt-in)
+    _plane_cache: Dict[Tuple, torch.Tensor] = field(
         default_factory=dict, init=False, repr=False, compare=False
     )
+    _lsh_paths: set = field(default_factory=set, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -196,7 +286,24 @@ class RareKVSketch(ScorerKVCompressor):
                 f"n_tables * 2**n_planes = {self.n_tables * (1 << self.n_planes):,} already "
                 f"exceeds max_bucket_slots={self.max_bucket_slots:,} before the "
                 f"batch/head factor. Lower n_planes (P) or n_tables (L).")
+        if self.lsh_mode not in ("pack", "fused", "torch"):
+            raise ValueError(
+                f"lsh_mode must be one of pack|fused|torch, got {self.lsh_mode!r}")
+        if self.block_m not in (0, 128, 256):
+            raise ValueError(f"block_m must be 0, 128 or 256, got {self.block_m}")
+        if self.gemm_chunk_rows < 0:
+            raise ValueError(f"gemm_chunk_rows must be >= 0, got {self.gemm_chunk_rows}")
+        # The kernel bucket ids are uint8/int16, so the packing kernels cap at
+        # P=16 while the validator above allows P<=30. `pack` degrades to the
+        # (identical) torch sequence there, which is a speed loss and nothing
+        # else -- but `fused` changes float behaviour, so asking for it at P>16
+        # is a configuration error, not something to silently reinterpret.
+        if self.lsh_mode == "fused" and self.n_planes > KERNEL_MAX_PLANES:
+            raise ValueError(
+                f"lsh_mode='fused' needs n_planes <= {KERNEL_MAX_PLANES} (the kernel emits "
+                f"uint8/int16 bucket ids); got n_planes={self.n_planes}. Use lsh_mode='pack'.")
         self._plane_cache = {}
+        self._lsh_paths = set()
 
     @property
     def n_buckets(self) -> int:
@@ -262,7 +369,15 @@ class RareKVSketch(ScorerKVCompressor):
         return cached
 
     def _powers(self, device: torch.device) -> torch.Tensor:
-        """``[1, 2, 4, ...]`` for bit packing, cached (2 fewer launches per layer)."""
+        """``[1, 2, 4, ...]`` for bit packing, cached.
+
+        No longer used by :meth:`score` -- the packing kernel ORs the sign bits
+        directly, and the torch reference builds its own powers vector inside
+        :func:`~eval_harness.kernels.rarekv_lsh.buckets_from_proj_torch`. Kept
+        because ``scripts/bench_rarekv_dense.py`` and
+        ``scripts/bench_blockrare_dense.py`` reproduce the pre-kernel sequence
+        by hand and need the identical operand.
+        """
         key = ("powers", self.n_planes, str(device))
         cached = self._plane_cache.get(key)
         if cached is None:
@@ -270,6 +385,43 @@ class RareKVSketch(ScorerKVCompressor):
                 device=device, dtype=torch.int32)
             self._plane_cache[key] = cached
         return cached
+
+    def _planes_t(self, module: nn.Module, head_dim: int, device: torch.device,
+                  dtype: torch.dtype) -> torch.Tensor:
+        """``[ceil(L/8)*8*P, head_dim]`` transposed, zero-padded planes for Tier 2.
+
+        The fused kernel's B operand needs ``B[k][n] = planesT[col][k]`` with ``k``
+        contiguous, and it sweeps 8 tables per column tile, so the row count is
+        rounded up to a whole number of tiles. Built lazily on the first ``fused``
+        call and cached under the same identity tuple as :meth:`_planes`, so a
+        seed or (L, P) change cannot silently reuse the previous operand.
+        """
+        layer_idx = int(getattr(module, "layer_idx", 0) or 0)
+        key = ("planes_t",) + self._cache_key(layer_idx, head_dim, device, dtype)
+        cached = self._plane_cache.get(key)
+        if cached is None:
+            cached = planes_to_planes_t(
+                self._planes(module, head_dim, device, dtype), self.n_tables, self.n_planes)
+            self._plane_cache[key] = cached
+        return cached
+
+    def _log_path_once(self, module: nn.Module, path: str) -> None:
+        """Record and log the resolved LSH path the first time each one is seen.
+
+        A run that silently degraded from ``fused`` to ``pack`` is otherwise
+        indistinguishable from one that did not, and its divergence table would be
+        meaningless. ``lsh_paths`` is the machine-readable form.
+        """
+        if path in self._lsh_paths:
+            return
+        self._lsh_paths.add(path)
+        logger.info("rarekv LSH path %r (requested %r, layer %s)", path, self.lsh_mode,
+                    getattr(module, "layer_idx", None))
+
+    @property
+    def lsh_paths(self) -> Tuple[str, ...]:
+        """Every LSH path this instance actually took, sorted. Empty before the first hook."""
+        return tuple(sorted(self._lsh_paths))
 
     def score(
         self,
@@ -293,42 +445,64 @@ class RareKVSketch(ScorerKVCompressor):
                 f"or n_tables (L={L})."
             )
 
-        # 1. Signed random projections: one GEMM for all L tables at once, in the
-        #    cache dtype. bf16 in / fp32 accumulate (cuBLAS) flips the sign of a
-        #    near-zero projection for ~5e-4 of entries, which changes the retained
-        #    set by ~2% -- roughly 25x LESS than changing `seed` does (~56%). An
-        #    fp32 cast would cost a full fp32 copy of K and a ~10x slower GEMM for
-        #    a perturbation far below the method's own hash variance.
-        proj = keys.reshape(-1, D) @ self._planes(module, D, device, keys.dtype)
+        # 1-3. Signed random projections, then the bucket ids, in the layout the
+        #    collision kernel wants ([B*H, L, T]).
+        #
+        #    On the default `pack` path the GEMM is UNCHANGED -- one call for all L
+        #    tables at once, in the cache dtype. bf16 in / fp32 accumulate (cuBLAS)
+        #    flips the sign of a near-zero projection for ~5e-4 of entries versus an
+        #    fp32 GEMM, which changes the retained set by ~2%: roughly 25x LESS than
+        #    changing `seed` does (~56%). An fp32 cast would cost a full fp32 copy of
+        #    K and a ~10x slower GEMM for a perturbation far below the method's own
+        #    hash variance. Leaving the one unpinnable op alone is precisely what
+        #    makes `pack` bit-identical to `torch`.
+        #
+        #    The packing kernel then reads `proj` ONCE and writes uint8/int16 ids
+        #    straight into the L-major layout: the bool `sign`, the int32 `packed`,
+        #    its in-place multiply, the int32 `bucket` and the transposing clone are
+        #    all gone (11.8 -> 2.8 GB/layer at T=128K, L=70, P=6; transient
+        #    5 -> 2 + b/P bytes per element). `fused` removes `proj` too -- see the
+        #    class docstring for why that is a different exactness contract.
+        planes = self._planes(module, D, device, keys.dtype)
+        # Resolve the env override HERE, not inside `lsh_buckets`: the fused path
+        # needs the transposed plane operand, and building it from `self.lsh_mode`
+        # alone made `PRISM_RAREKV_LSH=fused` unable to UPGRADE a config -- it
+        # resolved to "fused", failed the `planes_t is not None` precondition and
+        # fell back to `pack` with nothing above INFO to say so. A divergence study
+        # driven by the documented env var would then have reported a Tier-2 flip
+        # rate of exactly zero for a path that never ran.
+        want = resolve_mode(self.lsh_mode)
+        planes_t = (self._planes_t(module, D, device, keys.dtype)
+                    if want == "fused" else None)
+        bucket, path = lsh_buckets(keys, planes, planes_t, L, P, mode=self.lsh_mode,
+                                   block_m=self.block_m,
+                                   gemm_chunk_rows=self.gemm_chunk_rows)
+        self._log_path_once(module, path)
 
-        # 2. Pack each table's P sign bits into a bucket id in [0, 2**P).
-        #    `proj` is released BEFORE the widening cast and the multiply is
-        #    in-place: holding fp32 proj + an int64 cast + an int64 product live at
-        #    once costs 20 bytes per (B*H*T*L*P) element; this ordering costs 5.
-        sign = (proj > 0).view(-1, L, P)
-        del proj
-        packed = sign.to(torch.int32)
-        del sign
-        packed.mul_(self._powers(device))
-        bucket = packed.sum(-1, dtype=torch.int32)          # [B*H*T, L]; dtype= or it
-        del packed                                          # promotes to int64 via a copy
-
-        # 3+4. Collision counts, then sum over L. Both are integer, so both are
-        #    order-independent -- which is what lets the Triton path be
+        # 4. Collision counts, then sum over L. Both are integer, so both are
+        #    order-independent -- which is what lets every collision path be
         #    BIT-IDENTICAL rather than merely close.
         #
+        #    CUDA path: a shared-memory privatised histogram plus a thread-per-key
+        #    gather on the L-major layout, so both bucket reads are fully coalesced.
         #    torch path: one 2-D scatter_add_ with the table offset folded into the
-        #    natural [B*H, T, L] layout (no loop over tables, and no [T,L]->[L,T]
-        #    transposing clone, which is uncoalesced and costs ~1 ms/layer at 128K).
-        #    triton path: a block-privatised histogram, which cuts global atomics
-        #    per (b,h,l) from T to (T/BLOCK)*R. That reduction factor is BLOCK/R, so
-        #    it is taken only for small R -- see kernels/rarekv_lsh.should_use_triton.
-        #    Measured on H200: 7.8x at R=8, 1.3x at R=256, 0.8x (slower) at R=1024.
-        csum = collision_sums(bucket.view(B * H, T, L), R, prefer_triton=self.use_triton)
+        #    [B*H, T, L] layout (no loop over tables). Triton path: a block-privatised
+        #    histogram, which cuts global atomics per (b,h,l) from T to (T/BLOCK)*R.
+        #    That reduction factor is BLOCK/R, so it is taken only for small R -- see
+        #    kernels/rarekv_lsh.should_use_triton. Measured on H200: 7.8x at R=8,
+        #    1.3x at R=256, 0.8x (slower) at R=1024.
+        csum = collision_sums_lmajor(bucket, R, prefer_kernels=self.use_triton)
+        del bucket
 
         # mean_l[(C-1)/(N-1)] == (mean_l C - 1)/(N-1), so reduce over L FIRST and
         # scale the small result: the naive order allocates three full
         # [B*H*T*L] fp32 temporaries.
+        #
+        # `csum` is int32 all the way here and is converted LAST, which matters: the
+        # cast exceeds fp32's exact-integer ceiling once csum > 2**24, i.e. at
+        # T > 2**24/L (167,772 at L=100). That is pre-existing and identical on every
+        # path (so it cannot break bit-identity), but it is a trap for any future
+        # fusion -- accumulate the collision counts in int32 and convert once.
         density = (csum.float() / L - 1.0) / float(max(T - 1, 1))
         scores = (self.eps + density).pow(-self.alpha).view(B, H, T)
 
