@@ -31,7 +31,9 @@ Long-context evaluation has questions short-context harnesses don't ask. The har
 
 - **Quality vs. context length** — does my method's accuracy survive 64K? 128K? 1M?
 - **Quality vs. KV budget** — for a fixed cache size, which sketch comes closest to dense attention?
-- **Cost of long context** — prefill latency, decode latency, peak VRAM, KV-cache size at length L.
+- **Cost of long context** — prefill latency, TTFT, per-step decode latency, decode throughput,
+  peak VRAM and KV-cache bytes at length L. This one is *not* a config change on the eval path:
+  it is a separate run through `scripts/bench_kv_perf.py` (see **Performance benchmarking**).
 - **Where recall actually fails** — global sink? mid-context? local window? task type?
 - **Attention vs. retrieval** — when is a RAG baseline competitive with long-context attention?
 
@@ -299,6 +301,67 @@ The runner feeds all questions for one context together. After the shared prefil
 `prefill_chunk_size` (`null` = single pass; int = streaming chunks) drives the chunked prefill the `streaming` schedule hooks into.
 
 ---
+
+## Performance benchmarking (throughput, latency, memory)
+
+Quality and timing are **separate runs**. `eval_harness.cli run` scores answers and writes
+`metrics.json`, which carries no timing fields; `scripts/bench_kv_perf.py` measures systems
+metrics and writes `perf.json`. Timing a scored eval would measure dataset loading and the
+scorer as much as the model.
+
+```bash
+/scratch/sj157/prism_env/bin/python scripts/bench_kv_perf.py \
+    --model meta-llama/Llama-3.1-8B-Instruct --model-key llama8b \
+    --methods knorm,cur,keydiff,snapkv,streaming_llm --ratios 0.9 \
+    --context-lengths 8192,16384,32768,65536,130816 \
+    --attn-impl flash_attention_2 --dtype bfloat16 \
+    --decode-steps 128 --repeats 5 --out-dir /scratch/sj157/kv_perf/perf
+
+# on SLURM: one job per (model, context length), one subprocess per cell
+./scripts/slurm/launch_kv_perf.sh            # DRY_RUN=1 to preview, SMOKE=1 for a short check
+
+# multi-model: scripts/kv_perf_models.tsv is the single source of truth for each
+# model's attn / dtype / max_model_len / context list / walltimes
+MATRIX=scripts/kv_perf_models.tsv ./scripts/slurm/launch_kv_perf.sh
+MATRIX=scripts/kv_perf_models.tsv FILTER_MODEL="qwen3_8b" ./scripts/slurm/launch_kv_perf.sh
+python scripts/kv_perf_report.py --root /scratch/sj157/kv_perf/perf report
+```
+
+### What it measures
+
+| metric | definition |
+|---|---|
+| `prefill_ms` | CUDA-event span of the single full-context `_run_prefill` pass. Includes compression: the compressor is a per-layer forward hook. |
+| `ttft_ms` | `prefill_ms` + the question-block forward. The first token comes from that forward (`research_pipeline.py:454-466`), not from the decode loop. |
+| `step_ms` | **Token-to-token period** — the interval between the start of consecutive decode forwards, so it includes the `argmax` and the blocking `.item()` at `research_pipeline.py:475-477`. `forward_device_ms` is the forward's CUDA span alone; the gap between them is host overhead. |
+| `decode_tok_s` | total tokens / total time (= `1000/mean`). The median-based figure is reported separately — it hides the tail, where allocator stalls and throttling live. |
+| `kv_cache.bytes_total` | walked from the live cache, summing **actual per-layer lengths** (ragged-safe, hybrid-safe). |
+
+### How it avoids drifting from the eval path
+
+It does **not** re-implement generation. It instruments the shipped path from outside:
+`pipe._run_prefill` is wrapped at the instance level; forward hooks on the top-level `model`
+fire only for the question block and decode steps (prefill calls `model.model` directly);
+`compressor.forward_hook` is wrapped for per-layer scoring cost; and EOS is disabled via
+`generation_config.eos_token_id = [-1]` so every cell runs an identical step count without
+touching `research_pipeline.py`. `tests/test_profiling_equivalence.py` asserts the instrumented
+run produces **byte-identical generated tokens** to the uninstrumented `_forward`, per method.
+
+### Reading the numbers honestly
+
+- **Batch = 1 means weights dominate.** Llama-3.1-8B reads ~15 GB of weights per decode step
+  versus ~1 GB of KV at 8K, so the memory-bandwidth ceiling on speedup is ~1.06x at 8K and only
+  ~1.9x at 128K. A small number at short context is physics, not a broken harness.
+- **Compression makes prefill and TTFT worse, never better.** The hook fires per layer *after*
+  that layer's full-length attention has run, so eviction cannot reduce any earlier work.
+- **This harness re-copies the KV cache every decode step.** transformers' `DynamicCache` grows
+  by `torch.cat` (`cache_utils.py:143-144`) with no pre-allocation, so KV traffic is ~3x the
+  naive model and compression looks *better* here than in a paged engine (vLLM/TRT-LLM). Do not
+  extrapolate these ratios to such an engine.
+- **The audit gate runs on every cell** and fails it on: a cache that missed `int(T*(1-r))`,
+  an anchor that was evicted, a masking-based press whose cache never shrank (full KV traffic
+  while looking compressed), a wrong step count, step-latency CV > 10%, or a nonzero
+  `num_alloc_retries`. `kv_perf_report.py report` exits nonzero when any cell failed.
 
 ## Add a new benchmark
 

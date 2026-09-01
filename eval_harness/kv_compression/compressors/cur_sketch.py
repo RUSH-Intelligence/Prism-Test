@@ -10,7 +10,7 @@ from eval_harness.kv_compression.registry import register_kv_compressor
 from eval_harness.kv_compression.base import ScorerKVCompressor
 
 
-@register_kv_compressor("cur")
+@register_kv_compressor("cur", aliases=["curdkv"])
 @dataclass
 class CURSketch(ScorerKVCompressor):
     """

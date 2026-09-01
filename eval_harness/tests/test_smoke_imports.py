@@ -24,6 +24,14 @@ CORE_MODULES = [
     "eval_harness.benchmarks.mock_benchmark",
     "eval_harness.kv_compression",
     "eval_harness.kv_compression.cache_adapter",
+    # Must import with no CUDA present: environment probes are individually
+    # guarded and the package resolves heavy modules lazily.
+    "eval_harness.profiling",
+    "eval_harness.profiling.stats",
+    "eval_harness.profiling.kvsize",
+    "eval_harness.profiling.audit",
+    "eval_harness.profiling.cell",
+    "eval_harness.profiling.runner",
 ]
 
 OPTIONAL_MODULES = {

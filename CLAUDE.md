@@ -4,7 +4,13 @@ Long-context inference evaluation framework for research on extending transforme
 
 The framework evaluates language models on context lengths far beyond their training context, enabling systematic research on inference-time context compression methods. It provides a unified interface for implementing and benchmarking custom inference strategies while remaining compatible with standard HuggingFace and vLLM backends.
 
-The framework supports standardized evaluation across benchmarks such as RULER, LOFT, LongBench, InfiniteBench, GSM-Infinite, AIME, and custom long-context tasks, with detailed reporting of both quality and systems metrics including accuracy, retrieval performance, latency, throughput, memory usage, KV-cache size, and prefill/decode efficiency.
+The framework supports standardized evaluation across benchmarks such as RULER, LOFT, LongBench,
+InfiniteBench, GSM-Infinite, AIME, and custom long-context tasks. **Quality** metrics (accuracy,
+retrieval performance, per-task/per-length scores) come from the eval path into `metrics.json`;
+**systems** metrics (prefill latency, TTFT, per-step decode latency, decode throughput, peak
+memory, KV-cache bytes) come from the separate profiling path
+(`eval_harness/profiling/` + `scripts/bench_kv_perf.py`) into `perf.json`. `metrics.json` carries
+no timing fields.
 
 User-facing docs: [README.md](README.md) for setup/overview, [BENCHMARKING.md](BENCHMARKING.md) for the benchmarker's guide (adapter selection, where to plug code in, research backend internals, RAG/Ollama setup).
 
@@ -24,6 +30,9 @@ eval_harness/
   kv_compression/        # DOOR 3 (KV compression): base.py (KVCompressor/ScorerKVCompressor + CompressionSchedule/Operation), registry.py (@register_kv_compressor), cache_adapter.py, utils.py, attention_patch.py, compressors/ (~36 KV baselines, mostly kvpress 0.5.1 ports)
   mlp_methods/           # DOOR 4 (reserved seam only — MoE/activation-sparsity; not implemented)
   kernels/               # Triton einsum-topk + bitonic-merge (ReAttention) + flash-attn-with-LSE (DCA)
+  profiling/             # systems metrics: CUDA-event timers, KV-byte accounting, exact-length
+                         #   prompts, perf.json schema + audit gate. Instruments the REAL
+                         #   research path (no reimplementation) -- see runner.py
   rag_adapter.py, rag/   # OnePassRAG (LanceDB + llm-embedder + Ollama llama3.1)
   benchmarks/            # one module per benchmark; registry.py exposes get_benchmark()
   tests/                 # unittest — no model loading; uses object.__new__ + fake models

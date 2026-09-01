@@ -4,7 +4,13 @@
 
 Prism-Test is a unified, reproducible harness for benchmarking large language models on **long-context** tasks — including contexts that vastly exceed a model's native training window. It standardizes evaluation across popular long-context suites (RULER, LOFT, LongBench, InfiniteBench, GSM-Infinite, AIME, Loogle, and the Prism-1M dataset), while exposing first-class extension points for **inference-time context compression** research: sparse attention, KV-cache eviction sketches, hybrid sparse/dense prefill kernels, and RAG-style retrieval.
 
-It supports four interchangeable inference backends — `vllm`, `hf`, `research`, and `rag` — and ships with detailed quality + systems metrics (accuracy, retrieval recall, latency, throughput, memory, KV-cache size, prefill/decode efficiency).
+It supports four interchangeable inference backends — `vllm`, `hf`, `research`, and `rag`.
+The **eval path** (`eval_harness.cli run`) reports quality metrics — accuracy, retrieval
+recall, per-task and per-context-length scores — into `metrics.json`. The separate
+**profiling path** (`scripts/bench_kv_perf.py`, backed by `eval_harness/profiling/`)
+reports systems metrics — prefill latency, TTFT, per-step decode latency, decode
+throughput, peak memory and KV-cache bytes — into `perf.json`. The two are deliberately
+distinct runs: timing a scored eval would measure the scorer as much as the model.
 
 > **If you're here to run benchmarks, design compression experiments, or plug in your own attention code, read [BENCHMARKING.md](BENCHMARKING.md).** This README covers what's in the repo and how to get a first run working; BENCHMARKING goes into adapter selection, where to plug your code in at several layers of depth, the research-backend architecture, and how to add a new benchmark.
 
