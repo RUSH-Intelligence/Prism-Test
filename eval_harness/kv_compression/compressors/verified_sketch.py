@@ -10,6 +10,11 @@ from eval_harness.kv_compression.registry import get_kv_compressor, register_kv_
 
 logger = logging.getLogger(__name__)
 
+# Fixed seed for the index-recovery projection's LOCAL generator (see
+# _recover_indices). Any value works — the result is verified exactly — this
+# just keeps the projection off the global RNG and reproducible.
+_RECOVER_SEED = 0x5EED
+
 
 @register_kv_compressor("verified")
 @dataclass
@@ -93,6 +98,12 @@ class VerifiedSketch(KVCompressor):
         reproducibility; otherwise the global torch RNG is used (seed externally).
     """
 
+    # Behavior version (folded into the run-spec barcode; bare int, NOT a
+    # dataclass field). Bumped to 2 for the exact index-recovery + local
+    # per-layer RNG fixes below — same settings, changed behavior, so force a
+    # rerun of any prior `verified` results.
+    VERSION = 2
+
     compression_ratio: float = 0.0
     inner: str = "ridge"
     inner_kwargs: dict = field(default_factory=dict)
@@ -152,23 +163,50 @@ class VerifiedSketch(KVCompressor):
         full_keys: [B, H, S, D]; kept_keys: [B, H, n, D] of exact row copies
         (the inner gathers keys unmodified). Returns [B, H, n] long indices.
 
-        Uses a random-projection fingerprint + exact-match searchsorted so this
-        stays O(S log S) instead of the O(S·n) broadcast-equality used in tests.
+        A random-projection fingerprint gives O(S log S) CANDIDATE positions, but
+        a scalar fingerprint can collide and ``searchsorted`` does not check
+        equality — so every candidate is VERIFIED against the full key vector and
+        any that fail are resolved by exact match. This guarantees the returned
+        index actually points at the kept key (no silent wrong/duplicate
+        substitution at 16k). The projection vector is drawn from a LOCAL
+        generator, so the global RNG stream is never perturbed (repo convention).
         """
         B, H, S, D = full_keys.shape
         n = kept_keys.shape[2]
         if n == 0:
             return torch.zeros(B, H, 0, dtype=torch.long, device=full_keys.device)
 
-        w = torch.randn(D, device=full_keys.device, dtype=torch.float32)
+        gen = torch.Generator(device=full_keys.device).manual_seed(_RECOVER_SEED)
+        w = torch.randn(D, device=full_keys.device, dtype=torch.float32, generator=gen)
         f_full = (full_keys.float() * w).sum(-1)  # [B, H, S]
         f_kept = (kept_keys.float() * w).sum(-1)  # [B, H, n]
 
         order = f_full.argsort(dim=-1)                     # ascending positions
         f_sorted = f_full.gather(-1, order)                # sorted fingerprints
-        pos = torch.searchsorted(f_sorted, f_kept)         # left match (exact)
-        pos = pos.clamp_(max=S - 1)
-        return order.gather(-1, pos)                       # -> original positions
+        pos = torch.searchsorted(f_sorted, f_kept).clamp_(max=S - 1)
+        cand = order.gather(-1, pos)                       # [B, H, n] candidates
+
+        # Verify each candidate really is the kept key; exact-match any miss.
+        got = torch.gather(full_keys, 2, cand.unsqueeze(-1).expand(-1, -1, -1, D))
+        bad = (got != kept_keys).any(dim=-1)               # [B, H, n]
+        if bool(bad.any()):
+            cand = VerifiedSketch._exact_recover(full_keys, kept_keys, cand, bad)
+        return cand
+
+    @staticmethod
+    def _exact_recover(full_keys: torch.Tensor, kept_keys: torch.Tensor,
+                       cand: torch.Tensor, bad: torch.Tensor) -> torch.Tensor:
+        """Resolve the (few) rows whose fast candidate did not verify, by exact
+        vector match. Only touches the (b, h) slices that actually have a miss,
+        so the common no-collision path pays nothing."""
+        _, _, S, D = full_keys.shape
+        cand = cand.clone()
+        for bi, hi in bad.any(-1).nonzero(as_tuple=False).tolist():
+            rows = bad[bi, hi].nonzero(as_tuple=False).squeeze(-1)          # [k]
+            kept_bad = kept_keys[bi, hi, rows]                              # [k, D]
+            eq = (full_keys[bi, hi].unsqueeze(0) == kept_bad.unsqueeze(1)).all(-1)  # [k, S]
+            cand[bi, hi, rows] = eq.float().argmax(-1).to(cand.dtype)      # first exact match
+        return cand
 
     def _log_coverage(self, module, hidden_states, keys, values, keep_idx, kwargs):
         """MEASURE-ONLY: log the output-error leftover of ``keep_idx``.
@@ -320,11 +358,15 @@ class VerifiedSketch(KVCompressor):
         avail = torch.ones(B, H, T, dtype=torch.bool, device=keys.device)
         avail.scatter_(-1, det_idx, False)
 
+        # Per-LAYER seed so each layer draws an INDEPENDENT tail (mix in
+        # layer_idx), from a LOCAL generator that never perturbs the global RNG.
+        layer_idx = int(getattr(module, "layer_idx", 0) or 0)
+        gen = torch.Generator(device=keys.device)
         if self.sample_seed is not None:
-            gen = torch.Generator(device=keys.device).manual_seed(int(self.sample_seed))
-            noise = torch.rand(B, H, T, generator=gen, device=keys.device)
+            gen.manual_seed(int(self.sample_seed) + layer_idx)
         else:
-            noise = torch.rand(B, H, T, device=keys.device)
+            gen.seed()   # nondeterministic, but still off the global RNG stream
+        noise = torch.rand(B, H, T, generator=gen, device=keys.device)
         noise = noise.masked_fill(~avail, -1.0)
         rand_idx = noise.topk(n_rand, dim=-1).indices  # [B, H, n_rand]
 

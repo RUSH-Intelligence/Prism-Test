@@ -16,19 +16,33 @@ cd "${SLURM_SUBMIT_DIR:-$PWD}"
 : "${SWEEP_MODEL:?SWEEP_MODEL not set}"
 : "${SWEEP_BENCHMARK:?SWEEP_BENCHMARK not set}"
 
-# --- Environment (mirrors the retired per-benchmark sbatch files) ------------
-# flash-attn was compiled with gcc/15.1.0; LD_PRELOAD forces its libstdc++ to
-# load before conda's older one (else `undefined symbol: __cxa_call_terminate`).
-module load cuda/13.0.2 gcc/15.1.0
-export LD_LIBRARY_PATH=/opt/local/stow/gcc-15.1.0/lib64:${LD_LIBRARY_PATH:-}
-export LD_PRELOAD=/opt/local/stow/gcc-15.1.0/lib64/libstdc++.so.6
+# --- Environment ------------------------------------------------------------
+# Per-cluster values come from the `env:` block of sweep.yaml, handed in by
+# scripts/sweep.py as SWEEP_* vars (see that file to change them per-cluster).
+# Everything below no-ops gracefully when a var is unset.
+#
+# Load cluster modules (e.g. cuda/gcc for flash-attn's libstdc++). Space list.
+if [ -n "${SWEEP_MODULES:-}" ]; then
+    module load ${SWEEP_MODULES}
+fi
+# Prepend extra library dirs to the search path (colon list).
+if [ -n "${SWEEP_LD_LIBRARY_PATH:-}" ]; then
+    export LD_LIBRARY_PATH="${SWEEP_LD_LIBRARY_PATH}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
+# Force-load libs FIRST, but KEEP whatever the cluster already preloaded:
+# APPEND the existing value instead of clobbering it (else a cluster-injected
+# preload like xalt's OpenSSL fix is silently lost).
+if [ -n "${SWEEP_LD_PRELOAD:-}" ]; then
+    export LD_PRELOAD="${SWEEP_LD_PRELOAD}${LD_PRELOAD:+:$LD_PRELOAD}"
+fi
 # Pin cuBLAS workspace so GEMM kernel choice is stable under determinism.
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
 # Skip HF datasets cache-validity flock (fights sibling array tasks on NFS).
 # The dataset cache must already be populated (load_dataset once on a login node).
 export HF_DATASETS_OFFLINE=1
 
-source .venv/bin/activate
+# Activate the Python env (path from sweep.yaml env.venv; default .venv).
+source "${SWEEP_VENV:-.venv}/bin/activate"
 
 echo "Host:       $(hostname)"
 echo "Array task: ${SLURM_ARRAY_TASK_ID:-?} of ${SLURM_ARRAY_JOB_ID:-?}"

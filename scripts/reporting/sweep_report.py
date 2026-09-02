@@ -42,6 +42,37 @@ def _load_metrics(frag: dict) -> dict | None:
     return None
 
 
+def _scalar(v):
+    """A per-task score as one number, across benchmark shapes.
+
+    LongBench stores ``task_scores = {task: float}``; RULER stores
+    ``{task: {"string_match": float}}``. Flat numbers pass through; a
+    ``{metric: value}`` dict collapses to the mean of its numeric values (a
+    single-metric dict — RULER's — just yields that value). Anything with no
+    numeric content returns None so the cell renders blank instead of a raw dict
+    (which crashes openpyxl and garbles the CSV)."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return v
+    if isinstance(v, dict):
+        nums = [x for x in v.values() if isinstance(x, (int, float))
+                and not isinstance(x, bool)]
+        return round(sum(nums) / len(nums), 4) if nums else None
+    return None
+
+
+def _total_samples(metrics: dict, frag: dict):
+    """total_samples, tolerating both layouts: top level (LongBench) or nested
+    under ``summary`` (RULER); falls back to the manifest fragment."""
+    if metrics.get("total_samples") is not None:
+        return metrics["total_samples"]
+    summ = metrics.get("summary") or {}
+    if summ.get("total_samples") is not None:
+        return summ["total_samples"]
+    return frag.get("total_samples")
+
+
 def collect(root: Path) -> list[dict]:
     """One record per cell fragment, with its scores loaded."""
     records: list[dict] = []
@@ -60,9 +91,9 @@ def collect(root: Path) -> list[dict]:
             "fingerprint": frag.get("fingerprint"),
             "decision": frag.get("decision"),
             "ok": frag.get("ok"),
-            "total_samples": metrics.get("total_samples", frag.get("total_samples")),
+            "total_samples": _total_samples(metrics, frag),
             "overall": metrics.get("overall_score"),
-            "scores": {str(k): v for k, v in scores.items()},
+            "scores": {str(k): _scalar(v) for k, v in scores.items()},
         })
     return records
 

@@ -114,3 +114,19 @@ slurm:
   cpus: 8
   mem: 64G
   time: "12:00:00"
+
+# ── ENVIRONMENT (per-cluster — edit to match YOUR machine) ────────────────
+# The settings that differ from cluster to cluster. The launcher
+# (scripts/sweep.sbatch) reads these from here, so you never have to edit that
+# script — just change the values below. Leave a field out (or empty) to skip
+# it. Defaults match this repo's Nexus setup.
+env:
+  venv: .venv                 # Python env to activate (relative to repo root, or absolute)
+  modules:                    # `module load` these first (names are cluster-specific)
+    - cuda/13.0.2
+    - gcc/15.1.0
+  ld_preload:                 # force-load these shared libs FIRST; PREPENDED, so
+    - /opt/local/stow/gcc-15.1.0/lib64/libstdc++.so.6   # any lib the cluster already
+                                                        # preloaded (e.g. xalt) is kept
+  ld_library_path:            # extra dirs prepended to the library search path (optional)
+    - /opt/local/stow/gcc-15.1.0/lib64

@@ -277,15 +277,22 @@ def build_run_config(base: dict, *, model: str, benchmark: str, kv_compressor: s
     return c
 
 
+def _live(paths):
+    """Drop anything under a superseded/ archive — those are preserved prior
+    runs (see runner._supersede_prior_run), not the current result."""
+    from eval_harness.run_spec import SUPERSEDED_DIRNAME
+    return [p for p in paths if SUPERSEDED_DIRNAME not in p.parts]
+
+
 def find_metrics(out_dir: Path) -> Path | None:
-    hits = sorted(out_dir.rglob("metrics.json"), key=lambda p: p.stat().st_mtime)
+    hits = sorted(_live(out_dir.rglob("metrics.json")), key=lambda p: p.stat().st_mtime)
     return hits[-1] if hits else None
 
 
 def find_done(out_dir: Path) -> Path | None:
     """Newest completion stamp under ``out_dir`` (written dead-last by a run;
     its presence proves the run finished)."""
-    hits = sorted(out_dir.rglob("DONE.json"), key=lambda p: p.stat().st_mtime)
+    hits = sorted(_live(out_dir.rglob("DONE.json")), key=lambda p: p.stat().st_mtime)
     return hits[-1] if hits else None
 
 
@@ -414,6 +421,26 @@ def run_one_cell(cfg: dict, cfg_path: Path, model: str, benchmark: str,
 # ============================================================================
 # Mode: submit (one SLURM array per model x benchmark)
 # ============================================================================
+def _env_exports(cfg: dict) -> dict[str, str]:
+    """Per-cluster environment (sweep.yaml `env:` block) handed to sweep.sbatch.
+
+    Passed through the job's (ALL-exported) environment rather than baked into
+    the --export string, so values containing spaces (a module list) survive
+    intact. sweep.sbatch reads each SWEEP_* var and no-ops when it is absent.
+    """
+    e = cfg.get("env") or {}
+    out: dict[str, str] = {}
+    if e.get("venv"):
+        out["SWEEP_VENV"] = str(e["venv"])
+    if e.get("modules"):
+        out["SWEEP_MODULES"] = " ".join(_as_list(e["modules"]))     # `module load` args
+    if e.get("ld_preload"):
+        out["SWEEP_LD_PRELOAD"] = ":".join(_as_list(e["ld_preload"]))
+    if e.get("ld_library_path"):
+        out["SWEEP_LD_LIBRARY_PATH"] = ":".join(_as_list(e["ld_library_path"]))
+    return out
+
+
 def _sbatch_command(cfg: dict, cfg_path: Path, model: str, benchmark: str,
                     n_cells: int) -> list[str]:
     s = cfg.get("slurm") or {}
@@ -450,6 +477,11 @@ def submit(cfg: dict, cfg_path: Path, dry_run: bool, cli_out_root: str | None) -
           f"  full_baseline={cfg.get('full_baseline', True)}")
     print("-" * 72)
 
+    env_exports = _env_exports(cfg)
+    if env_exports:
+        print(f"Env:        {', '.join(f'{k}={v}' for k, v in env_exports.items())}")
+    run_env = {**os.environ, **env_exports} if env_exports else None
+
     total_jobs = total_cells = 0
     for model in models:
         for benchmark in benchmarks:
@@ -471,7 +503,8 @@ def submit(cfg: dict, cfg_path: Path, dry_run: bool, cli_out_root: str | None) -
                     print(f"        [{i:2d}] {cell_id:30s} kv={key} ratio={ratio}{flag}{ex}")
             else:
                 Path("logs/sweep").mkdir(parents=True, exist_ok=True)
-                res = subprocess.run(cmd, cwd=str(REPO_ROOT), capture_output=True, text=True)
+                res = subprocess.run(cmd, cwd=str(REPO_ROOT), capture_output=True,
+                                     text=True, env=run_env)
                 if res.returncode != 0:
                     print(f"      sbatch FAILED: {res.stderr.strip()}")
                     return 1

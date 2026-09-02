@@ -50,6 +50,13 @@ _NON_FINGERPRINT_KEYS = {"fingerprint", "spec_schema_version", "code"}
 # this, not "does metrics.json exist".
 DONE_FILENAME = "DONE.json"
 
+# When a run re-executes into a barcode folder that already holds a prior run's
+# output (a --force redo), that output is MOVED into <run_dir>/superseded/<n>/
+# instead of being overwritten — old results are preserved and, crucially, the
+# stale DONE stamp leaves the top level so it can't vouch for a torn re-run.
+# Resume scanners must ignore this subtree (see sweep.find_done/find_metrics).
+SUPERSEDED_DIRNAME = "superseded"
+
 # ---------------------------------------------------------------------------
 # EvalConfig field routing. Denylist = pure runtime/noise (never affects the
 # numbers, or changes every run). Everything else is captured; fields not
@@ -115,6 +122,14 @@ def _jsonable(v: Any) -> Any:
             return v.item()
         except Exception:
             return _SKIP
+    # A nested settings dataclass — e.g. a wrapper compressor's inner ``press``
+    # (per_layer_compression) or each entry of a ``presses`` list (composed).
+    # Recurse so the inner method's IDENTITY and knobs reach the receipt;
+    # without this, per_layer_compression(press=knorm) and (press=snapkv)
+    # fingerprint identically -> same folder -> resume returns the wrong method's
+    # metrics. Class name pins identity; the fields pin the knobs.
+    if dataclasses.is_dataclass(v) and not isinstance(v, type):
+        return {"__class__": type(v).__name__, "knobs": _dump_dataclass(v)}
     # tensors / ndarrays / modules / callables / arbitrary objects: not settings.
     return _SKIP
 
@@ -162,9 +177,52 @@ def _research_cfg_from(config: Any):
     return ResearchConfig(**research_kw)
 
 
-def _component_version(obj: Any) -> int:
-    """Behavior version declared on a component's class (default 1)."""
-    return int(getattr(type(obj), "VERSION", 1))
+def _is_versioned_component(o: Any) -> bool:
+    """A method/compressor instance that carries a behavior ``VERSION`` — i.e. a
+    settings dataclass whose class declares an int ``VERSION`` (KVCompressor,
+    AttentionMethod, PositionalMethod all do)."""
+    return (dataclasses.is_dataclass(o) and not isinstance(o, type)
+            and isinstance(getattr(type(o), "VERSION", None), int))
+
+
+def _nested_component_versions(obj: Any) -> dict:
+    """``{class_name: VERSION}`` for every component nested inside ``obj``.
+
+    Covers both wrapper styles: object fields holding a component
+    (``per_layer_compression.press``) or a list of them (``composed.presses``),
+    AND the runtime-built inner of ``verified`` (``_inner``, not a dataclass
+    field). Recurses through wrappers-of-wrappers. Without this a bump on an
+    inner method's VERSION (the documented rerun trigger) would never reach the
+    barcode, because ``_component_version`` reads only the OUTER class."""
+    seen: dict = {}
+    visited: set = set()
+
+    def _visit(o: Any) -> None:
+        candidates: list = []
+        if dataclasses.is_dataclass(o) and not isinstance(o, type):
+            for f in dataclasses.fields(o):
+                candidates.append(getattr(o, f.name, None))
+        candidates.append(getattr(o, "_inner", None))   # verified-style runtime inner
+        for c in candidates:
+            for it in (c if isinstance(c, (list, tuple)) else [c]):
+                if _is_versioned_component(it) and id(it) not in visited:
+                    visited.add(id(it))
+                    seen[type(it).__name__] = int(getattr(type(it), "VERSION", 1))
+                    _visit(it)
+
+    _visit(obj)
+    return seen
+
+
+def _component_version(obj: Any) -> Any:
+    """Behavior version for a component (default 1). For a wrapper compressor,
+    fold in every nested inner method's VERSION so a bump on the inner — e.g.
+    ``RidgeSketch.VERSION`` under ``verified`` — forces a rerun. A component with
+    no nested method returns a bare int (unchanged), so existing non-wrapper
+    barcodes stay stable."""
+    outer = int(getattr(type(obj), "VERSION", 1))
+    nested = _nested_component_versions(obj)
+    return {"self": outer, "nested": nested} if nested else outer
 
 
 def _dump_methods(config: Any) -> tuple[dict, dict, dict, dict]:
