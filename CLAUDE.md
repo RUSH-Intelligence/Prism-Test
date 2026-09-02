@@ -264,20 +264,35 @@ Constraints to keep in mind when wiring runs or reviewing changes:
   `DONE.json` completion stamp (`eval_harness/run_spec.py`). The sweep and the
   runner name each result folder `…__<fingerprint>` and skip a rerun only when a
   `DONE.json` with a **matching** fingerprint already exists — so identical work
-  is skipped and *any* changed setting lands in a NEW folder (old preserved,
-  never overwritten). The fingerprint is a pure function of the config (built
-  model-free via `research_adapter.build_doors`, so the sweep's barcode ==
-  the run's), and it covers **every resolved knob including untouched defaults**.
-  Therefore: **if you change a config value/knob, the barcode changes by itself
-  — do nothing.** The barcode canNOT see a pure *code-behavior* change (a bug
-  fix / formula tweak with the same settings), so for that: **bump the
-  component's `VERSION`** — a bare class int on `KVCompressor` / `AttentionMethod`
-  / `PrefillMethod` / `PositionalMethod` / `Benchmark` (default 1), or
-  `run_spec.FRAMEWORK_VERSION` for shared-pipeline changes. `VERSION` folds into
-  the barcode (scoped to the active component) → forces a rerun. It is a bare
-  int (no annotation) so it is never a dataclass field/knob. The git commit +
-  dirty flag are recorded in `run_spec.json['code']` as a provenance audit trail
-  but are NOT in the barcode.
+  is skipped and *any* changed setting lands in a NEW folder. The fingerprint is
+  a pure function of the config (built model-free via
+  `research_adapter.build_doors`, so the sweep's barcode == the run's), and it
+  covers **every resolved knob including untouched defaults**. Therefore: **if
+  you change a config value/knob, the barcode changes by itself — do nothing.**
+  The barcode canNOT see a pure *code-behavior* change (a bug fix / formula tweak
+  with the same settings), so for that: **bump the component's `VERSION`** — a
+  bare class int on `KVCompressor` / `AttentionMethod` / `PrefillMethod` /
+  `PositionalMethod` / `Benchmark` (default 1), or `run_spec.FRAMEWORK_VERSION`
+  for shared-pipeline changes. `VERSION` folds into the barcode (scoped to the
+  active component) → forces a rerun. It is a bare int (no annotation) so it is
+  never a dataclass field/knob. **Wrapper compressors** (`per_layer_compression`,
+  `composed`, `verified`) fold their *inner* method's identity AND `VERSION` into
+  the barcode too — a nested-dataclass recursion in `_jsonable` plus
+  `_component_version` walking `press`/`presses`/`_inner` — so a bump on the
+  inner (e.g. `RidgeSketch.VERSION` under `verified`) reruns and two wrappers
+  differing only by inner method never collide. The git commit + dirty flag are
+  recorded in `run_spec.json['code']` as a provenance audit trail but are NOT in
+  the barcode.
+- **Results are write-temp-then-committed; old runs are never overwritten.**
+  `runner.run` stages all output in a private `.<name>.inprogress.<pid>.<uuid>`
+  dir and installs it at the barcode folder atomically at the very end
+  (`_commit_run`, `os.rename` fast path). So (a) `run_dir` is untouched until a
+  run fully completes — a run that dies partway never corrupts a prior result;
+  (b) an identical CONCURRENT run cannot interleave files; (c) if the barcode
+  folder is already non-empty (a `--force` redo, or a racer that committed
+  first) the existing run is preserved under `superseded/<n>/` and the new one
+  installed. `superseded/` is invisible to resume (`sweep.find_done` /
+  `find_metrics` filter it, `run_spec.SUPERSEDED_DIRNAME`).
 - Tests bypass model loading via `object.__new__(Adapter)` plus fake modules — never load real weights in unit tests.
 - Position IDs everywhere are *absolute* (token's position in the full sequence), not chunk-relative.
 - New benchmarks: drop into `eval_harness/benchmarks/`, subclass `base.Benchmark`, register in `registry.py`.

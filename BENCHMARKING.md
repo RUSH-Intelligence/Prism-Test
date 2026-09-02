@@ -66,7 +66,10 @@ Configs live in [evaluate/](evaluate/). The one you edit day-to-day is
 the full research surface — every door, with the attention_method × kv_compressor
 compatibility matrix; `example_hf.yaml` / `example_vllm.yaml` are clean
 no-method backend references; `sweep_base.yaml` is the generic base card the
-cluster sweep clones per cell (see `sweep.yaml` + `scripts/submit_sweep.sh`);
+cluster sweep clones per cell (see `sweep.yaml` + `scripts/submit_sweep.sh`;
+per-cluster settings — SLURM partition/GPU plus venv / `module load` /
+`LD_PRELOAD` / lib paths — live in that file's `slurm:` and `env:` blocks, so a
+new cluster only edits `sweep.yaml`, never `sweep.sbatch`);
 retired one-off cards (dca, reattention, positional, nemotron, qwen35, …) live
 under `evaluate/archive/`. Run with:
 
