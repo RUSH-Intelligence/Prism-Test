@@ -186,7 +186,7 @@ pip install flash-attn --no-build-isolation
 
 ### 1. Pick a model and a benchmark
 
-Pick a starter config from [evaluate/](evaluate/) (e.g. [evaluate/evaluate_vllm.yaml](evaluate/evaluate_vllm.yaml)) and edit:
+Edit [evaluate/evaluate.yaml](evaluate/evaluate.yaml) — the daily run card (research backend + KV compression). For the full research surface (every door, documented) see [evaluate/example_research.yaml](evaluate/example_research.yaml); for vanilla backends see `example_hf.yaml` / `example_vllm.yaml`. A card looks like:
 
 ```yaml
 benchmark: ruler16k
@@ -211,17 +211,19 @@ output_dir: ./results
 ### 2. Run
 
 ```bash
-python -m eval_harness.cli run --config_file ./evaluate/evaluate_vllm.yaml
+python -m eval_harness.cli run                              # uses ./evaluate/evaluate.yaml
+# or point at any card explicitly:
+python -m eval_harness.cli run --config_file ./evaluate/example_vllm.yaml
 ```
 
 Or override any field on the CLI:
 
 ```bash
 python -m eval_harness.cli run \
-  --config_file ./evaluate/evaluate_vllm.yaml \
+  --config_file ./evaluate/evaluate.yaml \
   --benchmark longbench \
   --subsets narrativeqa,hotpotqa \
-  --backend vllm \
+  --backend research \
   --max_new_tokens 128
 ```
 

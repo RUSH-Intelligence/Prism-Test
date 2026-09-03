@@ -32,7 +32,7 @@ from pathlib import Path
 import openpyxl
 from openpyxl.styles import Font
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent  # scripts/reporting/ -> repo root
 
 # Subset name -> paper Table 1 column header.
 SUBSET_TO_HEADER = {
@@ -59,9 +59,19 @@ METHOD_ORDER = [
 def _row_label(cell: dict) -> str:
     """The display label for the row — cell_id stripped of the ``__r<ratio>`` suffix.
 
-    Falls back to ``label`` for the Full baseline (which has no ratio suffix)."""
+    Falls back to ``label`` for the Full baseline (which has no ratio suffix).
+    For Ridge cells with an extra config suffix appended by the sweep script
+    (e.g. ``Ridge_g0.0_rqF_nkT_sk4_lo28``), strip that suffix so the label
+    matches METHOD_ORDER; the config is documented at the sheet level."""
     cid = cell.get("cell_id") or cell["label"]
-    return cid.split("__r", 1)[0]
+    base = cid.split("__r", 1)[0]
+    if base.startswith("Ridge_g"):
+        # Keep only "Ridge_g<num>", drop any trailing "_..." config knobs.
+        import re
+        m = re.match(r"^(Ridge_g\d+(?:\.\d+)?)", base)
+        if m:
+            return m.group(1)
+    return base
 
 
 def load_results(manifest: dict) -> dict:

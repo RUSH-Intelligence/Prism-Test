@@ -61,21 +61,28 @@ Rules of thumb:
 
 ## Configure a run
 
-Ready-made configs live in [evaluate/](evaluate/): `evaluate_vllm.yaml` /
-`evaluate_hf.yaml` (clean no-method baselines), `evaluate_kv.yaml`
-(KV-compression sketch only), `evaluate_dca.yaml` / `evaluate_reattention.yaml`
-(verified paper baselines), and `evaluate_common.yaml` (the full research
-surface, including the attention_method × kv_compressor compatibility matrix). Run with:
+Configs live in [evaluate/](evaluate/). The one you edit day-to-day is
+`evaluate.yaml` (research backend + KV compression). `example_research.yaml` is
+the full research surface — every door, with the attention_method × kv_compressor
+compatibility matrix; `example_hf.yaml` / `example_vllm.yaml` are clean
+no-method backend references; `sweep_base.yaml` is the generic base card the
+cluster sweep clones per cell (see `sweep.yaml` + `scripts/submit_sweep.sh`;
+per-cluster settings — SLURM partition/GPU plus venv / `module load` /
+`LD_PRELOAD` / lib paths — live in that file's `slurm:` and `env:` blocks, so a
+new cluster only edits `sweep.yaml`, never `sweep.sbatch`);
+retired one-off cards (dca, reattention, positional, nemotron, qwen35, …) live
+under `evaluate/archive/`. Run with:
 
 ```bash
-python -m eval_harness.cli run --config_file ./evaluate/evaluate_common.yaml
+python -m eval_harness.cli run                    # uses ./evaluate/evaluate.yaml
+python -m eval_harness.cli run --config_file ./evaluate/evaluate.yaml
 ```
 
 Or override any field on the CLI:
 
 ```bash
 python -m eval_harness.cli run \
-  --config_file ./evaluate/evaluate_common.yaml \
+  --config_file ./evaluate/evaluate.yaml \
   --benchmark ruler64k \
   --subsets qa_1,qa_2 \
   --backend research \
@@ -175,8 +182,8 @@ Shipped sketches (mostly faithful ports of kvpress 0.5.1 presses — each module
 | `leverage`               | Prefill             | Approximate statistical leverage scores of pre-RoPE keys via Gaussian sketch + Cholesky (Compactor component). |
 | `non_causal_attention`   | Prefill             | Compactor's non-causal chunked-attention column-sum scorer (component). |
 | `compactor`              | Prefill             | Full Compactor: z-normalized blend of leverage scores + non-causal attention sums over the sink-protected interior. |
-| `ridge`                  | Prefill             | Value-aware query-ridge scoring (research-fork `RidgePress`, not upstream kvpress); keys are L2-normalized before the ridge leverage (deviation — query-side ω and ‖v‖ stay on raw tensors); sink + local window always kept. |
-| `random_sketch_press`    | Prefill             | Research-fork `RandomSketchPress`; upstream dead-code bug replicated faithfully, so it behaves identically to `ridge` (pinned by tests). |
+| `ridge`                  | Prefill             | **Our own** value-aware query-ridge compressor (in-framework version of our `RidgePress`, in our kvpress fork — not upstream NVIDIA kvpress); keys are L2-normalized before the ridge leverage (our deviation — query-side ω and ‖v‖ stay on raw tensors); sink + local window always kept. |
+| `random_sketch_press`    | Prefill             | Our `RandomSketchPress`; a dead-code bug in our reference fork is replicated faithfully, so it behaves identically to `ridge` (pinned by tests). |
 | `expected_attention`     | Prefill             | Predicts future attention from pre-RoPE query mean/covariance rotated to averaged future positions; optional ‖V‖ rescale. |
 | `expected_attention_stats` † | Prefill         | `expected_attention` with pre-computed per-layer calibration query statistics (HF hub repo or local `stats_folder`). |
 | `snapkv`                 | Prefill             | Window attention of the last `window_size` tokens scores the rest (recomputed pre-RoPE queries re-rotated to absolute positions). |
@@ -434,7 +441,7 @@ subsets: qasper
 backend: rag
 ```
 
-Then run normally with `python -m eval_harness.cli run --config_file <your_config>.yaml` — none of the shipped [evaluate/](evaluate/) configs uses `backend: rag`; copy `evaluate/evaluate_vllm.yaml` and set `backend: rag` plus the YAML keys above.
+Then run normally with `python -m eval_harness.cli run --config_file <your_config>.yaml` — none of the shipped [evaluate/](evaluate/) configs uses `backend: rag`; copy `evaluate/example_vllm.yaml` and set `backend: rag` plus the YAML keys above.
 
 #### 4. Tear down when done
 

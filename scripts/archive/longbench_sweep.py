@@ -87,8 +87,12 @@ DEFAULT_RATIOS = [0.6, 0.9, 0.95]
 # RidgeSketch):
 #   score_i = max(p_ridge_i, envelope_gamma * p_query_i)
 # 0 = pure ridge (query muted); 1 = balanced (the press's default);
-# >1 tilts toward the query side. Each gamma runs at every ratio.
+# >1 tilts toward the query side. Each gamma runs at every ratio (and at every
+# ridge_lambda if --ridge-lambdas is also provided → 2D grid).
 RIDGE_GAMMAS = [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0]
+# Single None entry = "don't override the press's default ridge_lambda (1e-4)";
+# pass --ridge-lambdas to sweep a list and turn the Ridge cells into a 2D grid.
+RIDGE_LAMBDAS: list[float | None] = [None]
 
 # PyramidKV's per-layer pyramid budgets leave the cache cross-layer ragged.
 # Under transformers 5.x sdpa/eager the single decode mask is sized from layer 0
@@ -122,13 +126,19 @@ def _slug(model: str) -> str:
 
 
 def build_config(base: dict, *, model: str, kv_compressor: str, ratio: float,
-                 subsets: list[str], out_root: Path, cell_id: str,
+                 subsets: list[str] | None, out_root: Path, cell_id: str,
                  max_requests: int | None, max_model_len: int | None,
+                 benchmark: str = "longbench",
                  extra_kv_kwargs: dict | None = None) -> dict:
     """Construct the full EvalConfig dict for one sweep cell."""
     cfg = copy.deepcopy(base)
-    cfg["benchmark"] = "longbench"
-    cfg["subsets"] = ",".join(subsets)
+    cfg["benchmark"] = benchmark
+    if subsets:
+        cfg["subsets"] = ",".join(subsets)
+    else:
+        # Let the benchmark's BenchmarkInfo.default_subsets win (e.g. RULER16k's
+        # 13 task list); explicitly clear any inherited template value.
+        cfg.pop("subsets", None)
     cfg["backend"] = "research"
     cfg["model"] = model
     # Sweep cells need run-to-run reproducibility AND a fixed SDPA backend so
@@ -207,13 +217,53 @@ def main() -> None:
     ap.add_argument("--model", default="meta-llama/Llama-3.1-8B-Instruct")
     ap.add_argument("--template", default=str(REPO_ROOT / "evaluate" / "evaluate_kv.yaml"),
                     help="Base config YAML to clone per run")
+    ap.add_argument("--benchmark", default="longbench",
+                    help="Benchmark name (e.g. longbench, ruler16k). When non-longbench, "
+                         "--tasks defaults to the benchmark's own default_subsets.")
     ap.add_argument("--out-root", default=None,
-                    help="Where run dirs + manifest land (default: results/longbench_sweep/<model>)")
+                    help="Where run dirs + manifest land (default: results/<sweep-name>/<model>)")
     ap.add_argument("--methods", default=None,
-                    help="Comma list of registry keys to include (default: all 9)")
+                    help="Comma list of registry keys to include (default: all 9). "
+                         "Pass a key not in METHODS (e.g. 'ridge') to skip the standard methods "
+                         "and run only the Ridge gamma×lambda grid below.")
     ap.add_argument("--ratios", default=None,
-                    help="Comma list of compression ratios (default: 0.2,0.4,0.6,0.8)")
-    ap.add_argument("--tasks", default=None, help="Comma list of subsets (default: the 16)")
+                    help="Comma list of compression ratios (default: 0.6,0.9,0.95)")
+    ap.add_argument("--tasks", default=None,
+                    help="Comma list of subsets. Default: LongBench's 16 English tasks for "
+                         "--benchmark longbench, else the benchmark's own default_subsets.")
+    ap.add_argument("--ridge-gammas", default=None,
+                    help="Comma list of envelope_gamma values for the Ridge sweep "
+                         f"(default: {RIDGE_GAMMAS})")
+    ap.add_argument("--ridge-lambdas", default=None,
+                    help="Comma list of ridge_lambda values for the Ridge sweep. "
+                         "When set, the Ridge cells become a 2D gamma×lambda grid at each ratio.")
+    ap.add_argument("--ridge-rotate-queries", default=None,
+                    help="Comma list of bools (true/false) to sweep RidgeSketch.rotate_queries. "
+                         "Default: omitted (use the press default, False = upstream-faithful).")
+    ap.add_argument("--ridge-sink-size", type=int, default=None,
+                    help="Scalar override for RidgeSketch.sink_size across every "
+                         "Ridge cell in the sweep. Repo default is 8; the upstream "
+                         "RidgePress reference uses 4. Default: omitted (use the "
+                         "press default).")
+    ap.add_argument("--ridge-local-size", type=int, default=None,
+                    help="Scalar override for RidgeSketch.local_size across every "
+                         "Ridge cell in the sweep. Repo default is 64; the upstream "
+                         "RidgePress reference uses 28. Default: omitted (use the "
+                         "press default).")
+    # --- Verified KV compression (VerifiedSketch) -----------------------
+    # `--methods verified` wraps an inner compressor (default ridge) and splits
+    # the kept budget: det_fraction from the inner's top-k, the rest uniform
+    # random from the inner's evicted pool. The inner Ridge is configured from
+    # the SAME --ridge-* flags above (gamma/sink/local/rotate-queries/...), so a
+    # verified sweep is a det_fraction axis layered on the usual Ridge grid.
+    ap.add_argument("--verified-det-fractions", default="1.0,0.9,0.8,0.7,0.5,0.0",
+                    help="Comma list of det_fraction values for the Verified sweep "
+                         "(fraction of the kept budget filled by the inner compressor; "
+                         "the rest is uniform random). 1.0 == plain inner, 0.0 == "
+                         "pure random (+ inner's forced sink/local). Default: "
+                         "'1.0,0.9,0.8,0.7,0.5,0.0'.")
+    ap.add_argument("--verified-inner", default="ridge",
+                    help="Inner compressor wrapped by VerifiedSketch (default: ridge).")
     ap.add_argument("--max-requests", type=int, default=None, help="Cap rows per subset")
     ap.add_argument("--max-model-len", type=int, default=None)
     ap.add_argument("--skip-full", action="store_true", help="Do not run the Full baseline")
@@ -224,17 +274,58 @@ def main() -> None:
     args = ap.parse_args()
 
     base = yaml.safe_load(Path(args.template).read_text(encoding="utf-8")) or {}
-    subsets = [t.strip() for t in args.tasks.split(",")] if args.tasks else LONGBENCH_16
+    if args.tasks:
+        subsets = [t.strip() for t in args.tasks.split(",")]
+    elif args.benchmark == "longbench":
+        subsets = LONGBENCH_16
+    else:
+        subsets = None  # benchmark's BenchmarkInfo.default_subsets wins
     ratios = [float(r) for r in args.ratios.split(",")] if args.ratios else DEFAULT_RATIOS
 
     if args.methods:
         wanted = {m.strip() for m in args.methods.split(",")}
         methods = {lbl: key for lbl, key in METHODS.items() if key in wanted}
+        include_ridge = "ridge" in wanted
+        include_verified = "verified" in wanted
     else:
         methods = dict(METHODS)
+        include_ridge = True
+        include_verified = False
 
+    ridge_gammas = ([float(g) for g in args.ridge_gammas.split(",")]
+                    if args.ridge_gammas else list(RIDGE_GAMMAS))
+    # Verified reuses the same gamma grid for its inner Ridge, but the ridge
+    # block below zeroes ``ridge_gammas`` when ridge isn't a requested method —
+    # snapshot the list here so the verified block is unaffected.
+    verified_gammas = list(ridge_gammas)
+    ridge_lambdas: list[float | None] = ([float(x) for x in args.ridge_lambdas.split(",")]
+                                         if args.ridge_lambdas else list(RIDGE_LAMBDAS))
+
+    verified_det_fractions = [float(x) for x in args.verified_det_fractions.split(",")]
+    for _d in verified_det_fractions:
+        assert 0.0 <= _d <= 1.0, f"--verified-det-fractions: {_d} must be in [0, 1]"
+
+    def _parse_bools(s: str | None) -> list[bool | None]:
+        """Accept 'true,false' etc.; return [None] when not provided so the
+        cell loop doesn't override the press default."""
+        if not s:
+            return [None]
+        out: list[bool | None] = []
+        for tok in s.split(","):
+            t = tok.strip().lower()
+            if t in {"true", "t", "1", "yes", "y"}:
+                out.append(True)
+            elif t in {"false", "f", "0", "no", "n"}:
+                out.append(False)
+            else:
+                sys.exit(f"Could not parse bool in '{s}': '{tok}'")
+        return out
+
+    ridge_rotate_queries: list[bool | None] = _parse_bools(args.ridge_rotate_queries)
+
+    sweep_name = "longbench_sweep" if args.benchmark == "longbench" else f"{args.benchmark}_sweep"
     out_root = Path(args.out_root) if args.out_root else (
-        REPO_ROOT / "results" / "longbench_sweep" / _slug(args.model))
+        REPO_ROOT / "results" / sweep_name / _slug(args.model))
     out_root.mkdir(parents=True, exist_ok=True)
 
     # Build the list of cells: (label, kv_key, ratio_or_None, cell_id, extra_kwargs).
@@ -244,19 +335,84 @@ def main() -> None:
     for label, key in methods.items():
         for ratio in ratios:
             cells.append((label, key, ratio, f"{label}__r{ratio}", {}))
-    # Ridge gamma sweep: envelope_gamma ∈ RIDGE_GAMMAS × each ratio.
-    # Fixed-envelope scoring is hardcoded in RidgeSketch, so envelope_gamma
-    # is the only kwarg needed (passing combine_mode would now TypeError).
-    for gamma in RIDGE_GAMMAS:
-        for ratio in ratios:
-            cells.append((
-                "Ridge", "ridge", ratio,
-                f"Ridge_g{gamma}__r{ratio}",
-                {"envelope_gamma": float(gamma)},
-            ))
+    # Ridge sweep: envelope_gamma × ridge_lambda × rotate_queries × ratio.
+    # Fixed-envelope scoring is hardcoded in RidgeSketch, so envelope_gamma is
+    # the only always-on kwarg (passing combine_mode would now TypeError). Key
+    # normalization for tau is now hardcoded ON in RidgeSketch, so the old
+    # normalize_keys / omega-query-subset (track-2) knobs are gone. When
+    # --ridge-lambdas is not set, RIDGE_LAMBDAS == [None] → single row at the
+    # press default 1e-4 and the cell_id omits the lambda tag (back-compat with
+    # prior manifests).
+    if not include_ridge:
+        ridge_gammas = []
+    for gamma in ridge_gammas:
+        for lam in ridge_lambdas:
+            for rq in ridge_rotate_queries:
+                for ratio in ratios:
+                    extras = {"envelope_gamma": float(gamma)}
+                    cell_id = f"Ridge_g{gamma}"
+                    if lam is not None:
+                        extras["ridge_lambda"] = float(lam)
+                        cell_id += f"_l{lam:g}"
+                    if rq is not None:
+                        extras["rotate_queries"] = bool(rq)
+                        cell_id += f"_rq{'T' if rq else 'F'}"
+                    if args.ridge_sink_size is not None:
+                        extras["sink_size"] = int(args.ridge_sink_size)
+                        cell_id += f"_sk{int(args.ridge_sink_size)}"
+                    if args.ridge_local_size is not None:
+                        extras["local_size"] = int(args.ridge_local_size)
+                        cell_id += f"_lo{int(args.ridge_local_size)}"
+                    cell_id += f"__r{ratio}"
+                    cells.append(("Ridge", "ridge", ratio, cell_id, extras))
+
+    # Verified sweep: det_fraction × (the same Ridge inner grid) × ratio. The
+    # inner Ridge is configured from the SAME --ridge-* knobs used above, but
+    # nested under `inner_kwargs`; det_fraction + inner + sample_seed sit at the
+    # top level of kv_compressor_kwargs. det == 0 mutes the inner's scoring
+    # (only its forced sink/local survive), so gamma is skipped there — one
+    # gamma-free anchor cell per ratio.
+    if include_verified:
+        for det in verified_det_fractions:
+            det_gammas: list[float | None] = verified_gammas if det > 0.0 else [None]
+            for gamma in det_gammas:
+                for lam in ridge_lambdas:
+                    for rq in ridge_rotate_queries:
+                        for ratio in ratios:
+                            inner_kwargs: dict = {}
+                            if gamma is not None:
+                                inner_kwargs["envelope_gamma"] = float(gamma)
+                            if lam is not None:
+                                inner_kwargs["ridge_lambda"] = float(lam)
+                            if rq is not None:
+                                inner_kwargs["rotate_queries"] = bool(rq)
+                            if args.ridge_sink_size is not None:
+                                inner_kwargs["sink_size"] = int(args.ridge_sink_size)
+                            if args.ridge_local_size is not None:
+                                inner_kwargs["local_size"] = int(args.ridge_local_size)
+                            extras = {
+                                "inner": args.verified_inner,
+                                "det_fraction": float(det),
+                                "sample_seed": SWEEP_SEED,
+                                "inner_kwargs": inner_kwargs,
+                            }
+                            det_tag = f"{det:g}".replace(".", "p")
+                            cell_id = f"Verified_d{det_tag}"
+                            if gamma is not None:
+                                cell_id += f"_g{gamma:g}"
+                            if lam is not None:
+                                cell_id += f"_l{lam:g}"
+                            if rq is not None:
+                                cell_id += f"_rq{'T' if rq else 'F'}"
+                            if args.ridge_sink_size is not None:
+                                cell_id += f"_sk{int(args.ridge_sink_size)}"
+                            if args.ridge_local_size is not None:
+                                cell_id += f"_lo{int(args.ridge_local_size)}"
+                            cell_id += f"__r{ratio}"
+                            cells.append(("Verified", "verified", ratio, cell_id, extras))
 
     print(f"Model:   {args.model}")
-    print(f"Tasks:   {len(subsets)} subsets")
+    print(f"Tasks:   {len(subsets) if subsets else '<benchmark default>'} subsets")
     print(f"Cells:   {len(cells)} runs (out-root: {out_root})")
     for idx, (label, key, ratio, cell_id, extras) in enumerate(cells):
         flag = " [flash_attn_2]" if key in FLASH_ATTN_METHODS else ""
@@ -295,6 +451,7 @@ def main() -> None:
             cfg = build_config(base, model=args.model, kv_compressor=key, ratio=ratio or 0.0,
                                subsets=subsets, out_root=out_root, cell_id=cell_id,
                                max_requests=args.max_requests, max_model_len=args.max_model_len,
+                               benchmark=args.benchmark,
                                extra_kv_kwargs=extras or None)
             t0 = time.time()
             rc = run_cell(cfg, tmp_yaml)

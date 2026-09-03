@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import random
+import shutil
+import uuid
 from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List
@@ -21,6 +24,58 @@ if TYPE_CHECKING:
     from .vllm_adapter import VLLMAdapter
 
 logger = logging.getLogger(__name__)
+
+
+def _supersede_prior_run(run_dir: Path) -> "Path | None":
+    """Move a prior run's artifacts out of ``run_dir`` into ``superseded/<n>/``.
+
+    Called at the start of a (re)run so the run always begins on a clean top
+    level. No-op when the folder is empty (a first run) or holds only the
+    ``superseded`` archive. Returns the archive dir it filled, else None.
+    """
+    from .run_spec import SUPERSEDED_DIRNAME
+
+    if not run_dir.exists():
+        return None
+    entries = [p for p in run_dir.iterdir() if p.name != SUPERSEDED_DIRNAME]
+    if not entries:
+        return None
+
+    archive_root = run_dir / SUPERSEDED_DIRNAME
+    idx = 1
+    while (archive_root / str(idx)).exists():
+        idx += 1
+    dest = archive_root / str(idx)
+    dest.mkdir(parents=True, exist_ok=True)
+    for p in entries:
+        shutil.move(str(p), str(dest / p.name))
+    logger.info("Preserved prior run output (%d item(s)) under %s", len(entries), dest)
+    return dest
+
+
+def _commit_run(work: Path, final: Path) -> None:
+    """Atomically install a fully-written temp run dir at its final barcode path.
+
+    Fast path: ``os.rename`` succeeds when ``final`` is missing or an empty dir
+    (the common case) — a single atomic step, so a concurrent identical run
+    cannot interleave files into the final folder. If ``final`` is non-empty (a
+    prior complete run, or a racer that committed first), preserve it under
+    ``superseded/<n>/`` and move our files in with DONE.json LAST — old results
+    are kept and no torn-yet-stamped state can appear.
+    """
+    from .run_spec import DONE_FILENAME
+
+    final.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.rename(work, final)          # atomic when final is missing / empty
+        return
+    except OSError:
+        pass                            # final exists and is non-empty -> merge
+    _supersede_prior_run(final)
+    entries = sorted(work.iterdir(), key=lambda p: p.name == DONE_FILENAME)  # DONE last
+    for p in entries:
+        shutil.move(str(p), str(final / p.name))
+    work.rmdir()
 
 
 class EvalRunner:
@@ -132,6 +187,10 @@ class EvalRunner:
         if self.config.fraction < 1.0:
             df = df.sample(frac=self.config.fraction, random_state=self.config.seed)
 
+        # Rows available after subset/fraction filtering, before the per-subset
+        # request cap — recorded in the completion stamp as ``loaded_before_cap``.
+        self._n_loaded_before_cap = int(len(df))
+
         df = self._apply_max_requests(
             df,
             self.config.max_requests,
@@ -230,6 +289,15 @@ class EvalRunner:
             )
             n_groups = len(self.df)
         for context, group in tqdm(grouped, total=n_groups, desc="Generating"):
+            # Stamp the compressor with this context group's df rows so any
+            # coverage readings can be tied back to the exact questions (no-op
+            # unless the compressor tracks it — e.g. VerifiedSketch).
+            begin_group = getattr(
+                getattr(self.adapter, "_kv_compressor", None), "begin_prompt_group", None
+            )
+            if callable(begin_group):
+                begin_group(list(group.index))
+
             if self.config.backend == "rag":
                 questions = [str(row["question"]) for _, row in group.iterrows()]
                 assert self.adapter is not None
@@ -338,30 +406,130 @@ class EvalRunner:
             self.config.benchmark,
             self.config.model,
         )
-        run_dir = self.config.get_results_dir()
-        predictions_path = run_dir / "predictions.csv"
-        metrics_path = run_dir / "metrics.json"
-        config_path = run_dir / "config.yaml"
+        # Fingerprint the run up front (model-free), so we can name the folder by
+        # it and skip if an identical, finished run already lives there.
+        spec = None
+        barcode = None
+        try:
+            from .run_spec import build_run_spec
 
-        self._setup_adapter()
-        self._load_dataset()
-        self._run_generation()
-        metrics = self._compute_metrics()
+            spec = build_run_spec(self.config)
+            barcode = spec["fingerprint"]
+        except Exception as exc:
+            logger.warning("run_spec fingerprint failed (%s); no barcode/resume", exc)
 
-        assert self.df is not None
-        cols = [c for c in self.df.columns if c != "context"]
-        self.df[cols].to_csv(predictions_path, index=False)
+        run_dir = self.config.get_results_dir(barcode)
 
-        with metrics_path.open("w", encoding="utf-8") as handle:
-            json.dump(metrics, handle, indent=2)
+        # Universal resume: identical settings already completed here -> skip
+        # (no model load, no generation).
+        if self.config.resume and barcode is not None:
+            from .run_spec import DONE_FILENAME
 
-        config_dump = asdict(self.config)
-        with config_path.open("w", encoding="utf-8") as handle:
-            import yaml
+            done_path = run_dir / DONE_FILENAME
+            if done_path.exists():
+                try:
+                    stored = json.loads(done_path.read_text(encoding="utf-8")).get("fingerprint")
+                except (OSError, ValueError):
+                    stored = None
+                if stored == barcode:
+                    logger.info("Already complete (fingerprint %s) — skipping: %s",
+                                barcode, run_dir)
+                    return run_dir
 
-            yaml.safe_dump(config_dump, handle, sort_keys=False)
+        # Stage every output in a PRIVATE temp dir, then install it at run_dir in
+        # one atomic step at the very end (write-temp-then-rename). Consequences:
+        #  * an identical CONCURRENT run cannot interleave files into run_dir;
+        #  * run_dir is untouched until the run fully completes, so a run that
+        #    dies partway never corrupts a prior complete result;
+        #  * the commit preserves any prior run under superseded/<n>/ (so old
+        #    results are never overwritten — the #6 fix) and writes DONE last.
+        work_dir = run_dir.parent / f".{run_dir.name}.inprogress.{os.getpid()}.{uuid.uuid4().hex[:8]}"
+        work_dir.mkdir(parents=True, exist_ok=True)
 
-        logger.info("Saved predictions to %s", predictions_path)
-        logger.info("Saved metrics to %s", metrics_path)
+        predictions_path = work_dir / "predictions.csv"
+        metrics_path = work_dir / "metrics.json"
+        config_path = work_dir / "config.yaml"
+
+        try:
+            self._setup_adapter()
+            self._load_dataset()
+            self._run_generation()
+            metrics = self._compute_metrics()
+
+            assert self.df is not None
+            cols = [c for c in self.df.columns if c != "context"]
+            self.df[cols].to_csv(predictions_path, index=False)
+
+            with metrics_path.open("w", encoding="utf-8") as handle:
+                json.dump(metrics, handle, indent=2)
+
+            # Generic compressor telemetry drain: any compressor exposing
+            # ``drain_coverage()`` (currently VerifiedSketch, measure_coverage on)
+            # gets its readings persisted next to metrics.json. Guarded so it
+            # never affects a normal run.
+            compressor = getattr(self.adapter, "_kv_compressor", None)
+            drain = getattr(compressor, "drain_coverage", None)
+            if callable(drain):
+                try:
+                    coverage = drain()
+                except Exception as exc:  # telemetry must never fail a run
+                    logger.warning("Coverage drain failed: %s", exc)
+                    coverage = None
+                if coverage:
+                    coverage_path = work_dir / "coverage.json"
+                    with coverage_path.open("w", encoding="utf-8") as handle:
+                        json.dump(coverage, handle, indent=2)
+                    logger.info("Saved coverage telemetry to %s", coverage_path)
+
+            config_dump = asdict(self.config)
+            with config_path.open("w", encoding="utf-8") as handle:
+                import yaml
+
+                yaml.safe_dump(config_dump, handle, sort_keys=False)
+
+            # Canonical, fingerprinted settings receipt + completion stamp
+            # (foundation for robust sweep resume). Best-effort: these must never
+            # fail a real run. The DONE stamp is written LAST, so its presence
+            # proves predictions + metrics + receipt all completed.
+            try:
+                from .run_spec import build_run_spec, build_done_marker, write_done_marker
+
+                if spec is None:                 # fingerprinting failed up top; retry
+                    spec = build_run_spec(self.config)
+                with (work_dir / "run_spec.json").open("w", encoding="utf-8") as handle:
+                    json.dump(spec, handle, indent=2)
+                logger.info("Saved run-spec to %s", work_dir / "run_spec.json")
+
+                per_subset = None
+                if self.df is not None and "task" in self.df.columns:
+                    per_subset = self.df["task"].value_counts().to_dict()
+                requested_subsets = None
+                if self.config.subsets:
+                    requested_subsets = sorted(
+                        s.strip() for s in self.config.subsets.split(",") if s.strip())
+                marker = build_done_marker(
+                    fingerprint=spec["fingerprint"],
+                    actual_samples=int(len(self.df)) if self.df is not None else 0,
+                    overall_score=metrics.get("overall_score") if isinstance(metrics, dict) else None,
+                    max_requests=self.config.max_requests,
+                    max_requests_per_subset=self.config.max_requests_per_subset,
+                    requested_subsets=requested_subsets,
+                    per_subset_actual=per_subset,
+                    loaded_before_cap=getattr(self, "_n_loaded_before_cap", None),
+                )
+                write_done_marker(work_dir, marker)   # LAST write into the temp dir
+            except Exception as exc:
+                logger.warning("run_spec/DONE generation failed: %s", exc)
+
+            # Atomic install: temp dir -> final barcode folder (preserving any
+            # prior run under superseded/). Only after this does run_dir hold the
+            # complete result.
+            _commit_run(work_dir, run_dir)
+        finally:
+            if work_dir.exists():                 # nothing to install (crash / merged)
+                shutil.rmtree(work_dir, ignore_errors=True)
+
+        logger.info("Saved predictions to %s", run_dir / "predictions.csv")
+        logger.info("Saved metrics to %s", run_dir / "metrics.json")
         logger.info("Available standalone benchmarks: %s", ", ".join(available_benchmarks()))
         return run_dir

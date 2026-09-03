@@ -18,11 +18,17 @@ class RidgeSketch(KVCompressor):
     """
     Value-aware query-ridge KV compression (fixed-envelope scoring).
 
-    Port of ``RidgePress`` (kvpress/presses/ridge_press.py; a research-fork
-    addition in the local kvpress 0.5.1 checkout, not upstream NVIDIA kvpress),
-    reduced to the reference's default production path: fixed-envelope score
-    combination, top-k selection, mean-normalized query Gram, queries taken at
-    the key positions, and sum-normalized score components. The reference's
+    This is **our own KV compressor.** The method — ridge-leverage scoring of the
+    keys (with L2 key normalization), a prefill-query ``omega`` importance term,
+    the fixed-envelope ``max(tau, gamma*omega)`` combination, and value-norm
+    weighting — is our design; it builds on established building blocks
+    (statistical / ridge leverage scores, RoPE, the kvpress press interface), but
+    the compressor is ours. This class is the in-framework version of our original
+    reference implementation (``RidgePress`` in our kvpress fork,
+    ``kvpress/presses/ridge_press.py`` — a research addition, NOT upstream NVIDIA
+    kvpress), reduced to that reference's default production path: fixed-envelope
+    score combination, top-k selection, mean-normalized query Gram, queries taken
+    at the key positions, and sum-normalized score components. The reference's
     alpha-selection machinery (entropy / tail_risk / query_constrained /
     gated_query_constrained), its additive / multiplicative / plain-envelope /
     weighted-envelope combine modes, multinomial selection, and the dormant
@@ -47,7 +53,8 @@ class RidgeSketch(KVCompressor):
 
     Notes
     -----
-    Upstream quirks replicated faithfully:
+    Reference-parity behavior (kept so this version matches our original
+    RidgePress reference bit-for-bit):
     - ``compression_ratio=None`` raises at compress time (the research adapter
       injects the adapter-level float when built from config).
     - When ``keep_total < sink + local`` the ``[sink | local]`` concatenation
@@ -59,8 +66,8 @@ class RidgeSketch(KVCompressor):
       Under DCA's cyclic-rotated keys the semantics shift further, so this
       sketch is intended for ``attention_method: none``.
 
-    Deviations from kvpress
-    -----------------------
+    Deviations from our original reference
+    --------------------------------------
     - **Key normalization (2026-07)**: keys are L2-normalized along the head
       dim (in float32, eps-clamped) BEFORE the ridge leverage computation, so
       tau measures direction diversity and is invariant to per-token key
@@ -68,12 +75,12 @@ class RidgeSketch(KVCompressor):
       and the value norms still see raw magnitudes: ``||Q k_i||`` is the
       attention-logit-energy proxy, where key magnitude scales the actual
       logits and is physically meaningful.
-    - Kept-window defaults ``sink_size=8, local_size=64`` deviate from
-      upstream RidgePress (sink=4, local=28): local=28 was an anomalously
+    - Kept-window defaults ``sink_size=8, local_size=64`` deviate from our
+      original RidgePress reference (sink=4, local=28): local=28 was an anomalously
       small guaranteed-recency window. Pass ``sink_size=4, local_size=28`` to
-      reproduce the upstream window layout (scores still differ due to the
+      reproduce the original window layout (scores still differ due to the
       key-normalization deviation above).
-    - ``rotate_queries`` (default False = upstream behavior): when True, RoPE
+    - ``rotate_queries`` (default False = original reference behavior): when True, RoPE
       is applied to the re-projected queries (``position_embeddings`` from the
       layer forward kwargs, or rebuilt from ``module.rotary_emb``) before
       omega is formed, making ``omega_i = ||Q k_i||`` a faithful proxy for the
@@ -82,7 +89,7 @@ class RidgeSketch(KVCompressor):
       embeddings are unavailable the path warns and falls back to un-rotated.
     - ``_get_all_queries`` skips the query-aware path (warning + tau-only
       fallback) when ``hidden_states`` and ``keys`` cover different numbers of
-      tokens. Upstream assumes they match and would misalign (or crash on the
+      tokens. Our original reference assumes they match and would misalign (or crash on the
       reshape) otherwise; in Prism-Test an outer prefill-method hook (e.g.
       reattention) fires before the sketch hook and can leave the cached keys
       shorter than ``hidden_states``.
@@ -420,16 +427,17 @@ class RandomSketchRidgeSketch(RidgeSketch):
     Prefill-time KV compression baseline mirroring RidgeSketch, intended to
     sample with uniform random scores instead of ridge leverage scores.
 
-    Port of ``RandomSketchPress`` (kvpress/presses/random_sketch_press.py; a
-    research-fork addition in the local kvpress 0.5.1 checkout, not upstream
-    NVIDIA kvpress). Unrelated to upstream ``RandomPress``, which is ported
-    separately as ``RandomSketch`` (registry name "random").
+    In-framework version of our ``RandomSketchPress``
+    (``kvpress/presses/random_sketch_press.py`` in our kvpress fork — a research
+    addition, NOT upstream NVIDIA kvpress). Unrelated to the genuinely upstream
+    NVIDIA ``RandomPress``, which is ported separately as ``RandomSketch``
+    (registry name "random").
 
-    Upstream bug, replicated faithfully: the single override ``_compute_tau``
+    Reference bug, replicated faithfully: the single override ``_compute_tau``
     is DEAD CODE. ``RidgePress.compress`` calls ``_compute_key_ridge_tau`` and
-    nothing in the kvpress checkout ever calls ``_compute_tau``, so as written
+    nothing in our reference fork ever calls ``_compute_tau``, so as written
     the press is bitwise-identical to ``RidgePress`` under the same
-    configuration and no randomness ever executes. This port preserves the
+    configuration and no randomness ever executes. This version preserves the
     dead override and the resulting RidgeSketch-equivalent behavior (pinned by
     tests) rather than wiring the documented intent into the live scoring
     path.

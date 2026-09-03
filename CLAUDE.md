@@ -43,8 +43,12 @@ evaluate/                # ready-made run configs: evaluate_{vllm,hf,kv,position
 ## Running
 
 ```bash
-# Eval
-python -m eval_harness.cli run --config_file ./evaluate/evaluate_common.yaml   # or evaluate_{vllm,hf,kv,positional,dca,reattention}.yaml
+# Eval — edit ./evaluate/evaluate.yaml (the daily research/KV card), then:
+python -m eval_harness.cli run                                    # uses ./evaluate/evaluate.yaml by default
+python -m eval_harness.cli run --config_file ./evaluate/evaluate.yaml
+# Full research surface (all doors, documented) lives in ./evaluate/example_research.yaml;
+# vanilla-backend refs in example_{hf,vllm}.yaml; sweep base card evaluate/sweep_base.yaml;
+# retired one-off cards under evaluate/archive/.
 # or override on CLI: --benchmark, --subsets, --backend, --model, --max_new_tokens, ...
 
 # Tests (from repo root)
@@ -177,9 +181,10 @@ scoring stats, ONE shared seed-42 PHI; NOT the kvpress CompactorPress math of ea
 revisions. Remaining structural deviations, documented in the docstring: uniform per-head
 top-k instead of the paper's ragged "calibrated" (token×head) allocation — impossible in a
 rectangular HF cache — and framework ratio semantics `int(T·(1−r))` per head), `ridge`
-(fixed-envelope only after the 2026-07 strip; keys L2-normalized before ridge leverage —
-deliberate deviation, ω/‖v‖ raw), `random_sketch_press` (research-fork; dead-code bug
-replicated ⇒ ≡ `ridge`),
+(**our own compressor**, not a kvpress port: leverage-scored keys + prefill-query ω
+importance + fixed-envelope combination + value weighting; fixed-envelope only after the
+2026-07 strip; keys L2-normalized before ridge leverage — deliberate deviation, ω/‖v‖ raw),
+`random_sketch_press` (our reference fork; dead-code bug replicated ⇒ ≡ `ridge`),
 `expected_attention`, `expected_attention_stats`, `snapkv`, `pyramidkv`, `tova`,
 `observed_attention`, `h2o` (Heavy Hitter Oracle, arXiv:2306.14048 — raw accumulated-attention
 sum + recent-window force-keep; like `observed_attention` it needs `attn_implementation: eager`),
@@ -197,7 +202,7 @@ per-head budget `int(T·(1−r))` with a **uniform random sample without replace
 remaining tokens; knobs `top_frac` (default 0.75) + `seed` (default 42, fresh per-call
 generator seeded `seed + layer_idx` — per-layer tails, never touches global RNG);
 `top_frac=1.0` reduces to `knorm`. No attention/RoPE
-requirements, composes with hybrids (config `evaluate/evaluate_kv_top_k_sampling.yaml`).
+requirements, composes with hybrids (config `evaluate/archive/evaluate_kv_top_k_sampling.yaml`).
 
 Constraints to keep in mind when wiring runs or reviewing changes:
 
@@ -238,7 +243,7 @@ Constraints to keep in mind when wiring runs or reviewing changes:
   queries, which is exactly what the model computes; `compactor` and `expected_attention`
   likewise reduce their RoPE step to identity when the module has no `rotary_emb`). Validated:
   `knorm`, `ridge`, `snapkv`, `pyramidkv`, `compactor`, `expected_attention`, `keydiff`
-  (config `evaluate/evaluate_nemotron_kv.yaml`; tests
+  (config `evaluate/archive/evaluate_nemotron_kv.yaml`; tests
   `tests/test_nemotron_h_kv_compression.py`). Keep `attention_method: none`. **Real runs need a
   CUDA GPU and a transformers build with the native `nemotron_h` architecture** (which threads
   `past_key_values` through `block.mixer` and uses a plain `DynamicCache`); `pyramidkv`'s ragged
@@ -254,6 +259,40 @@ Constraints to keep in mind when wiring runs or reviewing changes:
 
 ## Conventions
 
+- **Run-spec barcode + version bumps (sweep resume).** Every run writes a
+  `run_spec.json` (canonical, fingerprinted settings receipt) and, dead-last, a
+  `DONE.json` completion stamp (`eval_harness/run_spec.py`). The sweep and the
+  runner name each result folder `…__<fingerprint>` and skip a rerun only when a
+  `DONE.json` with a **matching** fingerprint already exists — so identical work
+  is skipped and *any* changed setting lands in a NEW folder. The fingerprint is
+  a pure function of the config (built model-free via
+  `research_adapter.build_doors`, so the sweep's barcode == the run's), and it
+  covers **every resolved knob including untouched defaults**. Therefore: **if
+  you change a config value/knob, the barcode changes by itself — do nothing.**
+  The barcode canNOT see a pure *code-behavior* change (a bug fix / formula tweak
+  with the same settings), so for that: **bump the component's `VERSION`** — a
+  bare class int on `KVCompressor` / `AttentionMethod` / `PrefillMethod` /
+  `PositionalMethod` / `Benchmark` (default 1), or `run_spec.FRAMEWORK_VERSION`
+  for shared-pipeline changes. `VERSION` folds into the barcode (scoped to the
+  active component) → forces a rerun. It is a bare int (no annotation) so it is
+  never a dataclass field/knob. **Wrapper compressors** (`per_layer_compression`,
+  `composed`, `verified`) fold their *inner* method's identity AND `VERSION` into
+  the barcode too — a nested-dataclass recursion in `_jsonable` plus
+  `_component_version` walking `press`/`presses`/`_inner` — so a bump on the
+  inner (e.g. `RidgeSketch.VERSION` under `verified`) reruns and two wrappers
+  differing only by inner method never collide. The git commit + dirty flag are
+  recorded in `run_spec.json['code']` as a provenance audit trail but are NOT in
+  the barcode.
+- **Results are write-temp-then-committed; old runs are never overwritten.**
+  `runner.run` stages all output in a private `.<name>.inprogress.<pid>.<uuid>`
+  dir and installs it at the barcode folder atomically at the very end
+  (`_commit_run`, `os.rename` fast path). So (a) `run_dir` is untouched until a
+  run fully completes — a run that dies partway never corrupts a prior result;
+  (b) an identical CONCURRENT run cannot interleave files; (c) if the barcode
+  folder is already non-empty (a `--force` redo, or a racer that committed
+  first) the existing run is preserved under `superseded/<n>/` and the new one
+  installed. `superseded/` is invisible to resume (`sweep.find_done` /
+  `find_metrics` filter it, `run_spec.SUPERSEDED_DIRNAME`).
 - Tests bypass model loading via `object.__new__(Adapter)` plus fake modules — never load real weights in unit tests.
 - Position IDs everywhere are *absolute* (token's position in the full sequence), not chunk-relative.
 - New benchmarks: drop into `eval_harness/benchmarks/`, subclass `base.Benchmark`, register in `registry.py`.

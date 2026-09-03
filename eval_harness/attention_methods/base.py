@@ -90,6 +90,11 @@ class AttentionMethod:
     config (``attention_phase``) or override the default in a subclass.
     """
 
+    # Behavior version — bump in a subclass when this method's output changes
+    # without a config knob change; folds into the run-spec barcode (forces a
+    # rerun). Bare int, not a dataclass field. See CLAUDE.md.
+    VERSION = 1
+
     phase: AttentionPhase = AttentionPhase.BOTH
 
     # Per-model state captured on context-manager entry.

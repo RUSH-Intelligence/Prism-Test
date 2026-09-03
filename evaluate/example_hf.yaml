@@ -1,4 +1,8 @@
 # ============================================================================
+# EXAMPLE / REFERENCE ONLY — not a production run card. Kept to show how the
+# plain HuggingFace backend is configured. Your real runs use evaluate.yaml
+# (research backend). Copy from here only if you need a vanilla hf run.
+# ============================================================================
 # Clean HuggingFace backend — vanilla model, no compression, no prefill method
 # ============================================================================
 # Runs the model through HFAdapter (eval_harness/hf_adapter.py): one full

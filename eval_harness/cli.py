@@ -10,7 +10,7 @@ from .runner import EvalRunner
 
 
 class CliEntryPoint:
-    def run(self, config_file: Optional[str] = "./evaluate/evaluate_common.yaml", **overrides: Any) -> Dict[str, Any]:
+    def run(self, config_file: Optional[str] = "./evaluate/evaluate.yaml", **overrides: Any) -> Dict[str, Any]:
         final_cfg = asdict(EvalConfig())
         valid_keys = {f.name for f in fields(EvalConfig)}
         if config_file:
@@ -35,7 +35,7 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command")
 
     run_parser = subparsers.add_parser("run", help="Run one benchmark evaluation")
-    run_parser.add_argument("--config_file", default="./evaluate/evaluate_common.yaml")
+    run_parser.add_argument("--config_file", default="./evaluate/evaluate.yaml")
     run_parser.add_argument("--benchmark", default=None)
     run_parser.add_argument("--subsets", default=None)
     run_parser.add_argument("--backend", default=None)
@@ -44,6 +44,8 @@ def _build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--system_prompt", default=None)
     run_parser.add_argument("--max_requests", type=int, default=None)
     run_parser.add_argument("--fraction", type=float, default=None)
+    run_parser.add_argument("--force", action="store_true",
+                            help="Re-run even if an identical completed result exists")
 
     return parser
 
@@ -65,6 +67,8 @@ def main() -> None:
         "system_prompt": args.system_prompt,
         "max_requests": args.max_requests,
         "fraction": args.fraction,
+        # --force turns resume off for this run; otherwise leave the config default.
+        "resume": False if args.force else None,
     }
 
     # Fail fast with a clean one-liner instead of a traceback (message mirrors

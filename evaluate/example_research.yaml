@@ -1,0 +1,159 @@
+# ============================================================================
+# RESEARCH BACKEND — FULL REFERENCE ("the manual", read-only)
+# ============================================================================
+# This file is NOT meant to be run as-is. It documents every DOOR the research
+# backend exposes, with all knobs, so you can copy the block you need into your
+# daily card (evaluate/evaluate.yaml). The doors are a research-backend feature
+# only — hf/vllm/rag have none.
+#
+# The 4 doors (only 1-3 are implemented; usually you open ONE at a time):
+#   Door 1  positional_method   — how the model counts positions (context
+#                                 extension): yarn | ntk | linear_pi
+#   Door 2  attention_method    — how attention scores positions:
+#                                 dca | reattention | reattention_exact
+#   Door 3  kv_compressor       — throw away part of the KV cache:
+#                                 knorm | ridge | verified | compactor | ...
+#   Door 4  mlp                 — reserved, not implemented
+#
+# ---------------------------------------------------------------------------
+# COMPATIBILITY MATRIX (attention_method x kv_compressor). The pipeline installs
+# positional (outermost) -> attention_method -> kv_compressor (innermost).
+#
+#   attention_method    | kv_compressor allowed?
+#   --------------------+------------------------------------------------------
+#   none                | any            (pure KV-compression run; the daily card)
+#   reattention (hook)  | any            (both prune the normal rotated-KV cache)
+#   dca                 | none ONLY      (cyclic-rotated keys; any pruning
+#                       |                 sketch misaligns the chunks)
+#   reattention_exact   | none ONLY      (needs an unpruned raw-KV cache)
+#
+# Most position-sensitive KV scorers assume vanilla absolute-position keys — do
+# NOT combine them with dca unless a docstring says otherwise.
+# ---------------------------------------------------------------------------
+
+benchmark: ruler16k
+subsets: niah_single_1,niah_single_3,niah_multikey_3
+backend: research
+
+# 128k-native model keeps ruler16k in-window (isolates compression). Switch to
+# an 8k-native base (meta-llama/Meta-Llama-3-8B) when the POSITIONAL/ATTENTION
+# method itself is the context extension under test.
+model: meta-llama/Llama-3.1-8B-Instruct
+dtype: bfloat16                # keep bf16/fp16: the Triton kernels require it
+max_model_len: 18000           # truncation cap; raise per benchmark (66000 for ruler64k)
+trust_remote_code: true
+
+max_new_tokens: 128
+temperature: 0.0
+top_p: 1.0
+system_prompt: null
+seed: 42
+
+max_requests: 200              # PER SUBSET
+fraction: 1.0
+query_aware: false
+output_dir: ./results/research_example
+
+# vLLM-only knobs (ignored by research backend)
+tensor_parallel_size: 1
+gpu_memory_utilization: 0.9
+enable_prefix_caching: true
+
+llm_kwargs:
+  attn_implementation: sdpa    # research backend's validated path.
+                               # observed_attention / h2o need `eager`.
+  research_config:
+
+    # ======================================================================
+    # DOOR 1 — POSITIONAL METHOD (context extension). Default: OFF.
+    # Uncomment to stretch a short-context model over longer inputs.
+    #   yarn | ntk | linear_pi
+    # ======================================================================
+    # positional_method: yarn
+    # positional_method_kwargs:
+    #   factor: 2.0                        # target / native (e.g. 16384/8192)
+    #   original_max_position_embeddings: 8192   # model's native window
+
+    # ======================================================================
+    # DOOR 2 — ATTENTION METHOD. Default: none.
+    #   none | reattention | reattention_exact | dca
+    # attention_phase: prefill | decode | both  (native AttentionMethods only)
+    # ======================================================================
+    attention_method: none
+    attention_method_kwargs: {}
+
+    # --- Door 2 option A: DCA (dual-chunk attention) ----------------------
+    # Requires kv_compressor: none (see matrix). Active in prefill AND decode.
+    # attention_method: dca
+    # attention_method_kwargs:
+    #   chunk_size: 6144         # reference: pretraining_length * 3/4
+    #   local_window: 1024       # reference: pretraining_length / 8
+    #   pretraining_length: 8192 # model's native window
+    #   scaling_factor: 1.0
+    #   mscale_coeff: 0.05
+    #   use_flash_attn: auto     # auto | force | "off"  (QUOTE "off"!)
+
+    # --- Door 2 option B: ReAttention hook (prunes decode-facing cache) ----
+    # Composes with KV compressors (see matrix).
+    # attention_method: reattention
+    # attention_method_kwargs:
+    #   global_size: 32          # sink tokens always retained
+    #   local_size: 4096         # local window always retained
+    #   mid_size: 4              # top-k middle keys per (head, query)
+    #   span_size: 32            # span expansion around selected middles
+    #   recall_type: qk          # qk | qkv | qkv2
+    #   recall_clip: 127
+    #   use_triton_kernel: auto  # auto | force | "off"  (QUOTE "off"!)
+    #   align_local_to_128: false
+    #   uniform_retained: true   # REQUIRED for multi-layer models
+    #   uniform_budget: null
+    #   reposition: false
+
+    # --- Door 2 option C: ReAttention-exact (paper baseline) --------------
+    # Requires kv_compressor: none. Bounds attention scope during prefill.
+    # attention_method: reattention_exact
+    # attention_method_kwargs:
+    #   global_size: 32
+    #   local_size: 4096
+    #   mid_size: 4              # {1,4} enables the einsum_topk kernel
+    #   span_size: 32
+    #   recall_type: qk          # qk | qkv | qkv2 | k | v
+    #   recall_clip: 127         # PAPER VALUE, load-bearing
+    #   use_triton_kernel: force # auto | force | "off"  (QUOTE "off"!)
+    #   prefill_chunk_size: 512
+    #   recall_option: whole     # whole | default | generate_only | prefill_only | full_attn
+    #   chunk_schedule: reference
+    #   pe_original: false
+    #   use_flash_attn: "auto"
+
+    # ======================================================================
+    # DOOR 3 — KV COMPRESSION. Default: knorm @ 50%.
+    # Full roster: `from eval_harness.kv_compression import available_kv_compressors`
+    #   none | knorm | ridge | random | verified | compactor | snapkv |
+    #   pyramidkv | expected_attention | keydiff | streaming_llm | cur |
+    #   tova | h2o | qfilter | balancekv | top_k_sampling | ... (~36 total)
+    # ======================================================================
+    kv_compressor: knorm
+    compression_ratio: 0.5         # fraction PRUNED, in [0,1). kept = 1 - ratio.
+    # compression_schedule: post_prefill   # streaming | post_prefill | decode
+
+    # Per-method extra knobs go here. Examples:
+    # kv_compressor_kwargs:            # --- verified (random-sample + inner) ---
+    #   inner: ridge
+    #   det_fraction: 0.75
+    #   sample_seed: 42
+    # kv_compressor_kwargs:            # --- ridge ---
+    #   envelope_gamma: 1.0            # query-side dial (0=pure ridge)
+    #   ridge_lambda: 1.0e-4
+
+    # Decoding-sketch-only knobs (decoding_knorm / prefill_decoding_knorm):
+    # compression_interval: 512       # compress every N decode steps
+    # target_size: 2048               # cache size target
+    # hidden_states_buffer_size: 256  # scoring buffer
+
+    max_context_length: null         # null -> fall back to max_model_len above
+    log_cache_seq_len: true          # log per-layer cache lengths
+
+    # Single-pass vs chunked prefill. null = single full-context pass (REQUIRED
+    # for apples-to-apples ridge-vs-compactor; compactor asserts on chunked).
+    prefill_chunk_size: null
