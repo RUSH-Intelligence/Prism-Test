@@ -29,6 +29,9 @@ class PerfCell:
     kv_compressor_kwargs: Dict[str, Any] = field(default_factory=dict)
     compression_schedule: Optional[str] = None
     label: str = ""
+    # Distinguishes several parameterisations of the SAME method (e.g. rarekv at
+    # different (P, L)). Part of cell_id, so each lands in its own result dir.
+    variant: str = ""
 
     @property
     def is_anchor(self) -> bool:
@@ -45,13 +48,26 @@ class PerfCell:
         return f"{self.model_key}|{self.context_tokens}|{self.attn_impl}|{self.dtype}"
 
     @property
+    def display_name(self) -> str:
+        """Row label in report tables."""
+        if self.is_anchor:
+            return "full KV"
+        base = f"{self.method}[{self.variant}]" if self.variant else self.method
+        return f"{base} r{self.compression_ratio:g}"
+
+    @property
     def cell_id(self) -> str:
-        tag = "full" if self.is_anchor else f"{self.method}_r{self.compression_ratio:g}"
+        if self.is_anchor:
+            tag = "full"
+        else:
+            stem = f"{self.method}_{self.variant}" if self.variant else self.method
+            tag = f"{stem}_r{self.compression_ratio:g}"
         return f"{self.model_key}/ctx{self.context_tokens}/{tag}"
 
     def to_dict(self) -> dict:
         d = asdict(self)
-        d.update(is_anchor=self.is_anchor, anchor_key=self.anchor_key, cell_id=self.cell_id)
+        d.update(is_anchor=self.is_anchor, anchor_key=self.anchor_key,
+                 cell_id=self.cell_id, display_name=self.display_name)
         return d
 
 
@@ -94,7 +110,7 @@ def newest_perf(cell_dir: Path) -> Optional[Path]:
 
 
 CSV_COLUMNS: List[str] = [
-    "model_key", "label", "hf_model", "context_tokens", "method", "ratio", "is_anchor",
+    "model_key", "label", "hf_model", "context_tokens", "method", "variant", "ratio", "is_anchor",
     "attn_impl", "dtype", "anchor_key",
     "prefill_ms_median", "prefill_ms_p95", "prefill_tok_s", "prefill_host_gap_ms",
     "ttft_ms_median", "question_block_ms_median",

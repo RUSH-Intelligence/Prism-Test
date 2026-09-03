@@ -79,6 +79,15 @@ def capture_environment(tag: str = "") -> Dict[str, Any]:
             "cudnn_allow_tf32": torch.backends.cudnn.allow_tf32,
             "cudnn_benchmark": torch.backends.cudnn.benchmark,
             "float32_matmul_precision": torch.get_float32_matmul_precision(),
+            # Both default True and are unpinned. They decide whether cuBLAS may
+            # accumulate a reduced-precision split-k partial, which is the one
+            # live float exposure of the rarekv projection GEMM (TF32 cannot
+            # touch a bf16 GEMM). Recorded, never set: flipping them would move
+            # every already-published number that used the default.
+            "matmul_allow_bf16_reduced_precision_reduction":
+                torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction,
+            "matmul_allow_fp16_reduced_precision_reduction":
+                torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction,
         },
         {},
     )

@@ -196,6 +196,35 @@ arXiv:2502.07861) — a discrepancy-theory self-balancing walk that selects a ba
 `[sink | middle-coreset | window]` token subset and **reweights surviving values**; knobs are
 `itrs` (halvings; `compression_ratio` maps to it) + `gamma`/`temp`/`beta`/`block_size`/`n_sink`/
 `window_size`, `post_prefill` schedule.
+One LSH baseline: `rarekv` (`RareKVSketch`) — same family as `keydiff` (query-free,
+attention-free key scoring) but scores *rarity* instead of similarity-to-mean. Keys are hashed
+into `L` tables of `R = 2^P` buckets by signed random hyperplanes; the score is the **inverse
+collision density**
+`s_i = (eps + (1/L)·Σ_l (C_{l,h_l(k_i)} − 1)/(N−1))^(−alpha) · ‖v_i‖^gamma`,
+so a key sharing its bucket with many others is redundant and evicted first, while a key that
+hashes alone is kept. Knobs `n_planes` (P), `n_tables` (L), `alpha`, `eps`,
+`value_norm_power` (gamma), `seed`, `per_layer_planes` (default True → planes seeded
+`seed + layer_idx`, never touching the global RNG), `max_bucket_slots` (guard on
+`B·H_kv·L·2^P`). Fully vectorised: one `[D, L·P]` GEMM for all tables, one broadcast bit-pack,
+and a SINGLE `scatter_add_` histogram over a flattened `(group, bucket)` index space — no
+Python loop, no `.item()` host sync. Counting is integer, so it is bit-reproducible.
+No RoPE/attention requirement, so it composes with hybrids. Bucket ids come from
+`eval_harness/kernels/rarekv_lsh.lsh_buckets`, selected by the `lsh_mode` knob:
+`pack` (default, **bit-identical** to `torch` — the same cuBLAS GEMM, then one CUDA
+kernel that reads the projection once and writes uint8/int16 ids straight into the
+collision kernel's `[BH, L, T]` layout), `fused` (opt-in Tier 2 — the GEMM on tensor
+cores inside the packing kernel, so the projection never materialises; bit-identical
+to a *declared* reference, NOT to cuBLAS, and its divergence must be published from
+`scripts/bench_rarekv_kernel.py`), or `torch` (the reference sequence). Peak transient
+is `(bytes/elem)·B·H_kv·T·L·P` with bytes/elem = 5 (`torch`), `2 + b/P` (`pack`) or
+`b/P` (`fused`), where `b` is 1 byte for P≤8 and 2 for 9≤P≤15 — 2.93 / 1.29 / 0.12 GiB
+at 128K, P=10, L=60. Kernel modes cap at P≤15 (int16 ids are signed); above that
+`pack` degrades to `torch` and `fused` raises. `pack` also degrades to `torch` when its
+sign bitmap (`block_m·rk_nbs(L·P)` bytes) would exceed the device's opt-in shared-memory
+limit — only past `L·P ≈ 2825`, far outside the target grid. `PRISM_RAREKV_LSH` overrides
+the mode in both directions (`score()` resolves it *before* deciding whether to build the
+fused operand) and `PRISM_RAREKV_CUDA=0` forces `torch`.
+
 One simple hybrid baseline: `top_k_sampling` (`TopKSamplingSketch`) — keeps a deterministic
 top-`top_frac·budget` core by key-norm score (KnormSketch semantics) and fills the rest of the
 per-head budget `int(T·(1−r))` with a **uniform random sample without replacement** from the
