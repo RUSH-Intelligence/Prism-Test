@@ -91,6 +91,27 @@ python -m eval_harness.cli run \
 
 For the full field reference, see [eval_harness/config.py](eval_harness/config.py) — the `EvalConfig` dataclass validates every knob in `__post_init__`.
 
+### Evaluating a trained weight delta (`llm_kwargs.weight_delta`)
+
+The hidden-state KV-recovery branch (`eval_harness/kv_recovery/`, see
+[docs/hidden_state_recovery_plan.md](docs/hidden_state_recovery_plan.md)) stores only the
+trained tensors of a model as a lightweight delta checkpoint. Any `hf` / `research` run can
+evaluate such a delta by adding
+
+```yaml
+llm_kwargs:
+  weight_delta: {path: outputs/kv_recovery/<run>/checkpoint, sha256: <adapted_weights digest>, strict: true}
+```
+
+`HFAdapter` applies it right after loading (before `.to("cuda")`), verifying that every target
+tensor still holds the original bytes the delta was trained from, so a double application or a
+wrong base model raises. The key stays in `config.yaml` and is fingerprinted through
+`run_spec` `load_flags`, so a new delta lands in a new barcode folder. Do not hand-write the
+three comparison arms: `python scripts/eval_kv_recovery.py run --config configs/kv_recovery/<model>.yaml --run-name <run>`
+builds `dense` / `compressed` / `compressed_recovered` from one config (identical compression
+block, prompt shaping, subsets, seeds; `query_aware: false`; `deterministic: true`) and
+`... report` writes `eval_results.{json,md}` with `recovery_fraction` and paired bootstrap CIs.
+
 ### Conditions to control before reporting numbers
 
 Before publishing a comparison, confirm each of the following is **intentional**, not the default that happened to be in your YAML:

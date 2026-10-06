@@ -179,8 +179,8 @@ arms (training backward is reproducible only up to SDPA kernel noise — not cla
 
 ## 7. Status
 
-* [ ] scaffolding (configs, config module, model spec, provenance, data prep)
-* [ ] alignment core (hidden-state capture, losses, trainable selection, teacher/student)
-* [ ] training loop + delta checkpoints
-* [ ] evaluation integration + report + representation metrics
+* [x] scaffolding (configs, config module, model spec, provenance, data prep)
+* [x] alignment core (hidden-state capture, losses, trainable selection, teacher/student)
+* [x] training loop + delta checkpoints
+* [x] evaluation integration + report + representation metrics
 * [ ] smoke results (both models)

@@ -30,6 +30,9 @@ eval_harness/
   kv_compression/        # DOOR 3 (KV compression): base.py (KVCompressor/ScorerKVCompressor + CompressionSchedule/Operation), registry.py (@register_kv_compressor), cache_adapter.py, utils.py, attention_patch.py, compressors/ (~36 KV baselines, mostly kvpress 0.5.1 ports)
   mlp_methods/           # DOOR 4 (reserved seam only — MoE/activation-sparsity; not implemented)
   kernels/               # Triton einsum-topk + bitonic-merge (ReAttention) + flash-attn-with-LSE (DCA)
+  kv_recovery/           # hidden-state KV recovery: teacher (full cache) / student (compressed) alignment
+                         #   fine-tuning of a small weight subset; delta checkpoints applied via
+                         #   llm_kwargs.weight_delta; three-way eval + recovery metrics (docs/hidden_state_recovery_plan.md)
   profiling/             # systems metrics: CUDA-event timers, KV-byte accounting, exact-length
                          #   prompts, perf.json schema + audit gate. Instruments the REAL
                          #   research path (no reimplementation) -- see runner.py
@@ -259,6 +262,13 @@ Constraints to keep in mind when wiring runs or reviewing changes:
 
 ## Conventions
 
+- **Weight deltas (`llm_kwargs.weight_delta`).** `HFAdapter.__init__` pops this key (like
+  `dequantize_fp8`) and applies `eval_harness/kv_recovery/checkpoint.apply_delta` after loading,
+  before `.to("cuda")`; the loader refuses a wrong base or a double application via per-tensor
+  sha256. It is fingerprinted automatically through `run_spec` `load_flags`. The three comparison
+  arms must come from `scripts/eval_kv_recovery.py` (one config → dense / compressed /
+  compressed_recovered), never from hand-edited cards. `deterministic: true` now also disables the
+  cuDNN SDPA backend (`FRAMEWORK_VERSION` 2).
 - **Run-spec barcode + version bumps (sweep resume).** Every run writes a
   `run_spec.json` (canonical, fingerprinted settings receipt) and, dead-last, a
   `DONE.json` completion stamp (`eval_harness/run_spec.py`). The sweep and the
