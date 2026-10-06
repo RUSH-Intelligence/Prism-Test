@@ -252,11 +252,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     # ---- S7 continuation probe -----------------------------------------------------------------------
     def s7():
         probe = probe_block_continuation(model, student._cache_adapter, T=1024, L=64, rtol=1e-2)
-        assert probe["block_ok"], f"block continuation differs from the full forward: {probe['layers']['block']}"
-        assert probe["token_by_token_ok"], f"token-by-token continuation differs: {probe['layers']['token_by_token']}"
-        worst = max(v["max_abs_diff"] / v["ref_max_abs"] for v in probe["layers"]["block"].values())
+        bad = {m: {k: v for k, v in probe["layers"][m].items() if not v["ok"]} for m in ("block", "token_by_token")}
+        assert probe["block_ok"], f"block continuation differs from the full forward: {bad['block']}"
+        assert probe["token_by_token_ok"], f"token-by-token continuation differs: {bad['token_by_token']}"
+        worst = max(v["max_abs_diff"] / max(v["ref_max_abs"], 1.0) for v in probe["layers"]["block"].values())
         return {"segment_mode": mode, "worst_rel_abs_diff_block": worst,
-                "min_cos_block": min(v["min_cos"] for v in probe["layers"]["block"].values())}
+                "min_cos_block": min(v["min_cos"] for v in probe["layers"]["block"].values()),
+                "min_cos_token_by_token": min(v["min_cos"] for v in probe["layers"]["token_by_token"].values())}
     rep.run("S7_segment_continuation", s7)
 
     # ---- trainable + alignment setup -------------------------------------------------------------------
@@ -336,8 +338,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         ckpt = run_dir / "checkpoint"
         if ckpt.exists():
             shutil.rmtree(ckpt)
-        write_delta(ckpt, model, names, original_sha, {"base_model": cfg.model.name, "smoke": True}, masters=st.masters,
-                    frozen_sample_sha256=hashes_of(teacher._model, frozen_names))
+        from eval_harness.kv_recovery.config import training_identity
+        from eval_harness.kv_recovery.model_spec import resolve_base_revision
+        write_delta(ckpt, model, names, original_sha,
+                    {"base_model": cfg.model.name, "base_revision": resolve_base_revision(model), "smoke": True,
+                     **training_identity(cfg)},
+                    masters=st.masters, frozen_sample_sha256=hashes_of(teacher._model, frozen_names))
         trained = {n: p.detach().cpu().clone() for n, p in trainable.items()}
         fresh = load_adapter(cfg, compressed=True)
         info = apply_delta(fresh._model, ckpt, strict=True)
