@@ -19,6 +19,7 @@ from eval_harness.kv_recovery.metrics import (
     recovery_metrics,
     render_markdown,
     representation_metrics,
+    run_spec_comparability,
     stat_fraction,
     stat_recovery,
 )
@@ -119,6 +120,32 @@ class TestBootstrap(unittest.TestCase):
                               "checkpoint": {"sha256": "abc"}, "benchmarks": {"ruler16k": r1}})
         self.assertIn("| ruler16k | **macro** |", md)
         self.assertEqual(stat_recovery({"compressed_recovered": np.array([3.0]), "compressed": np.array([1.0])})[0], 2.0)
+
+
+class TestRunSpecComparability(unittest.TestCase):
+    def _spec(self, *, kv=None, delta=None, framework=2, ratio=0.75):
+        method = {"kv_compressor": None if kv is None else {"__class__": kv, "knobs": {"compression_ratio": ratio}}}
+        versions = {"framework": framework, "benchmark": {"ruler16k": 1}}
+        if kv is not None:
+            versions["kv_compressor"] = {kv: 1}
+        flags = {"attn_implementation": "sdpa"}
+        if delta:
+            flags["weight_delta"] = {"path": "/c", "sha256": delta}
+        return {"versions": versions, "benchmark": {"name": "ruler16k", "subsets": ["qa_1"]},
+                "generation": {"seed": 42, "deterministic": True}, "pipeline": {"prefill_chunk_size": None},
+                "model": {"name": "m", "load_flags": flags}, "method": method}
+
+    def test_versions_compared_per_key_and_delta_allowed(self):
+        specs = {"dense": self._spec(), "compressed": self._spec(kv="KnormSketch"),
+                 "compressed_recovered": self._spec(kv="KnormSketch", delta="abc")}
+        res = run_spec_comparability(specs)
+        self.assertTrue(res["ok"], res)
+        bad = dict(specs); bad["compressed_recovered"] = self._spec(kv="KnormSketch", delta="abc", ratio=0.5)
+        self.assertFalse(run_spec_comparability(bad)["ok"])
+        bad2 = dict(specs); bad2["compressed"] = self._spec(kv="KnormSketch", framework=1)
+        self.assertIn("versions.framework differs between dense and compressed", run_spec_comparability(bad2)["problems"])
+        bad3 = dict(specs); bad3["dense"] = self._spec(kv="KnormSketch")
+        self.assertFalse(run_spec_comparability(bad3)["ok"])
 
 
 class TestRepresentationMetrics(unittest.TestCase):

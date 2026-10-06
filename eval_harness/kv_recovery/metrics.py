@@ -203,6 +203,59 @@ def benchmark_report(frames: Dict[str, "pd.DataFrame"], *, n_resamples: int = 10
 
 
 # ---------------------------------------------------------------------------
+# run_spec comparability across the arms
+# ---------------------------------------------------------------------------
+_SPEC_SAME_ACROSS_ARMS = ("benchmark", "generation", "pipeline")
+_SHARED_VERSION_KEYS = ("framework", "benchmark")
+
+
+def _spec_model_without_delta(spec: Dict[str, Any]) -> Dict[str, Any]:
+    model = dict(spec.get("model") or {})
+    flags = dict(model.get("load_flags") or {})
+    flags.pop("weight_delta", None)
+    model["load_flags"] = flags
+    return model
+
+
+def run_spec_comparability(specs: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """Are the arms' ``run_spec.json`` receipts comparable? Same benchmark / generation /
+    pipeline blocks, same framework + benchmark versions and same model load flags (except
+    ``weight_delta``) in every arm; identical method (knobs and version) between a baseline and
+    its recovered arm; no compressor in a dense arm. The compressor's own version appears only in
+    arms that ran one, so ``versions`` is compared per key, not as a whole."""
+    conds = list(specs)
+    if not conds:
+        return {"ok": False, "problems": ["no arms"], "checked": []}
+    ref = specs[conds[0]]
+    problems: List[str] = []
+    for key in _SPEC_SAME_ACROSS_ARMS:
+        for c in conds[1:]:
+            if specs[c].get(key) != ref.get(key):
+                problems.append(f"{key} differs between {conds[0]} and {c}")
+    for vk in _SHARED_VERSION_KEYS:
+        for c in conds[1:]:
+            if (specs[c].get("versions") or {}).get(vk) != (ref.get("versions") or {}).get(vk):
+                problems.append(f"versions.{vk} differs between {conds[0]} and {c}")
+    for c in conds[1:]:
+        if _spec_model_without_delta(specs[c]) != _spec_model_without_delta(ref):
+            problems.append(f"model/load_flags differ between {conds[0]} and {c} (beyond weight_delta)")
+    for a, b in (("compressed", "compressed_recovered"), ("dense", "dense_recovered")):
+        if a in specs and b in specs:
+            if specs[a].get("method") != specs[b].get("method"):
+                problems.append(f"compression method/knobs differ between {a} and {b}")
+            if specs[a].get("versions") != specs[b].get("versions"):
+                problems.append(f"component versions differ between {a} and {b}")
+    for dense_arm in ("dense", "dense_recovered"):
+        if dense_arm in specs:
+            kv = (specs[dense_arm].get("method") or {}).get("kv_compressor")
+            if kv not in (None, {}, "none"):
+                problems.append(f"{dense_arm} arm has a kv_compressor: {kv}")
+    return {"ok": not problems, "problems": problems,
+            "checked": list(_SPEC_SAME_ACROSS_ARMS) + [f"versions.{k}" for k in _SHARED_VERSION_KEYS]
+            + ["model(-weight_delta)", "method+versions(baseline vs recovered)", "dense has no compressor"]}
+
+
+# ---------------------------------------------------------------------------
 # representation metrics (spec §16)
 # ---------------------------------------------------------------------------
 def representation_metrics(teacher: Dict[Any, "torch.Tensor"], student: Dict[Any, "torch.Tensor"]) -> Dict[str, Dict[str, float]]:

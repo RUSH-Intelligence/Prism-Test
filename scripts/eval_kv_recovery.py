@@ -185,41 +185,9 @@ def cmd_run(args) -> int:
 # ---------------------------------------------------------------------------
 # report
 # ---------------------------------------------------------------------------
-_SPEC_SAME_ACROSS_ARMS = ("versions", "benchmark", "generation", "pipeline")
-
-
-def _spec_without_delta(spec: Dict[str, Any]) -> Dict[str, Any]:
-    model = dict(spec.get("model") or {})
-    flags = dict(model.get("load_flags") or {})
-    flags.pop("weight_delta", None)
-    model["load_flags"] = flags
-    return model
-
-
-def comparability(specs: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
-    conds = list(specs)
-    ref = specs[conds[0]]
-    problems: List[str] = []
-    for key in _SPEC_SAME_ACROSS_ARMS:
-        for c in conds[1:]:
-            if specs[c].get(key) != ref.get(key):
-                problems.append(f"{key} differs between {conds[0]} and {c}")
-    for c in conds[1:]:
-        if _spec_without_delta(specs[c]) != _spec_without_delta(ref):
-            problems.append(f"model/load_flags differ between {conds[0]} and {c} (beyond weight_delta)")
-    for a, b in (("compressed", "compressed_recovered"), ("dense", "dense_recovered")):
-        if a in specs and b in specs and specs[a].get("method") != specs[b].get("method"):
-            problems.append(f"compression method/knobs differ between {a} and {b}")
-    if "dense" in specs and "compressed" in specs:
-        d = (specs["dense"].get("method") or {}).get("kv_compressor")
-        if d not in (None, {}, "none"):
-            problems.append("dense arm has a kv_compressor")
-    return {"ok": not problems, "problems": problems, "checked": list(_SPEC_SAME_ACROSS_ARMS) + ["model(-weight_delta)", "method"]}
-
-
 def cmd_report(args) -> int:
     from eval_harness.kv_recovery.metrics import (benchmark_report, consistency_check, per_example_scores,
-                                                  recovery_metrics, render_markdown)
+                                                  recovery_metrics, render_markdown, run_spec_comparability)
     from eval_harness.kv_recovery.provenance import provenance
 
     cfg, run_dir = _load(args)
@@ -246,7 +214,7 @@ def cmd_report(args) -> int:
             continue
         arms = [c for c in required + ["dense_recovered"] if c in have and (have[c] / "DONE.json").exists()]
         specs = {c: json.loads((have[c] / "run_spec.json").read_text()) for c in arms}
-        comp = comparability(specs)
+        comp = run_spec_comparability(specs)
         if not comp["ok"] and not args.ignore_comparability:
             raise SystemExit(f"{bench}: arms are not comparable: {comp['problems']} (pass --ignore-comparability to record and continue)")
         frames, consistency = {}, {}
