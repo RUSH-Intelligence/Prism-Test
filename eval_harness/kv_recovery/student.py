@@ -18,6 +18,7 @@ teacher must be a DIFFERENT instance that never enters the compressor context
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
@@ -166,6 +167,59 @@ def assert_no_hooks(model: nn.Module) -> None:
             raise AssertionError(f"layer {i}: attention module carries forward hooks (compressor leaked onto this model)")
 
 
+@contextlib.contextmanager
+def rebinding_linear_cache_updates(cache):
+    """Make linear-attention cache layers REBIND their state tensors instead of ``copy_``-ing into
+    them during a gradient-enabled forward.
+
+    transformers' ``LinearAttentionLayer.update_recurrent_state`` / ``update_conv_state`` write the
+    new state in place into a static buffer (for CUDA graphs). Qwen3.5's GatedDeltaNet passes that
+    buffer to the chunked kernel as ``initial_state``, which the kernel saves for backward; the
+    in-place write then bumps its version and the backward raises ``one of the variables needed for
+    gradient computation has been modified by an inplace operation``. Rebinding leaves the saved
+    tensor untouched. The student cache is discarded after the segment, so nothing relies on the
+    static address. No-op for caches without linear-attention layers.
+    """
+    patched = []
+    for layer in getattr(cache, "layers", []) or []:
+        if not (hasattr(layer, "update_recurrent_state") and hasattr(layer, "recurrent_states")):
+            continue
+
+        def update_recurrent_state(self, recurrent_states, **kwargs):
+            if not self.is_recurrent_states_initialized:
+                self.lazy_initialization(recurrent_states=recurrent_states)
+            self.recurrent_states = recurrent_states
+            return self.recurrent_states
+
+        def update_conv_state(self, conv_states, **kwargs):
+            if not self.is_conv_states_initialized:
+                self.lazy_initialization(conv_states=conv_states)
+            if not self.has_previous_state:
+                self.conv_states = conv_states
+                self.has_previous_state = True
+            else:
+                n = conv_states.shape[-1]
+                if n >= self.conv_kernel_size:
+                    self.conv_states = conv_states[..., -self.conv_kernel_size:]
+                else:
+                    new = self.conv_states.roll(shifts=-n, dims=-1)
+                    new = torch.cat([new[..., :-n], conv_states], dim=-1)
+                    self.conv_states = new
+            return self.conv_states
+
+        import types
+
+        layer.update_recurrent_state = types.MethodType(update_recurrent_state, layer)
+        layer.update_conv_state = types.MethodType(update_conv_state, layer)
+        patched.append(layer)
+    try:
+        yield
+    finally:
+        for layer in patched:
+            layer.__dict__.pop("update_recurrent_state", None)
+            layer.__dict__.pop("update_conv_state", None)
+
+
 def prefill_context(adapter, ctx_ids: torch.Tensor, compressor, *, prefill_chunk_size: Optional[int] = None,
                     grad: bool = False):
     """Context prefill exactly as ``ResearchGenerationPipeline._forward`` performs it."""
@@ -174,7 +228,7 @@ def prefill_context(adapter, ctx_ids: torch.Tensor, compressor, *, prefill_chunk
     cache_adapter = adapter._cache_adapter
     cache = cache_adapter.initialize_cache(None)
     ctx = ctx_ids.to(model_device(model))
-    with torch.set_grad_enabled(bool(grad)):
+    with torch.set_grad_enabled(bool(grad)), (rebinding_linear_cache_updates(cache) if grad else contextlib.nullcontext()):
         if compressor is not None:
             with compressor(model):
                 compressor.set_phase("prefill")
@@ -232,7 +286,7 @@ def run_segment(adapter, ex: Example, compressor, layer_keys: Sequence[int], *, 
         ratio = compression_ratio if compressor is not None else 0.0
         assert_budget(cache, spec, ex.context_len, ratio)
     keep = ex.suffix_len if want_logits else 1
-    with torch.set_grad_enabled(bool(grad)):
+    with torch.set_grad_enabled(bool(grad)), (rebinding_linear_cache_updates(cache) if grad else contextlib.nullcontext()):
         with capture_layer_outputs(model, layer_keys, detach=not grad, include_final_norm=include_final_norm) as cap:
             logits = segment_forward(model, cache, ex.suffix_ids, ex.context_len, logits_to_keep=keep, mode=mode)
     states = cap.states()

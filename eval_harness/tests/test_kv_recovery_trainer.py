@@ -38,6 +38,12 @@ from eval_harness.kv_recovery.trainer import (
 from eval_harness.research_adapter import ResearchAdapter
 from eval_harness.research_pipeline import ResearchGenerationPipeline
 
+try:
+    from transformers import Qwen3_5ForCausalLM, Qwen3_5TextConfig
+    HAS_QWEN35 = True
+except Exception:  # pragma: no cover
+    HAS_QWEN35 = False
+
 
 class _StubTokenizer:
     model_max_length = 8192
@@ -202,6 +208,46 @@ class TestTrainLoop(unittest.TestCase):
         state = train(self.teacher, self.student, self.comp, self.trainable, self.train_ex[:2], self.val_ex[:1], cfg,
                       setup, log_path=Path(self.tmp.name) / "k.jsonl", print_fn=lambda *a, **k: None)
         self.assertGreater(state.step_logs[0]["kl_loss"], 0.0)
+
+
+@unittest.skipUnless(HAS_QWEN35, "transformers build lacks Qwen3.5")
+class TestHybridBackwardThroughLinearAttention(unittest.TestCase):
+    """Regression: gradients must flow THROUGH a Qwen3.5 linear-attention block that sits between a
+    trainable parameter and the aligned layer (the cache layer's in-place state update used to
+    invalidate the kernel's saved initial state)."""
+
+    def _tiny(self):
+        cfg = Qwen3_5TextConfig(hidden_size=64, intermediate_size=128, num_hidden_layers=4, num_attention_heads=4,
+                                num_key_value_heads=2, head_dim=16, vocab_size=512, max_position_embeddings=512,
+                                layer_types=["linear_attention", "linear_attention", "linear_attention", "full_attention"],
+                                linear_num_key_heads=2, linear_num_value_heads=2, linear_key_head_dim=16,
+                                linear_value_head_dim=16, linear_conv_kernel_dim=4, tie_word_embeddings=True)
+        cfg._attn_implementation = "eager"
+        torch.manual_seed(0)
+        m = Qwen3_5ForCausalLM(cfg).eval()
+        with torch.no_grad():
+            for p in m.parameters():
+                p.mul_(4.0 if p.dim() > 1 else 1.0)
+        m.requires_grad_(False)
+        m.generation_config.eos_token_id = 2
+        return m
+
+    def test_last_two_blocks_train_one_step(self):
+        tm = self._tiny(); sm = copy.deepcopy(tm)
+        teacher, student = _shell(tm), _shell(sm)
+        cfg = RecoveryConfig.from_dict({**BASE, "trainable": {"strategy": "last_n_blocks", "n": 2},
+                                        "optim": {**BASE["optim"], "grad_accum": 1, "max_steps": 2}})
+        names = select_trainable(sm, inspect_model(sm), cfg.trainable)
+        self.assertTrue(any(".linear_attn." in n for n in names))
+        freeze_all_but(sm, names)
+        g = torch.Generator().manual_seed(3)
+        ex = [Example(id=f"q{i}", ctx_ids=torch.randint(0, 512, (1, 40), generator=g),
+                      suffix_ids=torch.randint(0, 512, (1, 8), generator=g)) for i in range(2)]
+        state = train(teacher, student, KnormSketch(compression_ratio=0.5), trainable_parameters(sm, names), ex, ex[:1],
+                      cfg, _setup(cfg, sm, names), log_path=Path(tempfile.mkdtemp()) / "q.jsonl", print_fn=lambda *a, **k: None)
+        self.assertEqual(state.optimizer_steps, 2)
+        self.assertTrue(state.check3["passed"], state.check3)
+        self.assertEqual(state.check3["zero_grad_trainable"], [])
 
 
 if __name__ == "__main__":
