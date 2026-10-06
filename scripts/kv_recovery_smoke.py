@@ -13,6 +13,7 @@ Checks (each recorded in <run_dir>/smoke_report.json; the exit code is non-zero 
   S5  compressor hooks on exactly the full-attention layers, none on the teacher
   S6  budget: int(T(1-r)) per hooked layer after prefill, +L after the suffix, compress once per layer
   S7  segment-continuation: prefill(ctx)+segment == forward(ctx+seg), block and token-by-token
+      (relative Frobenius <= 2e-2 and per-position cosine >= 0.999; bf16 kernel noise is ~1e-2)
   S8  teacher == student without compression (loss 0)
   S9  compression increases divergence (ratio 0.75 > 0.5 > 0)
   S10 trainable selection / stray gradients / dead terms / tied lm_head
@@ -251,7 +252,10 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # ---- S7 continuation probe -----------------------------------------------------------------------
     def s7():
-        probe = probe_block_continuation(model, student._cache_adapter, T=1024, L=64, rtol=1e-2, min_cos=0.999)
+        # bf16 noise floor measured on H200 (block vs full-sequence SDPA shapes, sdpa): relative Frobenius
+        # error up to 1.1e-2 at middle layers with per-position cosine >= 0.9998 on both Ministral-3-3B
+        # and Qwen3.5-4B; a dropped cache / recurrent state gives O(1) error and cosine << 0.999.
+        probe = probe_block_continuation(model, student._cache_adapter, T=1024, L=64, rtol=2e-2, min_cos=0.999)
         bad = {m: {k: v for k, v in probe["layers"][m].items() if not v["ok"]} for m in ("block", "token_by_token")}
         assert probe["block_ok"], f"block continuation differs from the full forward: {bad['block']}"
         assert probe["token_by_token_ok"], f"token-by-token continuation differs: {bad['token_by_token']}"
