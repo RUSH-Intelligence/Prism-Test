@@ -264,26 +264,18 @@ def run_student(adapter, ex: Example, compressor, layer_keys: Sequence[int], *, 
 # ---------------------------------------------------------------------------
 # continuation probe (segment forward == full-sequence forward without compression)
 # ---------------------------------------------------------------------------
-def _ulp(value: float, dtype: torch.dtype) -> float:
-    """Spacing of representable numbers around ``value`` for the given float dtype."""
-    mantissa = {torch.bfloat16: 7, torch.float16: 10, torch.float32: 23, torch.float64: 52}.get(dtype, 23)
-    import math
-
-    e = math.floor(math.log2(max(abs(value), 1e-30)))
-    return 2.0 ** (e - mantissa)
-
-
 @torch.no_grad()
 def probe_block_continuation(model: nn.Module, cache_adapter, *, T: int = 64, L: int = 16, seed: int = 0,
-                             rtol: float = 1e-4, min_cos: float = 0.999, ulps: float = 4.0,
+                             rtol: float = 1e-4, min_cos: float = 0.999,
                              layers: Optional[Sequence[int]] = None) -> Dict[str, Any]:
     """Compare per-layer suffix states of ``forward(ctx+seg)`` against ``prefill(ctx)`` followed by
     the block segment forward and the token-by-token segment forward.
 
-    ``*_ok`` holds when, on every layer, the minimum per-position cosine is >= ``min_cos`` AND the
-    max abs difference is within ``max(rtol * max(1, max|ref|), ulps * ulp(max|ref|))`` — the ulp
-    term absorbs the one-ulp kernel noise of bf16 (different SDPA kernel shapes for a block vs a
-    full-sequence forward); a dropped recurrent / cache state would fail the cosine test by far.
+    ``*_ok`` holds when, on every layer, the relative Frobenius error ``||ref - got|| / ||ref||`` is
+    <= ``rtol`` AND the minimum per-position cosine is >= ``min_cos``. bf16 kernel-order noise
+    (block vs full-sequence SDPA shapes) accumulates to a few ulps per layer — ~1e-3 relative —
+    while a dropped recurrent / cache state yields relative errors of order 1 and cosines far
+    below ``min_cos``. ``max_abs_diff`` is reported for information only.
     """
     device = model_device(model)
     tcfg = model.config.get_text_config() if hasattr(model.config, "get_text_config") else model.config
@@ -306,19 +298,17 @@ def probe_block_continuation(model: nn.Module, cache_adapter, *, T: int = 64, L:
             segment_forward(model, cache, ids[:, T:], T, logits_to_keep=1, mode=mode)
         got = cap.states()
         ok = True
-        dtype = next(model.parameters()).dtype
         for k in layers:
             r, s = ref[k].float(), got[k].float()
             diff = float((r - s).abs().max())
             ref_max = float(r.abs().max())
-            scale = max(1.0, ref_max)
+            rel_fro = float(torch.linalg.norm(r - s) / torch.linalg.norm(r).clamp_min(1e-12))
             cos = float(torch.nn.functional.cosine_similarity(r.reshape(-1, r.shape[-1]), s.reshape(-1, s.shape[-1]), dim=-1).min())
-            tol = max(rtol * scale, ulps * _ulp(ref_max, dtype))
-            layer_ok = diff <= tol and cos >= min_cos
-            results.setdefault(mode, {})[str(k)] = {"max_abs_diff": diff, "ref_max_abs": ref_max, "min_cos": cos,
-                                                   "tolerance": tol, "ok": layer_ok}
+            layer_ok = rel_fro <= rtol and cos >= min_cos
+            results.setdefault(mode, {})[str(k)] = {"rel_frobenius": rel_fro, "min_cos": cos, "max_abs_diff": diff,
+                                                   "ref_max_abs": ref_max, "ok": layer_ok}
             ok = ok and layer_ok
         oks[mode] = ok
         del cache
-    return {"T": T, "L": L, "rtol": rtol, "min_cos": min_cos, "ulps": ulps, "layers": results,
+    return {"T": T, "L": L, "rtol": rtol, "min_cos": min_cos, "layers": results,
             "block_ok": oks["block"], "token_by_token_ok": oks["token_by_token"]}

@@ -251,12 +251,12 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # ---- S7 continuation probe -----------------------------------------------------------------------
     def s7():
-        probe = probe_block_continuation(model, student._cache_adapter, T=1024, L=64, rtol=1e-2)
+        probe = probe_block_continuation(model, student._cache_adapter, T=1024, L=64, rtol=1e-2, min_cos=0.999)
         bad = {m: {k: v for k, v in probe["layers"][m].items() if not v["ok"]} for m in ("block", "token_by_token")}
         assert probe["block_ok"], f"block continuation differs from the full forward: {bad['block']}"
         assert probe["token_by_token_ok"], f"token-by-token continuation differs: {bad['token_by_token']}"
-        worst = max(v["max_abs_diff"] / max(v["ref_max_abs"], 1.0) for v in probe["layers"]["block"].values())
-        return {"segment_mode": mode, "worst_rel_abs_diff_block": worst,
+        worst = max(v["rel_frobenius"] for v in probe["layers"]["block"].values())
+        return {"segment_mode": mode, "worst_rel_frobenius_block": worst,
                 "min_cos_block": min(v["min_cos"] for v in probe["layers"]["block"].values()),
                 "min_cos_token_by_token": min(v["min_cos"] for v in probe["layers"]["token_by_token"].values())}
     rep.run("S7_segment_continuation", s7)
