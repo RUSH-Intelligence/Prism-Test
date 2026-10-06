@@ -31,6 +31,11 @@ htmlcov/
 # Run artifacts: results/<benchmark>__<model>__<backend>__.../{predictions.csv,metrics.json,config.yaml}
 results/
 
+# --- Hidden-state KV recovery (eval_harness/kv_recovery): run outputs, deltas, prepared corpora, CPU test venv ---
+outputs/
+data/kv_recovery/
+.venv-test/
+
 # --- Model weights & ML caches ---
 # Never commit weights — pull from HF Hub instead.
 *.safetensors

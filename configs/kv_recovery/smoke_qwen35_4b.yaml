@@ -1,0 +1,130 @@
+# ============================================================================
+# SMOKE card (tiny windows, 2 steps, 3 RULER subsets x 5 rows) — scripts/kv_recovery_smoke.py
+# Hidden-state KV recovery — Qwen/Qwen3.5-4B (default run card)
+# ============================================================================
+#   python scripts/train_kv_recovery.py --config configs/kv_recovery/qwen35_4b.yaml \
+#       [--run-name NAME] [--set a.b.c=value ...] [--learning-rate 1e-5]
+#       [--trainable-last-n-blocks 1 | --trainable-attention-projections k_proj,v_proj]
+#       [--kv-compressor knorm] [--compression-ratio 0.75 | --kv-budget-ratio 0.25]
+#       [--max-length 16384] [--suffix-length 512] [--num-train-examples 256]
+#
+# Teacher = this model with a FULL KV cache; student = the same weights with the
+# `kv_compression` block below installed exactly as the research backend installs
+# it for evaluation. ONE `kv_compression` block feeds the student, the delta
+# checkpoint metadata and the compressed / compressed_recovered eval arms.
+# Unknown keys anywhere in this file are an error.
+#
+# Qwen3.5-4B is a hybrid: layer_types = (linear, linear, linear, full) x 8, so only
+# layers 3, 7, ..., 31 carry a K/V cache and are hooked by the compressor; the last
+# block (31) is full attention. `attention_projections` only ever selects those 8
+# layers; `last_n_blocks: 2` = {30 (linear), 31 (full)}.
+
+run_name: smoke_qwen35_4b
+seed: 42                 # python / numpy / torch / cuda (EvalRunner._set_seed)
+deterministic: true      # EvalRunner._enable_determinism (pair with CUBLAS_WORKSPACE_CONFIG=:4096:8)
+
+model:
+  name: Qwen/Qwen3.5-4B
+  revision: null         # recorded + checked against the loaded snapshot when set
+  dtype: bfloat16
+  attn_implementation: sdpa     # the research backend's validated path; same in every eval arm
+  trust_remote_code: true
+  max_model_len: 131072
+  dequantize_fp8: false         # bf16 checkpoint
+
+# Door 3 only (attention_method / positional_method stay "none").
+kv_compression:
+  kv_compressor: knorm          # any registered compressor; matrix: knorm | cur
+  compression_ratio: 0.75       # fraction of the context KV PRUNED per head; kept = int(T*(1-r))
+  kv_compressor_kwargs: {}      # e.g. cur: {num_sinks: 4}
+  compression_schedule: null    # null = the compressor's default (post_prefill = compress once after the context)
+  prefill_chunk_size: null      # null = single-pass prefill (the eval default)
+
+data:
+  path: data/kv_recovery/smoke_train.jsonl      # written by scripts/kv_recovery_smoke.py (synthetic text)
+  val_path: data/kv_recovery/smoke_val.jsonl
+  max_length: 1024              # smoke: tiny windows
+  suffix_length: 128
+  num_train_examples: 4
+  num_val_examples: 2
+  seed: 42
+  format: raw                   # raw = bos + text; chat = ResearchGenerationPipeline.preprocess
+  suffix_mode: continuation     # continuation | recall (pre-registered ablation)
+  strip_auto_system_block: true # chat format only
+
+alignment:
+  layers:
+    strategy: from_first_trainable   # last_n | explicit | all | from_first_trainable
+    n: 4
+    indices: null
+  include_final_norm: true           # also align the post-`norm` output (the lm_head input)
+  positions:
+    strategy: all                    # all | recent | first_k | post_eviction (== all under post_prefill)
+    n: 128
+  loss: normalized_mse               # normalized_mse | normalized_mse_elementwise | cosine | relative_mse
+  layer_weights: null
+  allow_dead_terms: false            # aligned layers upstream of every trainable param carry no gradient
+
+loss:
+  hidden_weight: 1.0
+  kl_weight: 0.0                     # optional T^2 * KL(teacher || student) on the same positions
+  temperature: 1.0
+
+trainable:
+  strategy: last_n_blocks            # last_n_blocks | attention_projections | mlp | norms | full
+  n: 1
+  modules: [k_proj, v_proj]          # attention_projections only
+  layers: all                        # attention_projections / mlp / norms: all | "last_n:<k>" | [indices]
+  include_embeddings: false
+
+optim:
+  learning_rate: 1.0e-4
+  weight_decay: 0.0
+  betas: [0.9, 0.999]
+  eps: 1.0e-8
+  grad_clip: 1.0
+  grad_accum: 1
+  epochs: 1
+  max_steps: 2
+  warmup_fraction: 0.0
+  val_every_steps: 1
+  shuffle_seed: 0
+  master_weights_fp32: true          # BF16 weights, FP32 masters + AdamW state (prior D10)
+  deterministic_backward: false      # math SDPA backend for the grad-enabled suffix forward
+  instability:
+    grad_norm_factor: 10.0
+    consecutive_steps: 2
+    warmup_fraction: 0.05
+    restart: true
+
+teacher:
+  mode: online                       # online (second model instance) | offline (precompute_teacher_states.py)
+  states_dir: null
+  store_dtype: bfloat16
+
+student:
+  prefill_grad: false                # true = gradients also flow through the compressed context prefill (write path)
+  segment_mode: auto                 # auto | block | token_by_token
+
+eval:
+  benchmarks:
+    - {benchmark: ruler16k, subsets: [niah_single_1, niah_single_3, niah_multikey_3], max_requests: 5, request_offset: 0, walltime: "0:45:00"}
+  use_chat_template: true
+  strip_auto_system_block: true      # the model's auto system prompt is NOT compressed as context (all arms)
+  group_by_context: false            # hybrid model: a second question would inherit linear-attention state
+  results_root: null                 # default <output.root>/eval/<model_slug>; shared across runs
+  dense_dir: {}                      # benchmark -> an existing dense cell to reuse (fingerprint-checked)
+  bootstrap: {n_resamples: 10000, seed: 0, alpha: 0.05}
+  slurm:
+    partition: commons
+    account: as143
+    gres: gpu:h200:1
+    cpus: 8
+    mem_per_cpu: 32GB
+    exclude: bg3u24g1
+    train_time: "1:00:00"
+    log_dir: /scratch/sj157/kvrec_logs
+
+output:
+  root: outputs/kv_recovery
+  overwrite: false

@@ -1,0 +1,77 @@
+# ============================================================================
+# Initial experiment matrix (spec §24) — expanded by scripts/kv_recovery_matrix.py
+# ============================================================================
+#   python scripts/kv_recovery_matrix.py --matrix configs/kv_recovery/matrix.yaml --dry-run
+#   python scripts/kv_recovery_matrix.py --primary --submit        # 16K x ratio 0.75 only (16 runs)
+#   python scripts/kv_recovery_matrix.py --models ministral_3b --compressors cur --trainable qo_last4 --submit
+#
+# Every cell = <base config> + the `--set` overrides of its axes, run_name =
+# <model>_<context>_<compressor>_r<ratio>_<trainable>. Nothing is submitted
+# without --submit. Hyper-parameters are PRE-REGISTERED here (not tuned on any
+# benchmark); the only selection signal allowed is the validation alignment loss.
+
+base_configs:
+  ministral_3b: configs/kv_recovery/ministral_3b.yaml
+  qwen35_4b: configs/kv_recovery/qwen35_4b.yaml
+
+contexts:
+  16k: {data.max_length: 16384}
+  32k: {data.max_length: 32768}
+
+compressors: [knorm, cur]          # -> kv_compression.kv_compressor
+ratios: [0.75, 0.5]                # -> kv_compression.compression_ratio (fraction PRUNED)
+
+# Budget-matched trainable subsets (spec §24: last-1, last-2 blocks, K/V, Q/O).
+# Projections are restricted to a layer subset so the parameter budgets stay
+# comparable (q+o over ALL 26 Ministral layers would be 654M = 19 % of the LM):
+#   Ministral-3-3B: last1 116M | last2 233M | qo_last4 (layers 22-25) 100.7M | kv_attn (last 16 attn layers) 101M
+#   Qwen3.5-4B:     last1 (full-attn block 31) | last2 (30 linear + 31) | qo_last4 (19,23,27,31) | kv_attn (all 8 full layers)
+trainable:
+  last1:
+    trainable.strategy: last_n_blocks
+    trainable.n: 1
+    alignment.layers.strategy: last_n
+    alignment.layers.n: 1
+  last2:
+    trainable.strategy: last_n_blocks
+    trainable.n: 2
+    alignment.layers.strategy: last_n
+    alignment.layers.n: 2
+  qo_last4:
+    trainable.strategy: attention_projections
+    trainable.modules: [q_proj, o_proj]
+    trainable.layers: "last_n:4"
+    alignment.layers.strategy: from_first_trainable
+  kv_attn:
+    trainable.strategy: attention_projections
+    trainable.modules: [k_proj, v_proj]
+    trainable.layers: "last_n:16"
+    alignment.layers.strategy: from_first_trainable
+
+# Per-model overrides of a trainable subset (applied on top of the generic ones).
+model_overrides:
+  qwen35_4b:
+    kv_attn:
+      trainable.layers: all          # all 8 full-attention layers (42M)
+
+# Pre-registered hyper-parameters (identical for every cell).
+hyperparameters:
+  optim.learning_rate: 1.0e-5
+  optim.grad_accum: 4
+  optim.epochs: 1
+  data.num_train_examples: 256
+  data.num_val_examples: 16
+  data.suffix_length: 512
+
+# The pilot preset: 16K, ratio 0.75, all four subsets, both compressors, both models (16 runs).
+primary:
+  contexts: [16k]
+  ratios: [0.75]
+
+# Ablations are run on the pilot cell ONLY (ministral_3b / 16k / cur / 0.75 / qo_last4), one axis at a time.
+ablations:
+  relative_mse: {alignment.loss: relative_mse}
+  first_k64: {alignment.positions.strategy: first_k, alignment.positions.n: 64}
+  plus_kl: {loss.kl_weight: 0.5, loss.temperature: 2.0}
+  prefill_grad_kv: {trainable.strategy: attention_projections, trainable.modules: [k_proj, v_proj], trainable.layers: "last_n:16", student.prefill_grad: true}
+  recall_suffix: {data.suffix_mode: recall}
