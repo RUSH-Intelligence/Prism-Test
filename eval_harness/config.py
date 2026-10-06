@@ -64,8 +64,10 @@ class EvalConfig:
     # Opt-in run-to-run determinism. When False (default), only the basic seeds
     # (random/numpy/torch.manual_seed) are pinned — matches main behavior. When
     # True, also pins torch.use_deterministic_algorithms, cudnn.deterministic,
-    # and disables the nondeterministic mem-efficient SDPA backend in favor of
-    # flash + math (deterministic). Ignored on vLLM (it uses its own kernels).
+    # and disables the nondeterministic mem-efficient and cuDNN SDPA backends in
+    # favor of flash + math (deterministic). Pair with
+    # CUBLAS_WORKSPACE_CONFIG=:4096:8 in the environment. Ignored on vLLM (it
+    # uses its own kernels).
     deterministic: bool = False
 
     # Extra kwargs passthrough to the backend LLM.
