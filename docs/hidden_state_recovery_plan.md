@@ -152,7 +152,7 @@ normalized MSE / relative error for pretrained-compressed and recovered-compress
 
 ```bash
 python scripts/prepare_kv_recovery_data.py --num-train 256 --num-val 32 --seed 42   # login node
-sbatch scripts/slurm/kv_recovery_smoke.sbatch   # CONFIG=configs/kv_recovery/smoke_ministral_3b.yaml
+CONFIG=configs/kv_recovery/smoke_ministral_3b.yaml EXTRA=--with-benchmark sbatch scripts/slurm/kv_recovery_smoke.sbatch
 python scripts/train_kv_recovery.py --config configs/kv_recovery/ministral_3b.yaml --run-name demo
 python scripts/eval_kv_recovery.py run --config configs/kv_recovery/ministral_3b.yaml --run-name demo --submit
 python scripts/eval_kv_recovery.py report --config configs/kv_recovery/ministral_3b.yaml --run-name demo
@@ -177,10 +177,62 @@ prompt is never compressed as context); hyper-parameters pre-registered, selecti
 validation alignment loss; determinism flags + `CUBLAS_WORKSPACE_CONFIG` for all evaluation
 arms (training backward is reproducible only up to SDPA kernel noise — not claimed bitwise).
 
-## 7. Status
+## 7. Status (2026-10-06)
 
 * [x] scaffolding (configs, config module, model spec, provenance, data prep)
 * [x] alignment core (hidden-state capture, losses, trainable selection, teacher/student)
 * [x] training loop + delta checkpoints
 * [x] evaluation integration + report + representation metrics
-* [ ] smoke results (both models)
+* [x] smoke results (both models) — see below
+
+### Corpus (`scripts/prepare_kv_recovery_data.py`, login node)
+
+`emozilla/pg19` revision `c021754c`: 256 training excerpts from the `train` books and 32 validation excerpts from
+the `test` books (the 50-book `validation` split yields too few candidates); 200 000 characters per excerpt;
+leakage scan of 5 750 benchmark contexts (LongBench-16 × 200 rows, RULER-16K/32K × 13 tasks × 100 rows,
+13-word shingles, 141 s): 13 train + 1 val candidates rejected (hits in LongBench `narrativeqa` 19 contexts,
+`trec` 15, `triviaqa` 6, `musique` 4, `passage_count` 2, `hotpotqa` 1, `lcc` 1; RULER `qa_1` 6 per length).
+The scan also repopulated the HF dataset cache the evaluation jobs read.
+
+### GPU smoke (`scripts/kv_recovery_smoke.py`, one H200 each, SLURM jobs 316207 / 316208)
+
+All 14 checks pass on both families (`outputs/kv_recovery/smoke_*/smoke_report.json`):
+
+| check | Ministral-3-3B-Instruct-2512 | Qwen3.5-4B |
+|---|---|---|
+| S2 load | 26 full-attention layers; FP8 → BF16 verified bitwise for all 182 tensors | 32 layers, full attention at 3,7,…,31 |
+| S5/S6 hooks + budget | 26 hooks; 4096 → 1024 kept per layer at r=0.75; compress called once per layer | 8 hooks; 1024 kept; 8 calls |
+| S7 continuation probe (block / token-by-token vs full forward) | worst rel-Frobenius 1.30e-02, min cos 0.99981 | 1.11e-02, min cos 0.99981 |
+| S8 teacher == uncompressed student | bitwise, loss 0 | bitwise, loss 0 |
+| S9 divergence grows with the ratio | loss 0.0306 (r=0.5) → 0.0678 (r=0.75) | 0.0401 → 0.1218 |
+| S10 trainable (last block) | 116.4M params (3.39 % of the text LM); gradients only there | 107.5M (2.56 %) |
+| S11 2 steps + round trip on a fresh load; peak GPU memory | pass; 16.59 GiB | pass; 19.17 GiB |
+| S12 identity delta reproduces generation bitwise | pass (repeat generation deterministic) | pass |
+| S13 three-way RULER-16K (3 subsets × 5 rows, throwaway 2-step delta) | dense 100.0 / compressed 26.7 / recovered 33.3 | 100.0 / 46.7 / 46.7 |
+
+The S13 numbers only prove the plumbing (the smoke delta is two steps at lr 1e-4 on synthetic text); the
+`eval_results.{json,md}` they produced are the first end-to-end outputs of `eval_kv_recovery.py report`.
+Measured bf16 noise floor of the continuation probe (block vs full-sequence SDPA shapes): relative Frobenius
+error up to 1.1e-2 at middle layers with per-position cosine ≥ 0.9998 — the probe gate is 2e-2 / 0.999.
+
+### Real training script (`scripts/train_kv_recovery.py`, job 315970)
+
+Ministral-3-3B, PG-19 16 384-token windows (512-token suffix), knorm r=0.75, last block, lr 1e-5, 2 optimizer
+steps of 2 windows: same-model check bitwise, validation loss 0.0937 → 0.0898, train loss
+0.0924 → 0.0851, ~1.3 s per window (teacher + student 16K prefills), peak GPU memory 20.842 GiB with both
+models resident, all frozen tensors bitwise equal to the teacher afterwards, full `metadata.json` (spec §17) and a
+698 MB delta (bf16 tensors + fp32 masters) written. Observation: at lr 1e-4 (smoke) Adam's first step moves every
+parameter of the block by ~lr and the loss jumps before recovering; the pre-registered matrix lr is 1e-5.
+
+### Representation metrics (`scripts/measure_representation_alignment.py`, job 316206)
+
+Runs on the smoke delta with 2 validation windows: uncompressed-original sanity pass (mean cosine
+1.0000, normalized MSE 0.00e+00); compressed-vs-dense cosine across layers 0.87–0.97
+(all-key mean 0.918); layers 0–24 identical between compressed and recovered (only block 25 was
+trained); the throwaway delta lowers layer 25 / final-norm cosine, as expected for two lr 1e-4 steps on word salad.
+
+### Not run
+
+The pre-registered matrix (`configs/kv_recovery/matrix.yaml`, 64 runs + evaluations, ≈180–200 GPU-h) and the
+pilot cell are launched only explicitly (`python scripts/kv_recovery_matrix.py --primary --submit`,
+then `scripts/eval_kv_recovery.py run --submit` per run).
