@@ -68,7 +68,9 @@ primary:
   contexts: [16k]
   ratios: [0.75]
 
-# Ablations are run on the pilot cell ONLY (ministral_3b / 16k / cur / 0.75 / qo_last4), one axis at a time.
+# The pilot cell (ablations run on it only, one axis at a time).
+pilot: {model: ministral_3b, context: 16k, compressor: cur, ratio: 0.75, trainable: qo_last4}
+
 ablations:
   relative_mse: {alignment.loss: relative_mse}
   first_k64: {alignment.positions.strategy: first_k, alignment.positions.n: 64}
