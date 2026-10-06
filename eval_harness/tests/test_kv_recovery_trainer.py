@@ -30,6 +30,7 @@ from eval_harness.kv_recovery.trainer import (
     TeacherStore,
     TrainingUnstable,
     check_same_model,
+    prepare_run_dir,
     teacher_digest,
     teacher_states_for,
     train,
@@ -208,6 +209,23 @@ class TestTrainLoop(unittest.TestCase):
         state = train(self.teacher, self.student, self.comp, self.trainable, self.train_ex[:2], self.val_ex[:1], cfg,
                       setup, log_path=Path(self.tmp.name) / "k.jsonl", print_fn=lambda *a, **k: None)
         self.assertGreater(state.step_logs[0]["kl_loss"], 0.0)
+
+
+class TestPrepareRunDir(unittest.TestCase):
+    def test_incomplete_run_is_superseded_and_complete_run_is_protected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run = Path(tmp) / "run"
+            self.assertIsNone(prepare_run_dir(run))
+            run.mkdir(); (run / "config.yaml").write_text("x"); (run / "logs").mkdir(); (run / "checkpoint").mkdir()
+            arch = prepare_run_dir(run)
+            self.assertEqual(arch, run / "superseded" / "0")
+            self.assertTrue((arch / "config.yaml").exists() and (arch / "logs").is_dir())
+            self.assertEqual(sorted(p.name for p in run.iterdir()), ["superseded"])
+            (run / "checkpoint").mkdir(); (run / "checkpoint" / "metadata.json").write_text("{}")
+            with self.assertRaises(FileExistsError):
+                prepare_run_dir(run)
+            arch2 = prepare_run_dir(run, overwrite=True)
+            self.assertEqual(arch2, run / "superseded" / "1")
 
 
 @unittest.skipUnless(HAS_QWEN35, "transformers build lacks Qwen3.5")

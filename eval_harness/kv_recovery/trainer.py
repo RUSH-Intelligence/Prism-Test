@@ -37,6 +37,30 @@ class TrainingUnstable(RuntimeError):
     pass
 
 
+def prepare_run_dir(run_dir: Path, *, overwrite: bool = False) -> Optional[Path]:
+    """Make ``run_dir`` usable for a new run.
+
+    A COMPLETED run (``checkpoint/metadata.json`` present) is never overwritten unless
+    ``overwrite``; an INCOMPLETE leftover (a crashed or killed job) is moved aside into
+    ``run_dir/superseded/<n>/`` — the eval runner's convention — so a resubmission can proceed
+    without manual cleanup. Returns the archive path when something was moved."""
+    run_dir = Path(run_dir)
+    if not run_dir.exists() or not any(run_dir.iterdir()):
+        return None
+    complete = (run_dir / "checkpoint" / "metadata.json").exists()
+    if complete and not overwrite:
+        raise FileExistsError(f"run dir {run_dir} holds a completed run (use --overwrite or a new --run-name)")
+    sup = run_dir / "superseded"
+    n = len([d for d in sup.iterdir() if d.is_dir()]) if sup.exists() else 0
+    target = sup / str(n)
+    target.mkdir(parents=True, exist_ok=True)
+    for child in list(run_dir.iterdir()):
+        if child.name == "superseded":
+            continue
+        child.rename(target / child.name)
+    return target
+
+
 # ---------------------------------------------------------------------------
 # resolved alignment setup + teacher states (online or offline)
 # ---------------------------------------------------------------------------

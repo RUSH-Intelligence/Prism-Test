@@ -112,8 +112,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     cfg = load_config(args.config, overrides=args.set, shortcuts=shortcuts_from_args(args))
     run_dir = cfg.run_dir
-    if run_dir.exists() and any(run_dir.iterdir()) and not cfg.output.overwrite:
-        raise SystemExit(f"run dir {run_dir} is not empty (use --overwrite or a new --run-name)")
+    from eval_harness.kv_recovery.trainer import prepare_run_dir
+
+    try:
+        archived = prepare_run_dir(run_dir, overwrite=cfg.output.overwrite)
+    except FileExistsError as exc:
+        raise SystemExit(str(exc)) from exc
+    if archived is not None:
+        print(f"moved an incomplete previous run aside to {archived}", flush=True)
     (run_dir / "logs").mkdir(parents=True, exist_ok=True)
     (run_dir / "checkpoint").mkdir(exist_ok=True)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s",
