@@ -263,13 +263,30 @@ Evaluation arms (dense / compressed / compressed_recovered on RULER-16K, RULER-3
 run with `scripts/eval_kv_recovery.py run --run-name <run> --submit`; dense and compressed cells are shared per
 model and compressor.
 
-### Pilot evaluation — RULER-16K (13 tasks × 100 rows per arm, paired bootstrap CIs; 2026-10-06, jobs 316554-316619)
+### Pilot evaluation — RULER-16K, RULER-32K, LongBench-16 (paired bootstrap CIs; jobs 316554-316619, 318120)
 
-Dense anchors: Ministral-3-3B 89.2, Qwen3.5-4B 96.1 (consistent with the July full-cache anchors 90.2 / 95.8-ish and
-the prior experiment's 88.9). Compressed at ratio 0.75: Ministral cur 33.5 / knorm 29.3; Qwen3.5 cur 59.2 / knorm 46.4.
+RULER: 13 tasks × 100 rows per arm; LongBench: the 16 English tasks × up to 200 rows (3 150 rows per arm).
+Dense anchors: Ministral-3-3B 89.2 / 88.4 / 44.3 and Qwen3.5-4B 96.1 / 96.2 / 44.4 (RULER-16K / RULER-32K /
+LongBench), consistent with the July full-cache anchors. All deltas were trained at 16K; the 32K and LongBench
+rows therefore also measure transfer to other context lengths and task distributions.
 
 | run | benchmark | n | dense | compressed | recovered | drop | recovery [CI] | recovery fraction [CI] | flags |
 |---|---|---|---|---|---|---|---|---|---|
+| `ministral_3b_16k_cur_r075_kv_attn` | longbench | 3150 | 44.3 | 41.4 | 42.5 | 2.9 | 1.1 [0.4, 1.8] | 37.7% [16, 62] | unstable_gap |
+| `ministral_3b_16k_cur_r075_last2` | longbench | 3150 | 44.3 | 41.4 | 41.6 | 2.9 | 0.2 [-0.3, 0.6] | 6.2% [-10, 22] | unstable_gap |
+| `ministral_3b_16k_cur_r075_qo_last4` | longbench | 3150 | 44.3 | 41.4 | 41.7 | 2.9 | 0.2 [-0.1, 0.6] | 7.9% [-5, 21] | unstable_gap |
+| `ministral_3b_16k_knorm_r075_kv_attn` | longbench | 3150 | 44.3 | 29.9 | 31.0 | 14.4 | 1.1 [0.4, 1.7] | 7.6% [3, 12] |  |
+| `ministral_3b_16k_knorm_r075_last1` | longbench | 3150 | 44.3 | 29.9 | 30.2 | 14.4 | 0.3 [-0.1, 0.7] | 2.0% [-1, 5] |  |
+| `ministral_3b_16k_knorm_r075_last2` | longbench | 3150 | 44.3 | 29.9 | 30.3 | 14.4 | 0.4 [-0.1, 0.8] | 2.6% [-0, 6] |  |
+| `ministral_3b_16k_knorm_r075_qo_last4` | longbench | 3150 | 44.3 | 29.9 | 30.4 | 14.4 | 0.5 [0.2, 0.9] | 3.6% [1, 6] |  |
+| `qwen35_4b_16k_cur_r075_kv_attn` | longbench | 3150 | 44.4 | 37.3 | 39.0 | 7.1 | 1.6 [1.0, 2.3] | 23.2% [15, 32] |  |
+| `qwen35_4b_16k_cur_r075_last1` | longbench | 3150 | 44.4 | 37.3 | 36.9 | 7.1 | -0.4 [-0.9, 0.0] | -6.0% [-13, 0] |  |
+| `qwen35_4b_16k_cur_r075_last2` | longbench | 3150 | 44.4 | 37.3 | 36.7 | 7.1 | -0.6 [-1.1, -0.1] | -9.0% [-17, -2] |  |
+| `qwen35_4b_16k_cur_r075_qo_last4` | longbench | 3150 | 44.4 | 37.3 | 37.9 | 7.1 | 0.5 [0.1, 1.0] | 7.7% [2, 13] |  |
+| `qwen35_4b_16k_knorm_r075_kv_attn` | longbench | 3150 | 44.4 | 30.6 | 31.7 | 13.8 | 1.0 [0.4, 1.7] | 7.5% [3, 12] |  |
+| `qwen35_4b_16k_knorm_r075_last1` | longbench | 3150 | 44.4 | 30.6 | 30.1 | 13.8 | -0.5 [-1.0, 0.1] | -3.4% [-8, 1] |  |
+| `qwen35_4b_16k_knorm_r075_last2` | longbench | 3150 | 44.4 | 30.6 | 30.3 | 13.8 | -0.3 [-0.8, 0.3] | -2.0% [-6, 2] |  |
+| `qwen35_4b_16k_knorm_r075_qo_last4` | longbench | 3150 | 44.4 | 30.6 | 31.5 | 13.8 | 0.9 [0.3, 1.5] | 6.2% [2, 11] |  |
 | `ministral_3b_16k_cur_r075_kv_attn` | ruler16k | 1300 | 89.2 | 33.5 | 37.7 | 55.7 | 4.2 [2.7, 5.8] | 7.5% [5, 10] |  |
 | `ministral_3b_16k_cur_r075_last1` | ruler16k | 1300 | 89.2 | 33.5 | 34.1 | 55.7 | 0.6 [-0.4, 1.6] | 1.1% [-1, 3] |  |
 | `ministral_3b_16k_cur_r075_last2` | ruler16k | 1300 | 89.2 | 33.5 | 34.0 | 55.7 | 0.5 [-0.5, 1.4] | 0.8% [-1, 3] |  |
@@ -286,22 +303,44 @@ the prior experiment's 88.9). Compressed at ratio 0.75: Ministral cur 33.5 / kno
 | `qwen35_4b_16k_knorm_r075_last1` | ruler16k | 1300 | 96.1 | 46.4 | 45.8 | 49.7 | -0.6 [-1.5, 0.3] | -1.2% [-3, 1] |  |
 | `qwen35_4b_16k_knorm_r075_last2` | ruler16k | 1300 | 96.1 | 46.4 | 45.9 | 49.7 | -0.5 [-1.4, 0.4] | -0.9% [-3, 1] |  |
 | `qwen35_4b_16k_knorm_r075_qo_last4` | ruler16k | 1300 | 96.1 | 46.4 | 47.6 | 49.7 | 1.2 [0.0, 2.5] | 2.5% [0, 5] |  |
+| `ministral_3b_16k_cur_r075_kv_attn` | ruler32k | 1300 | 88.4 | 31.1 | 33.9 | 57.2 | 2.8 [1.2, 4.3] | 4.8% [2, 7] |  |
+| `ministral_3b_16k_cur_r075_last1` | ruler32k | 1300 | 88.4 | 31.1 | 31.7 | 57.2 | 0.5 [-0.5, 1.5] | 0.9% [-1, 3] |  |
+| `ministral_3b_16k_cur_r075_last2` | ruler32k | 1300 | 88.4 | 31.1 | 32.2 | 57.2 | 1.1 [0.1, 2.0] | 1.9% [0, 3] |  |
+| `ministral_3b_16k_cur_r075_qo_last4` | ruler32k | 1300 | 88.4 | 31.1 | 32.5 | 57.2 | 1.3 [0.5, 2.1] | 2.3% [1, 4] |  |
+| `ministral_3b_16k_knorm_r075_kv_attn` | ruler32k | 1300 | 88.4 | 27.5 | 28.8 | 60.9 | 1.4 [0.4, 2.4] | 2.3% [1, 4] |  |
+| `ministral_3b_16k_knorm_r075_last1` | ruler32k | 1300 | 88.4 | 27.5 | 27.9 | 60.9 | 0.4 [-0.3, 1.1] | 0.7% [-0, 2] |  |
+| `ministral_3b_16k_knorm_r075_last2` | ruler32k | 1300 | 88.4 | 27.5 | 27.8 | 60.9 | 0.4 [-0.4, 1.1] | 0.6% [-1, 2] |  |
+| `ministral_3b_16k_knorm_r075_qo_last4` | ruler32k | 1300 | 88.4 | 27.5 | 27.8 | 60.9 | 0.4 [-0.2, 1.1] | 0.6% [-0, 2] |  |
+| `qwen35_4b_16k_cur_r075_kv_attn` | ruler32k | 1300 | 96.2 | 57.6 | 57.8 | 38.6 | 0.2 [-1.1, 1.6] | 0.6% [-3, 4] |  |
+| `qwen35_4b_16k_cur_r075_last1` | ruler32k | 1300 | 96.2 | 57.6 | 57.5 | 38.6 | -0.1 [-0.8, 0.6] | -0.3% [-2, 2] |  |
+| `qwen35_4b_16k_cur_r075_last2` | ruler32k | 1300 | 96.2 | 57.6 | 57.8 | 38.6 | 0.2 [-0.5, 0.9] | 0.5% [-1, 2] |  |
+| `qwen35_4b_16k_cur_r075_qo_last4` | ruler32k | 1300 | 96.2 | 57.6 | 57.3 | 38.6 | -0.3 [-1.3, 0.8] | -0.7% [-3, 2] |  |
+| `qwen35_4b_16k_knorm_r075_kv_attn` | ruler32k | 1300 | 96.2 | 51.3 | 54.2 | 44.9 | 2.9 [1.4, 4.3] | 6.4% [3, 9] |  |
+| `qwen35_4b_16k_knorm_r075_last1` | ruler32k | 1300 | 96.2 | 51.3 | 51.4 | 44.9 | 0.1 [-0.6, 0.8] | 0.3% [-1, 2] |  |
+| `qwen35_4b_16k_knorm_r075_last2` | ruler32k | 1300 | 96.2 | 51.3 | 51.5 | 44.9 | 0.2 [-0.5, 1.0] | 0.4% [-1, 2] |  |
+| `qwen35_4b_16k_knorm_r075_qo_last4` | ruler32k | 1300 | 96.2 | 51.3 | 53.3 | 44.9 | 2.0 [0.8, 3.2] | 4.4% [2, 7] |  |
 
-**Reading.** With the pre-registered budget (64 steps, lr 1e-5, 256 PG-19 windows, suffix-only alignment) the
-hidden-state objective recovers little of the RULER-16K loss: the best cell is Ministral / cur / `kv_attn`
-(+4.2 points, 7.5 % of the gap, CI [5, 10] %), followed by Ministral / cur / `qo_last4` (+1.8, 3.3 %, CI [2, 5] %)
-and Qwen3.5 / knorm / `qo_last4` (+1.2, CI [0.0, 2.5] points); every other cell is within ±1 point and not
-significant. KNorm on Ministral does not move at all. Where recovery exists it is concentrated on retrieval tasks
-(cur / `kv_attn`: niah_multiquery +16.5 [9.8, 23.5], niah_multikey_2 +11.0, niah_single_1 +10.0, niah_multivalue +7.5;
-cur / `qo_last4`: vt +7.8, niah_single_2 +6.0). For comparison, the prior logit-level calibration on RULER-format
-training data (q/o on 4 layers, 32 steps, kv_compression_adaptation/results/REPORT.md) recovered 46 % of the CUR gap
-at 16K — i.e. the generic-text hidden-state objective, as specified, is roughly an order of magnitude weaker on this
-benchmark even though it lowered the alignment loss by 10-28 % on held-out PG-19 windows. The alignment signal is
-dominated by the first suffix tokens (per-position loss 0.29 for tokens 0-16 vs 0.06 beyond 64) and by local
-continuation rather than long-range reads, which is exactly what the pre-registered ablations probe:
-`recall_suffix` (suffix copied from the cache), `first_k64`, `plus_kl`, `prefill_grad_kv`, `relative_mse`
-(`python scripts/kv_recovery_matrix.py --ablations --submit`), plus a larger step / learning-rate budget.
-RULER-32K and LongBench arms were still running when this section was written.
+**Reading (pre-registered budget: 64 steps, lr 1e-5, 256 PG-19 windows, suffix-only alignment).**
+
+* Recovery is small but real and consistent for the **attention-projection subsets**: `kv_attn` (k/v of the last
+  16 / all 8 full-attention layers, 1-3 % of the text LM) improves the compressed model significantly in 8 of its 9
+  completed cells — RULER-16K Ministral/cur +4.2 [2.7, 5.8] (7.5 % of the gap), RULER-32K Ministral/cur +2.8 and
+  Qwen3.5/knorm +2.9 [1.4, 4.3] (6.4 %), LongBench +1.0 to +1.6 on every model × compressor (Qwen3.5/cur: 23 %
+  [15, 32] of a 7.1-point gap). `qo_last4` is next (RULER-16K Ministral/cur +1.8, RULER-32K Qwen3.5/knorm +2.0,
+  LongBench +0.5 to +0.9). **Whole last blocks (`last1`, `last2`) recover nothing** and on LongBench Qwen3.5/cur
+  `last2` is significantly *worse* than the untouched compressed model (−0.6 [−1.1, −0.1]).
+* The gains transfer: deltas trained on 16K PG-19 continuations help at 32K and on LongBench's natural tasks.
+* Effect sizes are an order of magnitude below the prior logit-level calibration on RULER-format data (46 % of the
+  CUR gap at 16K, kv_compression_adaptation/results/REPORT.md). On RULER the recovered accuracy is concentrated on
+  retrieval tasks (cur/kv_attn: niah_multiquery +16.5 [9.8, 23.5], niah_multikey_2 +11.0, niah_single_1 +10.0).
+* The alignment loss itself fell 10-28 % on held-out windows in every run, so the objective is being optimised; the
+  weak downstream effect points at the *signal*, not the optimiser: the per-position loss is dominated by the first
+  suffix tokens (0.29 for tokens 0-16 vs 0.06 beyond 64) and by local continuation rather than long-range reads.
+  The pre-registered ablations probe exactly this (`recall_suffix`, `first_k64`, `plus_kl`, `prefill_grad_kv`,
+  `relative_mse`: `python scripts/kv_recovery_matrix.py --ablations --submit`), together with a larger
+  step / learning-rate budget on the responsive `kv_attn` cells.
+* One LongBench cell (Ministral/cur/last1 recovered) died from a Lustre stale-file-handle error in the HF dataset
+  lock under 44 concurrent readers and was resubmitted; its row is filled in when it completes.
 
 ### Not run
 
