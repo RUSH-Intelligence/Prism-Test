@@ -273,6 +273,7 @@ rows therefore also measure transfer to other context lengths and task distribut
 | run | benchmark | n | dense | compressed | recovered | drop | recovery [CI] | recovery fraction [CI] | flags |
 |---|---|---|---|---|---|---|---|---|---|
 | `ministral_3b_16k_cur_r075_kv_attn` | longbench | 3150 | 44.3 | 41.4 | 42.5 | 2.9 | 1.1 [0.4, 1.8] | 37.7% [16, 62] | unstable_gap |
+| `ministral_3b_16k_cur_r075_last1` | longbench | 3150 | 44.3 | 41.4 | 41.5 | 2.9 | 0.1 [-0.3, 0.5] | 2.6% [-14, 17] | unstable_gap |
 | `ministral_3b_16k_cur_r075_last2` | longbench | 3150 | 44.3 | 41.4 | 41.6 | 2.9 | 0.2 [-0.3, 0.6] | 6.2% [-10, 22] | unstable_gap |
 | `ministral_3b_16k_cur_r075_qo_last4` | longbench | 3150 | 44.3 | 41.4 | 41.7 | 2.9 | 0.2 [-0.1, 0.6] | 7.9% [-5, 21] | unstable_gap |
 | `ministral_3b_16k_knorm_r075_kv_attn` | longbench | 3150 | 44.3 | 29.9 | 31.0 | 14.4 | 1.1 [0.4, 1.7] | 7.6% [3, 12] |  |
@@ -340,7 +341,8 @@ rows therefore also measure transfer to other context lengths and task distribut
   `relative_mse`: `python scripts/kv_recovery_matrix.py --ablations --submit`), together with a larger
   step / learning-rate budget on the responsive `kv_attn` cells.
 * One LongBench cell (Ministral/cur/last1 recovered) died from a Lustre stale-file-handle error in the HF dataset
-  lock under 44 concurrent readers and was resubmitted; its row is filled in when it completes.
+  lock under 44 concurrent readers; resubmitted alone it completed (+0.1 [−0.3, 0.5], not significant). All 48 cells
+  of the pilot are complete.
 
 ### Not run
 
