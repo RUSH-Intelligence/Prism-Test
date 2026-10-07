@@ -96,6 +96,9 @@ class TestBuild(unittest.TestCase):
             self.assertTrue(c.config["output_dir_exact"])
         only = build_cells(self.cfg, conditions=("dense",), benchmarks=["ruler16k"])
         self.assertEqual(len(only), 1)
+        other = RecoveryConfig.from_dict({**BASE, "model": {"name": "other/model"}})
+        names = {c.job_name for c in cells} | {c.job_name for c in build_cells(other, checkpoint_dir=Path("/c"), checkpoint_sha256="z")}
+        self.assertEqual(len(names), 6)           # job names are unique per cell across models
 
     def test_group_by_context(self):
         self.assertTrue(group_by_context_for(self.cfg))

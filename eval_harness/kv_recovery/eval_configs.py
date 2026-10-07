@@ -37,7 +37,9 @@ class Cell:
 
     @property
     def job_name(self) -> str:
-        return f"kvrec_{self.benchmark}_{self.condition}"
+        # Unique per cell (model / compressor / delta differ in the barcode), so the in-flight
+        # check never mistakes another model's dense cell for this one.
+        return f"kvrec_{self.benchmark}_{self.condition}_{self.barcode[:8]}"
 
 
 def model_slug(name: str) -> str:
