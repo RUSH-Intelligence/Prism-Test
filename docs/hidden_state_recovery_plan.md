@@ -231,6 +231,38 @@ Runs on the smoke delta with 2 validation windows: uncompressed-original sanity 
 (all-key mean 0.918); layers 0–24 identical between compressed and recovered (only block 25 was
 trained); the throwaway delta lowers layer 25 / final-norm cosine, as expected for two lr 1e-4 steps on word salad.
 
+### Pilot training runs (`kv_recovery_matrix.py --primary --submit`, 2026-10-06, jobs 316243-316280)
+
+16 runs (both models × knorm/cur at ratio 0.75 × last1 / last2 / qo_last4 / kv_attn), 16K windows, 256 training +
+16 validation excerpts, lr 1e-5, 64 optimizer steps, one H200 each. Every run passed all sanity checks (same-model
+bitwise, gradients only on the trainable subset, frozen tensors bitwise equal to the teacher) and lowered the
+validation alignment loss; no instability restart was triggered. Six Qwen3.5 runs initially crashed in the fla
+backward because the cache layer overwrote its recurrent state in place after the kernel had saved it
+(fixed: the student rebinds cache states during gradient forwards; commit 2c949e2).
+
+| run | trainable params | % text LM | val loss first → last | Δ | wall | peak GiB |
+|---|---|---|---|---|---|---|
+| `ministral_3b_16k_cur_r075_kv_attn` | 100.7M | 2.94 | 0.1111 → 0.0914 | -17.7 % | 9.0 min | 24.2 |
+| `ministral_3b_16k_cur_r075_last1` | 116.4M | 3.39 | 0.0796 → 0.0661 | -17.0 % | 8.1 min | 20.9 |
+| `ministral_3b_16k_cur_r075_last2` | 232.8M | 6.79 | 0.0796 → 0.0641 | -19.4 % | 8.1 min | 22.6 |
+| `ministral_3b_16k_cur_r075_qo_last4` | 100.7M | 2.94 | 0.0802 → 0.0631 | -21.4 % | 7.8 min | 20.7 |
+| `ministral_3b_16k_knorm_r075_kv_attn` | 100.7M | 2.94 | 0.1099 → 0.0913 | -17.0 % | 8.4 min | 24.2 |
+| `ministral_3b_16k_knorm_r075_last1` | 116.4M | 3.39 | 0.0771 → 0.0699 | -9.4 % | 8.0 min | 20.9 |
+| `ministral_3b_16k_knorm_r075_last2` | 232.8M | 6.79 | 0.0778 → 0.0696 | -10.5 % | 8.2 min | 22.6 |
+| `ministral_3b_16k_knorm_r075_qo_last4` | 100.7M | 2.94 | 0.0800 → 0.0701 | -12.4 % | 7.8 min | 20.7 |
+| `qwen35_4b_16k_cur_r075_kv_attn` | 41.9M | 1.00 | 0.0275 → 0.0201 | -26.9 % | 10.3 min | 22.6 |
+| `qwen35_4b_16k_cur_r075_last1` | 107.5M | 2.56 | 0.0260 → 0.0217 | -16.5 % | 9.2 min | 21.2 |
+| `qwen35_4b_16k_cur_r075_last2` | 220.4M | 5.24 | 0.0260 → 0.0220 | -15.2 % | 9.8 min | 22.9 |
+| `qwen35_4b_16k_cur_r075_qo_last4` | 125.8M | 2.99 | 0.0255 → 0.0199 | -21.9 % | 10.1 min | 21.7 |
+| `qwen35_4b_16k_knorm_r075_kv_attn` | 41.9M | 1.00 | 0.0467 → 0.0338 | -27.6 % | 12.3 min | 22.6 |
+| `qwen35_4b_16k_knorm_r075_last1` | 107.5M | 2.56 | 0.0564 → 0.0502 | -11.0 % | 9.9 min | 21.2 |
+| `qwen35_4b_16k_knorm_r075_last2` | 220.4M | 5.24 | 0.0572 → 0.0509 | -11.0 % | 9.9 min | 22.9 |
+| `qwen35_4b_16k_knorm_r075_qo_last4` | 125.8M | 2.99 | 0.0486 → 0.0382 | -21.5 % | 9.9 min | 21.7 |
+
+Evaluation arms (dense / compressed / compressed_recovered on RULER-16K, RULER-32K, LongBench-16) are submitted per
+run with `scripts/eval_kv_recovery.py run --run-name <run> --submit`; dense and compressed cells are shared per
+model and compressor.
+
 ### Not run
 
 The pre-registered matrix (`configs/kv_recovery/matrix.yaml`, 64 runs + evaluations, ≈180–200 GPU-h) and the

@@ -2,6 +2,7 @@
 """Three-way evaluation driver (spec §13-§15): dense / compressed / compressed_recovered
 (+ optional dense_recovered) through the EXISTING eval harness, then the recovery report.
 
+  python scripts/eval_kv_recovery.py run --run-name <trained run> [--submit]      # uses <run>/config.yaml
   python scripts/eval_kv_recovery.py run --config configs/kv_recovery/ministral_3b.yaml --run-name demo \
       [--checkpoint DIR] [--conditions dense,compressed,compressed_recovered[,dense_recovered]] \
       [--benchmarks ruler16k,ruler32k,longbench] [--dense-dir ruler16k=/path/to/dense/cell ...] \
@@ -49,16 +50,36 @@ SBATCH = REPO_ROOT / "scripts" / "slurm" / "kv_recovery_eval.sbatch"
 
 
 def _common(ap: argparse.ArgumentParser) -> None:
-    ap.add_argument("--config", required=True)
+    ap.add_argument("--config", help="RecoveryConfig YAML; defaults to the run's own config.yaml when the run dir exists")
     ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE")
     ap.add_argument("--run-name")
     ap.add_argument("--run-dir", help="explicit run directory (default <output.root>/<run_name>)")
+    ap.add_argument("--output-root", default="outputs/kv_recovery", help="where <run_name> dirs live when --config is not given")
 
 
 def _load(args) -> tuple[RecoveryConfig, Path]:
+    """The evaluation must use the EXACT config the delta was trained with, so when the run
+    directory already holds a config.yaml (written by train_kv_recovery.py) that file wins;
+    ``--config`` is the fallback for runs that have not been trained yet (dense/compressed-only
+    plans) and ``--set`` overrides apply on top of either (e.g. eval-only changes)."""
     shortcuts = {"run_name": args.run_name} if args.run_name else {}
-    cfg = load_config(args.config, overrides=args.set, shortcuts=shortcuts)
-    run_dir = Path(args.run_dir) if args.run_dir else cfg.run_dir
+    run_dir = Path(args.run_dir) if args.run_dir else None
+    if run_dir is None and args.run_name:
+        if args.config:
+            base = load_config(args.config, shortcuts=shortcuts)
+            run_dir = base.run_dir
+        else:
+            run_dir = Path(args.output_root) / args.run_name
+    saved = (run_dir / "config.yaml") if run_dir is not None else None
+    if saved is not None and saved.exists():
+        if args.config:
+            logger.info("using the run's own %s (the --config card is ignored for the training identity)", saved)
+        cfg = load_config(saved, overrides=args.set, shortcuts=shortcuts)
+    elif args.config:
+        cfg = load_config(args.config, overrides=args.set, shortcuts=shortcuts)
+    else:
+        raise SystemExit(f"no config: pass --config, or --run-name/--run-dir of a trained run ({saved} not found)")
+    run_dir = run_dir or cfg.run_dir
     return cfg, run_dir
 
 
