@@ -263,6 +263,46 @@ Evaluation arms (dense / compressed / compressed_recovered on RULER-16K, RULER-3
 run with `scripts/eval_kv_recovery.py run --run-name <run> --submit`; dense and compressed cells are shared per
 model and compressor.
 
+### Pilot evaluation — RULER-16K (13 tasks × 100 rows per arm, paired bootstrap CIs; 2026-10-06, jobs 316554-316619)
+
+Dense anchors: Ministral-3-3B 89.2, Qwen3.5-4B 96.1 (consistent with the July full-cache anchors 90.2 / 95.8-ish and
+the prior experiment's 88.9). Compressed at ratio 0.75: Ministral cur 33.5 / knorm 29.3; Qwen3.5 cur 59.2 / knorm 46.4.
+
+| run | benchmark | n | dense | compressed | recovered | drop | recovery [CI] | recovery fraction [CI] | flags |
+|---|---|---|---|---|---|---|---|---|---|
+| `ministral_3b_16k_cur_r075_kv_attn` | ruler16k | 1300 | 89.2 | 33.5 | 37.7 | 55.7 | 4.2 [2.7, 5.8] | 7.5% [5, 10] |  |
+| `ministral_3b_16k_cur_r075_last1` | ruler16k | 1300 | 89.2 | 33.5 | 34.1 | 55.7 | 0.6 [-0.4, 1.6] | 1.1% [-1, 3] |  |
+| `ministral_3b_16k_cur_r075_last2` | ruler16k | 1300 | 89.2 | 33.5 | 34.0 | 55.7 | 0.5 [-0.5, 1.4] | 0.8% [-1, 3] |  |
+| `ministral_3b_16k_cur_r075_qo_last4` | ruler16k | 1300 | 89.2 | 33.5 | 35.3 | 55.7 | 1.8 [0.9, 2.8] | 3.3% [2, 5] |  |
+| `ministral_3b_16k_knorm_r075_kv_attn` | ruler16k | 1300 | 89.2 | 29.3 | 29.3 | 59.9 | -0.0 [-1.0, 0.9] | -0.1% [-2, 1] |  |
+| `ministral_3b_16k_knorm_r075_last1` | ruler16k | 1300 | 89.2 | 29.3 | 29.3 | 59.9 | -0.0 [-0.5, 0.5] | -0.0% [-1, 1] |  |
+| `ministral_3b_16k_knorm_r075_last2` | ruler16k | 1300 | 89.2 | 29.3 | 29.6 | 59.9 | 0.3 [-0.3, 0.9] | 0.4% [-0, 1] |  |
+| `ministral_3b_16k_knorm_r075_qo_last4` | ruler16k | 1300 | 89.2 | 29.3 | 29.2 | 59.9 | -0.1 [-0.7, 0.5] | -0.1% [-1, 1] |  |
+| `qwen35_4b_16k_cur_r075_kv_attn` | ruler16k | 1300 | 96.1 | 59.2 | 59.2 | 36.9 | -0.0 [-1.3, 1.3] | -0.1% [-4, 3] |  |
+| `qwen35_4b_16k_cur_r075_last1` | ruler16k | 1300 | 96.1 | 59.2 | 58.7 | 36.9 | -0.6 [-1.2, 0.1] | -1.5% [-3, 0] |  |
+| `qwen35_4b_16k_cur_r075_last2` | ruler16k | 1300 | 96.1 | 59.2 | 59.1 | 36.9 | -0.1 [-0.9, 0.6] | -0.3% [-2, 2] |  |
+| `qwen35_4b_16k_cur_r075_qo_last4` | ruler16k | 1300 | 96.1 | 59.2 | 59.4 | 36.9 | 0.1 [-0.8, 1.1] | 0.3% [-2, 3] |  |
+| `qwen35_4b_16k_knorm_r075_kv_attn` | ruler16k | 1300 | 96.1 | 46.4 | 47.4 | 49.7 | 1.0 [-0.3, 2.4] | 2.1% [-1, 5] |  |
+| `qwen35_4b_16k_knorm_r075_last1` | ruler16k | 1300 | 96.1 | 46.4 | 45.8 | 49.7 | -0.6 [-1.5, 0.3] | -1.2% [-3, 1] |  |
+| `qwen35_4b_16k_knorm_r075_last2` | ruler16k | 1300 | 96.1 | 46.4 | 45.9 | 49.7 | -0.5 [-1.4, 0.4] | -0.9% [-3, 1] |  |
+| `qwen35_4b_16k_knorm_r075_qo_last4` | ruler16k | 1300 | 96.1 | 46.4 | 47.6 | 49.7 | 1.2 [0.0, 2.5] | 2.5% [0, 5] |  |
+
+**Reading.** With the pre-registered budget (64 steps, lr 1e-5, 256 PG-19 windows, suffix-only alignment) the
+hidden-state objective recovers little of the RULER-16K loss: the best cell is Ministral / cur / `kv_attn`
+(+4.2 points, 7.5 % of the gap, CI [5, 10] %), followed by Ministral / cur / `qo_last4` (+1.8, 3.3 %, CI [2, 5] %)
+and Qwen3.5 / knorm / `qo_last4` (+1.2, CI [0.0, 2.5] points); every other cell is within ±1 point and not
+significant. KNorm on Ministral does not move at all. Where recovery exists it is concentrated on retrieval tasks
+(cur / `kv_attn`: niah_multiquery +16.5 [9.8, 23.5], niah_multikey_2 +11.0, niah_single_1 +10.0, niah_multivalue +7.5;
+cur / `qo_last4`: vt +7.8, niah_single_2 +6.0). For comparison, the prior logit-level calibration on RULER-format
+training data (q/o on 4 layers, 32 steps, kv_compression_adaptation/results/REPORT.md) recovered 46 % of the CUR gap
+at 16K — i.e. the generic-text hidden-state objective, as specified, is roughly an order of magnitude weaker on this
+benchmark even though it lowered the alignment loss by 10-28 % on held-out PG-19 windows. The alignment signal is
+dominated by the first suffix tokens (per-position loss 0.29 for tokens 0-16 vs 0.06 beyond 64) and by local
+continuation rather than long-range reads, which is exactly what the pre-registered ablations probe:
+`recall_suffix` (suffix copied from the cache), `first_k64`, `plus_kl`, `prefill_grad_kv`, `relative_mse`
+(`python scripts/kv_recovery_matrix.py --ablations --submit`), plus a larger step / learning-rate budget.
+RULER-32K and LongBench arms were still running when this section was written.
+
 ### Not run
 
 The pre-registered matrix (`configs/kv_recovery/matrix.yaml`, 64 runs + evaluations, ≈180–200 GPU-h) and the
