@@ -466,12 +466,17 @@ complete, `scripts/kv_recovery_pilot_summary.py --glob 'outputs/kv_recovery/*_16
 | run | benchmark | dense | compressed | recovered | drop | recovery [CI] | fraction [CI] | static twin's recovery |
 |---|---|---|---|---|---|---|---|---|
 | `ministral_3b_16k_knorm_r075_qo_sens4` (layers 12–15) | ruler16k | 89.2 | 29.3 | 31.6 | 59.9 | **+2.3 [1.2, 3.3]** | 3.8 % [2, 5] | `qo_last4` (22–25): −0.1 [−0.7, 0.5] |
+| `ministral_3b_16k_knorm_r075_kv_sens16` (layers 5–19, 22) | ruler16k | 89.2 | 29.3 | 30.3 | 59.9 | **+1.0 [0.2, 2.0]** | 1.7 % [0, 3] | `kv_attn` (10–25): −0.0 [−1.0, 0.9] |
+| `ministral_3b_16k_cur_r075_qo_sens4` (layers 2–5) | ruler16k | 89.2 | 33.5 | 34.9 | 55.7 | +1.4 [−0.1, 3.0] | 2.5 % [−0, 5] | `qo_last4` (22–25): +1.8 [0.9, 2.8] |
 
-First reading: on the cell where the position heuristic recovered nothing (Ministral / knorm / q+o on the last four
-layers), the same projections on the four most compression-sensitive layers recover +2.3 points (significant); per task
-the gain sits on `cwe` (+21.2 [16.6, 25.9]), `niah_single_1` (+10.0) and `qa_1` (+7.0), with regressions on `vt`
-(−5.8 [−9.6, −2.2]) and `fwe` (−3.3) — the needle tasks that compression destroys outright (`niah_multikey_2/3`,
-`niah_multiquery`, `niah_single_2/3`: 0–2 % compressed) stay at 0, as in every pilot cell.
+First reading (RULER-16K, Ministral): with **knorm**, where both position-heuristic subsets recovered nothing, the same
+projections on the measured layers recover +2.3 (q+o, layers 12–15; significant) and +1.0 (k+v, layers 5–19 + 22;
+significant). The q+o gain sits on `cwe` (+21.2 [16.6, 25.9]), `niah_single_1` (+10.0) and `qa_1` (+7.0), with
+regressions on `vt` (−5.8 [−9.6, −2.2]) and `fwe` (−3.3); the k+v gain on `niah_single_1` (+7.0) and `qa_1` (+5.0).
+With **cur**, the early-layer pick (2–5) is on par with the heuristic rather than better: +1.4 [−0.1, 3.0] (not
+significant) against `qo_last4`'s +1.8 [0.9, 2.8], trading `niah_multikey_2` (+13.0 [5, 21]) and `qa_1` (+8.0) against
+`niah_multikey_1` (−7.0 [−15, 1]). The needle tasks that compression destroys outright (`niah_multikey_3`,
+`niah_single_3`, and under knorm also `niah_multikey_1/2`, `niah_multiquery`, `niah_single_2`) stay at 0 in every cell.
 
 ### Not run
 
