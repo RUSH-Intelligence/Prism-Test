@@ -119,6 +119,16 @@ def _shade_non_kv(ax, layers: List[int], hooked: List[int]):
     return bool(runs)
 
 
+def _save(fig, path: str) -> None:
+    """``savefig`` + for SVG: strip trailing whitespace and end with a newline (matplotlib's SVG writer leaves
+    trailing spaces that the repository's pre-commit ``trailing-whitespace`` hook rejects)."""
+    fig.savefig(path, facecolor=SURFACE)
+    if path.endswith(".svg"):
+        text = Path(path).read_text(encoding="utf-8")
+        cleaned = "\n".join(line.rstrip() for line in text.splitlines()) + "\n"
+        Path(path).write_text(cleaned, encoding="utf-8")
+
+
 def _end_label(ax, x: float, y: float, text: str, color: str, dy: float = 0.0):
     ax.annotate(text, (x, y), xytext=(6, dy), textcoords="offset points", fontsize=8, color=INK2, va="center", ha="left",
                 bbox=dict(boxstyle="round,pad=0.15", fc=SURFACE, ec="none", alpha=0.85))
@@ -205,7 +215,7 @@ def plot_profiles(model: str, meas: List[Dict[str, Any]], out_dir: Path, formats
     fig.tight_layout(rect=(0, 0, 1, 0.89))
     base = out_dir / f"{_slug(model)}__profiles"
     for fmt in formats:
-        fig.savefig(f"{base}.{fmt}", facecolor=SURFACE)
+        _save(fig, f"{base}.{fmt}")
     plt.close(fig)
     return Path(f"{base}.{formats[0]}")
 
@@ -268,7 +278,7 @@ def plot_tasks(model: str, meas: List[Dict[str, Any]], compressor: str, ratio: f
     fig.tight_layout(rect=(0, 0, 1, 0.925))
     base = out_dir / f"{_slug(model)}__tasks__{compressor}_{_ratio_tag(ratio)}"
     for fmt in formats:
-        fig.savefig(f"{base}.{fmt}", facecolor=SURFACE)
+        _save(fig, f"{base}.{fmt}")
     plt.close(fig)
     return Path(f"{base}.{formats[0]}")
 
