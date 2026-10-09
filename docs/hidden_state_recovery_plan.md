@@ -452,12 +452,15 @@ checks and `sanity_checks.json` confirms the trained layers equal the selection.
 | `ministral_3b_16k_cur_r075_qo_sens4` | [2, 3, 4, 5] | 100.7 M | 2.94 | 0.1373 → 0.0815 | -40.7 % | 7.3 min | 28.0 |
 | `ministral_3b_16k_knorm_r075_kv_sens16` | 5–19 + 22 | 100.7 M | 2.94 | 0.1101 → 0.0824 | -25.2 % | 7.1 min | 26.6 |
 | `ministral_3b_16k_knorm_r075_qo_sens4` | [12, 13, 14, 15] | 100.7 M | 2.94 | 0.1074 → 0.0873 | -18.8 % | 7.1 min | 23.4 |
+| `qwen35_4b_16k_cur_r075_kv_sens16` | [11, 15, 19, 27] | 21.0 M | 0.50 | 0.0303 → 0.0259 | -14.5 % | 9.9 min | 21.1 |
+| `qwen35_4b_16k_cur_r075_qo_sens4` | [11, 15, 19, 27] | 125.8 M | 2.99 | 0.0303 → 0.0239 | -21.1 % | 10.2 min | 22.9 |
 | `qwen35_4b_16k_knorm_r075_kv_sens16` | [15, 19, 27, 31] | 21.0 M | 0.50 | 0.0526 → 0.0460 | -12.6 % | 10.1 min | 20.5 |
 | `qwen35_4b_16k_knorm_r075_qo_sens4` | [15, 19, 27, 31] | 125.8 M | 2.99 | 0.0526 → 0.0426 | -19.0 % | 10.2 min | 22.3 |
 
 Val-loss drops are only comparable between runs that align the same layers (`from_first_trainable` starts at the first
-selected layer, so `kv_sens16` on Ministral/cur aligns layers 0–25 while `kv_attn` aligned 10–25); within the `qo` family
-the sensitivity-selected runs lowered the held-out alignment loss by 19–41 % against 12–21 % for the position heuristic.
+selected layer, so `kv_sens16` on Ministral/cur aligns layers 0–25 while `kv_attn` aligned 10–25). On Qwen3.5 the
+`kv_sens16` cells are top-4 k+v (21 M parameters, the model override) and the knorm / cur selections differ in exactly one
+layer (31 vs 11). All eight runs lowered the held-out alignment loss (−12.6 % to −65.8 %); none triggered the instability rule.
 
 **Sensitivity-selected pilot evaluation** (`compressed_recovered` arms through `eval_kv_recovery.py run --submit`; dense and
 compressed cells reused; paired bootstrap, 2 000 resamples; cells landing 2026-10-08/09 — the table is updated as they
@@ -468,6 +471,7 @@ complete, `scripts/kv_recovery_pilot_summary.py --glob 'outputs/kv_recovery/*_16
 | `ministral_3b_16k_knorm_r075_qo_sens4` (layers 12–15) | ruler16k | 89.2 | 29.3 | 31.6 | 59.9 | **+2.3 [1.2, 3.3]** | 3.8 % [2, 5] | `qo_last4` (22–25): −0.1 [−0.7, 0.5] |
 | `ministral_3b_16k_knorm_r075_kv_sens16` (layers 5–19, 22) | ruler16k | 89.2 | 29.3 | 30.3 | 59.9 | **+1.0 [0.2, 2.0]** | 1.7 % [0, 3] | `kv_attn` (10–25): −0.0 [−1.0, 0.9] |
 | `ministral_3b_16k_cur_r075_qo_sens4` (layers 2–5) | ruler16k | 89.2 | 33.5 | 34.9 | 55.7 | +1.4 [−0.1, 3.0] | 2.5 % [−0, 5] | `qo_last4` (22–25): +1.8 [0.9, 2.8] |
+| `ministral_3b_16k_knorm_r075_kv_sens16` (layers 5–19, 22) | ruler32k | 88.4 | 27.5 | 30.0 | 60.9 | **+2.5 [1.4, 3.6]** | 4.2 % [2, 6] | `kv_attn` (10–25): +1.4 [0.4, 2.4] |
 
 First reading (RULER-16K, Ministral): with **knorm**, where both position-heuristic subsets recovered nothing, the same
 projections on the measured layers recover +2.3 (q+o, layers 12–15; significant) and +1.0 (k+v, layers 5–19 + 22;
@@ -477,6 +481,11 @@ With **cur**, the early-layer pick (2–5) is on par with the heuristic rather t
 significant) against `qo_last4`'s +1.8 [0.9, 2.8], trading `niah_multikey_2` (+13.0 [5, 21]) and `qa_1` (+8.0) against
 `niah_multikey_1` (−7.0 [−15, 1]). The needle tasks that compression destroys outright (`niah_multikey_3`,
 `niah_single_3`, and under knorm also `niah_multikey_1/2`, `niah_multiquery`, `niah_single_2`) stay at 0 in every cell.
+The first transfer result, RULER-32K for Ministral / knorm / k+v, is also above its heuristic twin: +2.5 [1.4, 3.6] vs +1.4
+[0.4, 2.4] (`niah_single_1` +15.0 [7, 23], `qa_2` +6.0). The remaining 20 cells (Ministral cur k+v, all four Qwen3.5 runs,
+RULER-32K and LongBench everywhere) were queued on 2026-10-08 21:50 CDT (jobs 320600–320605, 320608–320613, 320619–320621, 320623–320625, 320657–320659, 320682–320684);
+`python scripts/eval_kv_recovery.py report --run-name <run>` per run followed by
+`python scripts/kv_recovery_pilot_summary.py --glob 'outputs/kv_recovery/*_16k_*_r075_*sens*'` produces the full table.
 
 ### Not run
 
