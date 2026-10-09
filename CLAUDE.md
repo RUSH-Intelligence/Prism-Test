@@ -31,8 +31,11 @@ eval_harness/
   mlp_methods/           # DOOR 4 (reserved seam only — MoE/activation-sparsity; not implemented)
   kernels/               # Triton einsum-topk + bitonic-merge (ReAttention) + flash-attn-with-LSE (DCA)
   kv_recovery/           # hidden-state KV recovery: teacher (full cache) / student (compressed) alignment
-                         #   fine-tuning of a small weight subset; delta checkpoints applied via
-                         #   llm_kwargs.weight_delta; three-way eval + recovery metrics (docs/hidden_state_recovery_plan.md)
+                         #   fine-tuning of a small weight subset — layers chosen by measured compression
+                         #   sensitivity E_l = ||H_dense-H_comp||_F/(||H_dense||_F+eps) on held-out windows
+                         #   (sensitivity.py, trainable.layers: sensitivity) or by position; delta checkpoints
+                         #   applied via llm_kwargs.weight_delta; three-way eval + recovery metrics
+                         #   (docs/hidden_state_recovery_plan.md)
   profiling/             # systems metrics: CUDA-event timers, KV-byte accounting, exact-length
                          #   prompts, perf.json schema + audit gate. Instruments the REAL
                          #   research path (no reimplementation) -- see runner.py

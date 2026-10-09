@@ -102,13 +102,44 @@ dimension (= 2·(1−cos)); the spec's literal elementwise form is available as
 Aligned layers default to `from_first_trainable` (+ the final norm); layers upstream of every
 trainable parameter are refused (zero gradient) unless explicitly allowed.
 
-### 3.3 Trainable subsets (`trainable.py`)
+### 3.3 Trainable subsets and layer selection (`trainable.py`, `sensitivity.py`)
 
-`last_n_blocks`, `attention_projections` (q/k/v/o on softmax-attention layers, layer subset
-`all | last_n:k | [indices]`), `mlp`, `norms`, `full`. Full-path names only; vision tower,
-projector, MTP head and the tied `lm_head` are never trainable. Counts and percentages are
-printed and written to `metadata.json`. The matrix budget-matches subsets (q+o on the last 4
-attention layers, k+v on the last 16 (Ministral) / all 8 full layers (Qwen3.5)).
+Strategies: `last_n_blocks`, `blocks`, `attention_projections` (q/k/v/o on softmax-attention
+layers), `mlp`, `norms`, `full`; the layer subset of the last four is `all | last_n:k | [indices]
+| sensitivity`. Full-path names only; vision tower, projector, MTP head and the tied `lm_head`
+are never trainable. Counts and percentages are printed and written to `metadata.json`.
+
+**Layer selection by compression sensitivity (`trainable.layers: sensitivity`, the default of the
+run cards since 2026-10-08).** Instead of fixing the layers by position, the trainer measures how
+strongly the compressor perturbs every layer's hidden states ("Identifying Compression-Sensitive
+Layers"). For each of `trainable.sensitivity.num_examples` held-out calibration windows (rows of
+`data.val_path` drawn under seed `data.seed + 2`, disjoint from both the training and the
+validation windows) the student runs twice with its ORIGINAL weights — dense cache, then
+compressed cache, through the production prefill / segment path — and every decoder layer `l`
+gets
+
+```
+E_l = ||H_l^dense − H_l^comp||_F / (||H_l^dense||_F + eps)
+```
+
+over the suffix tokens (`sensitivity.positions`, default all), where `H_l` is the residual-stream
+output of decoder layer `l` — the same states and positions the alignment loss uses. `E_l` is
+averaged (`aggregate: mean | median`) over the calibration windows, layers are ranked (exact ties
+resolve toward the deeper layer) and the `top_k` highest-ranked **eligible** layers are selected:
+for `attention_projections` the eligible pool is the K/V-carrying layers (on Qwen3.5 the 8
+full-attention layers; linear-attention layers are measured and reported but never eligible), for
+`blocks | mlp | norms` every decoder layer. The selection happens before any weight changes, needs
+the online teacher, never sees benchmark data, and is written to `layer_sensitivity.{json,csv}`
+(per-window scores, mean, std, ranking, candidates, selection) and into the delta metadata
+(`layer_selection`). **The loss is unchanged**: the aligned layers follow the selection through
+`alignment.layers.strategy: from_first_trainable` (every layer from the first selected one to the
+last, plus the final norm). `scripts/measure_layer_sensitivity.py` reports the same profile and
+selection for several compressors / ratios from one loaded model without training.
+
+The static subsets remain available as the position-heuristic baseline (`qo_last4`, `kv_attn`,
+`last1`, `last2`); the matrix pairs each projection subset with its sensitivity-selected twin at an
+identical parameter budget (`qo_sens4` vs `qo_last4`, `kv_sens16` vs `kv_attn`), so the comparison
+isolates *which* layers are trained from *how many* parameters are trained.
 
 ### 3.4 Training (`trainer.py`, `scripts/train_kv_recovery.py`)
 
@@ -153,7 +184,9 @@ normalized MSE / relative error for pretrained-compressed and recovered-compress
 ```bash
 python scripts/prepare_kv_recovery_data.py --num-train 256 --num-val 32 --seed 42   # login node
 CONFIG=configs/kv_recovery/smoke_ministral_3b.yaml EXTRA=--with-benchmark sbatch scripts/slurm/kv_recovery_smoke.sbatch
-python scripts/train_kv_recovery.py --config configs/kv_recovery/ministral_3b.yaml --run-name demo
+python scripts/measure_layer_sensitivity.py --config configs/kv_recovery/ministral_3b.yaml --compressors knorm,cur --ratios 0.75,0.5
+python scripts/train_kv_recovery.py --config configs/kv_recovery/ministral_3b.yaml --run-name demo            # card default: q+o on the top-4 sensitive layers
+python scripts/train_kv_recovery.py --config configs/kv_recovery/ministral_3b.yaml --run-name demo_static --trainable-layers last_n:4   # the position heuristic
 python scripts/eval_kv_recovery.py run --config configs/kv_recovery/ministral_3b.yaml --run-name demo --submit
 python scripts/eval_kv_recovery.py report --config configs/kv_recovery/ministral_3b.yaml --run-name demo
 python scripts/measure_representation_alignment.py --config ... --run-name demo
@@ -163,7 +196,9 @@ python scripts/kv_recovery_matrix.py --primary --dry-run
 ## 5. Experiment matrix (spec §24)
 
 `configs/kv_recovery/matrix.yaml`: 2 models × {16K, 32K} × {knorm, cur} × {0.75, 0.5} ×
-{last1, last2, qo_last4, kv_attn} = 64 training runs; `--primary` = 16K × 0.75 (16 runs).
+{last1, last2, qo_last4, kv_attn, qo_sens4, kv_sens16} = 96 training runs; `--primary` = 16K × 0.75
+(24 runs: the 16 static cells ran on 2026-10-06, the 8 sensitivity-selected cells were added with the
+layer-selection change; `--primary --trainable qo_sens4,kv_sens16` submits just those).
 Staged order: smoke (both models) → pilot (Ministral, cur 0.75, qo_last4 + last1) → knorm
 0.75 → ratio 0.5 / remaining subsets → Qwen3.5 → ablations on the pilot cell → 32K.
 Rough cost on one H200: training 5–20 min per 16K run; evaluation ≈ 3 GPU-h per
@@ -171,8 +206,9 @@ Rough cost on one H200: training 5–20 min per 16K run; evaluation ≈ 3 GPU-h 
 
 ## 6. Validity rules
 
-No benchmark labels in training; identical compression block, prompt shaping, subsets, seeds and
-decoding in every arm; `strip_auto_system_block: true` everywhere (the model's auto system
+No benchmark labels in training; layer selection uses only held-out PG-19 calibration windows
+(disjoint from train and val) and is recorded in the delta; identical compression block, prompt
+shaping, subsets, seeds and decoding in every arm; `strip_auto_system_block: true` everywhere (the model's auto system
 prompt is never compressed as context); hyper-parameters pre-registered, selection only on the
 validation alignment loss; determinism flags + `CUBLAS_WORKSPACE_CONFIG` for all evaluation
 arms (training backward is reproducible only up to SDPA kernel noise — not claimed bitwise).
@@ -344,8 +380,71 @@ rows therefore also measure transfer to other context lengths and task distribut
   lock under 44 concurrent readers; resubmitted alone it completed (+0.1 [−0.3, 0.5], not significant). All 48 cells
   of the pilot are complete.
 
+### Layer selection by compression sensitivity (2026-10-08)
+
+The trainable layers are no longer fixed by position. `trainable.layers: sensitivity` (§3.3; the run
+cards' default) measures `E_l = ||H_l^dense − H_l^comp||_F / (||H_l^dense||_F + eps)` on 8 held-out
+PG-19 calibration windows (16 384 tokens, suffix 512, disjoint from train and val) with the original
+weights and trains the top-k eligible layers with the unchanged alignment loss. CPU tests: 20 new
+(`tests/test_kv_recovery_sensitivity.py`: formula, aggregation, ranking, eligible pools, config rules,
+tiny-Llama measurement, tiny-Qwen3.5 hybrid zeros before the first K/V layer, calibration split,
+select-then-train); the full suite (1 380 tests) passes on transformers 5.10.2 (pinned) **and** 5.19.0
+(what CI installs) — the two failures CI showed on the previous head are fixed: Qwen3.5 decoder layers in
+transformers ≥ 5.11 carry `block_type` ∈ {linear_attention, full_attention} (now understood by
+`kv_compression.base._is_non_full_attention_layer`), and the linear-attention cache rebinding now wraps the
+original update methods and clones tensor / dict / list state containers instead of re-implementing the
+5.10 signature.
+
+**Measured profiles (`scripts/measure_layer_sensitivity.py`, one H200, jobs 320578 / 320582; full tables
+in `outputs/kv_recovery/sensitivity/<model>/summary.md`).** `E_l` is the mean over the 8 windows; the
+measurement costs ≈ 9 s per (compressor, ratio) once the model is loaded, i.e. ≈ 20 s per training run.
+
+Ministral-3-3B (26 layers, all K/V-carrying):
+
+| compressor @ ratio | profile | peak | ranks of the last 4 layers (22–25) | top-4 → `qo_sens4` |
+|---|---|---|---|---|
+| knorm @ 0.75 | rises from 0.24–0.26 (L0–1) to a hump at L12–16 (0.40–0.43), back to 0.29–0.30 at L20–25 | L13 0.430 ± 0.032 | 16 / 20 / 22 / 21 | [12, 13, 14, 15] |
+| knorm @ 0.5 | same shape, lower (0.16 → 0.36 → 0.22) | L13 0.362 | 17 / 19 / 23 / 21 | [12, 13, 14, 15] |
+| cur @ 0.75 | **early** peak L2–5 (0.43–0.47), secondary hump L12–13 (0.41), tail L20–25 (0.27–0.29) | L3 0.473 ± 0.024 | 23 / 22 / 24 / 21 | [2, 3, 4, 5] |
+| cur @ 0.5 | bimodal: L2–3 (0.33–0.35) and L12–13 (0.31) | L2 0.346 | 21 / 22 / 24 / 23 | [2, 3, 12, 13] |
+
+`kv_sens16` (top-16) at knorm @ 0.75 resolves to layers 5–19 + 22 (vs. the heuristic `kv_attn` 10–25); at
+cur @ 0.75 to layers 0–15 (vs. 10–25).
+
+Qwen3.5-4B (32 layers; K/V cache only at 3, 7, …, 31; layers 0–2 measure **exactly 0**, as they must):
+
+| compressor @ ratio | E_l of the 8 K/V layers (3 / 7 / 11 / 15 / 19 / 23 / 27 / 31) | top-4 → `qo_sens4` (= `kv_sens16` on Qwen) |
+|---|---|---|
+| knorm @ 0.75 | .104 / .192 / .228 / **.267** / .229 / .206 / .253 / .245 | [15, 19, 27, 31] |
+| knorm @ 0.5 | .069 / .117 / .146 / **.175** / .148 / .131 / .163 / .159 | [15, 19, 27, 31] |
+| cur @ 0.75 | .106 / .159 / .177 / **.206** / .172 / .146 / .161 / .159 | [11, 15, 19, 27] |
+| cur @ 0.5 | .065 / .095 / .109 / **.127** / .105 / .089 / .096 / .095 | [11, 15, 19, 27] |
+
+Reading:
+
+* The most perturbed layers are **never the last ones**. On Ministral the heuristic `qo_last4` trained layers
+  ranked 16th–24th of 26; on Qwen3.5 the heuristic's layer 23 is the 6th–7th most sensitive of the 8 K/V layers.
+  Layer 15 is the peak of every Qwen3.5 setting, and the linear-attention layers right after it (16, 17) inherit
+  its perturbation.
+* The profile is **compressor-specific** on Ministral: knorm perturbs the middle of the stack most, cur the first
+  layers (cur's leverage scores evict different tokens than key norms do); the knorm profile is stable across
+  ratios, cur's is not (the early peak flattens at ratio 0.5).
+* Sensitivity is a hypothesis about *where* to calibrate, not a guarantee: the best pilot cell so far
+  (Ministral / cur / `kv_attn`, layers 10–25) did not contain cur's most sensitive layers (2–5). The
+  budget-matched pairs `qo_sens4` vs `qo_last4` and `kv_sens16` vs `kv_attn` (same projections, same layer
+  count) are the test.
+
+GPU smoke (jobs 320576 / 320577, smoke cards now `attention_projections` q/o with `layers: sensitivity`): the new
+check S14 passes on both models — calibration windows disjoint from train/val, E_l finite and > 0 on every
+K/V-carrying layer, exactly 0 on Qwen3.5's layers 0–2, bitwise identical across two measurements, top-k drawn
+from the eligible pool only, E_l ≡ 0 without a compressor — and S8–S13 ran on the selected layers
+(Ministral: [0, 6], Qwen3.5: [27, 31] on the 1K-token synthetic smoke windows).
+
+Training / evaluation of the eight sensitivity-selected pilot cells (`--primary --trainable qo_sens4,kv_sens16`):
+see the table below as results land.
+
 ### Not run
 
-The pre-registered matrix (`configs/kv_recovery/matrix.yaml`, 64 runs + evaluations, ≈180–200 GPU-h) and the
+The pre-registered matrix (`configs/kv_recovery/matrix.yaml`, now 96 runs + evaluations, ≈270–300 GPU-h) and the
 pilot cell are launched only explicitly (`python scripts/kv_recovery_matrix.py --primary --submit`,
 then `scripts/eval_kv_recovery.py run --submit` per run).

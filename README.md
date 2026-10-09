@@ -53,7 +53,7 @@ Prism-Test gives you all four with a single config file.
 - **A standalone benchmark registry.** Drop a file into [eval_harness/benchmarks/](eval_harness/benchmarks/), decorate with `@register_benchmark`, and it's runnable from the CLI.
 - **Deterministic runs.** Seeded RNG, `temperature=0.0` by default, configs persisted alongside outputs.
 - **Tested without GPUs.** Unit tests bypass model loading via `object.__new__` + fake modules; CI is cheap.
-- **Hidden-state KV recovery (research branch).** `eval_harness/kv_recovery/` fine-tunes a small, configurable subset of weights (last-N blocks or selected attention projections, no LoRA) so a KV-compressed *student* matches the hidden states of the full-cache *teacher*, then evaluates `dense` / `compressed` / `compressed_recovered` through the normal runner (`llm_kwargs.weight_delta`) and reports `recovery_fraction` with paired bootstrap CIs. See [docs/hidden_state_recovery_plan.md](docs/hidden_state_recovery_plan.md).
+- **Hidden-state KV recovery (research branch).** `eval_harness/kv_recovery/` fine-tunes a small, configurable subset of weights (attention projections of the layers whose hidden states the compressor perturbs most — measured as `||H_dense − H_comp||_F / ||H_dense||_F` on held-out windows — or position-selected layers / whole blocks; no LoRA) so a KV-compressed *student* matches the hidden states of the full-cache *teacher*, then evaluates `dense` / `compressed` / `compressed_recovered` through the normal runner (`llm_kwargs.weight_delta`) and reports `recovery_fraction` with paired bootstrap CIs. See [docs/hidden_state_recovery_plan.md](docs/hidden_state_recovery_plan.md).
 
 ---
 
@@ -306,7 +306,7 @@ Highlights:
 - [test_three_doors_integration.py](eval_harness/tests/test_three_doors_integration.py) / [test_positional_methods.py](eval_harness/tests/test_positional_methods.py) / [test_chunked_prefill.py](eval_harness/tests/test_chunked_prefill.py) — three-door composition, Door 1 RoPE math, chunked-prefill equivalence
 - [test_cache_adapter.py](eval_harness/tests/test_cache_adapter.py) — `DynamicCache` checkpoint/restore semantics over rotated K/V
 - `test_benchmarks_*.py` — registry, RULER, LongBench, Prism-1M loaders
-- `test_kv_recovery_*.py` — hidden-state KV recovery: config, alignment losses, trainable subsets, teacher/student through the real pipeline on tiny models, trainer, delta checkpoints, three-way eval configs, metrics
+- `test_kv_recovery_*.py` — hidden-state KV recovery: config, alignment losses, trainable subsets, compression-sensitivity layer selection, teacher/student through the real pipeline on tiny models, trainer, delta checkpoints, three-way eval configs, metrics
 
 ---
 
