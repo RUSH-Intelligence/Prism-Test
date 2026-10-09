@@ -483,8 +483,8 @@ selected layer, so `kv_sens16` on Ministral/cur aligns layers 0–25 while `kv_a
 layer (31 vs 11). All eight runs lowered the held-out alignment loss (−12.6 % to −65.8 %); none triggered the instability rule.
 
 **Sensitivity-selected pilot evaluation** (`compressed_recovered` arms, dense and compressed cells reused; paired
-task-stratified bootstrap, 2 000 resamples; 23 of 24 cells complete on 2026-10-09 — the last RULER-16K cell of
-Qwen3.5 / cur / `kv_sens16` was resubmitted after a transient HF-cache error and is running; **bold** = CI excludes 0;
+task-stratified bootstrap, 2 000 resamples; all 24 cells complete on 2026-10-09 — the RULER-16K cell of Qwen3.5 / cur /
+`kv_sens16` was resubmitted once after a transient HF-cache error; **bold** = CI excludes 0;
 `scripts/kv_recovery_pilot_summary.py --glob 'outputs/kv_recovery/*_16k_*_r075_*sens*'` regenerates the raw table):
 
 | model · compressor | subset | benchmark | dense | compressed | recovered (sens) | recovery sens [CI] | fraction | recovery heuristic twin [CI] |
@@ -510,13 +510,13 @@ Qwen3.5 / cur / `kv_sens16` was resubmitted after a transient HF-cache error and
 | Qwen3.5-4B · cur | `qo_sens4` | ruler16k | 96.1 | 59.2 | 59.6 | +0.3 [-1.0, 1.6] | 0.9 % | `qo_last4`: +0.1 [-0.8, 1.1] |
 | Qwen3.5-4B · cur | `qo_sens4` | ruler32k | 96.2 | 57.6 | 58.1 | +0.5 [-0.7, 1.8] | 1.3 % | `qo_last4`: -0.3 [-1.3, 0.8] |
 | Qwen3.5-4B · cur | `qo_sens4` | longbench | 44.4 | 37.3 | 38.7 | **+1.3 [0.7, 2.0]** | 18.8 % | `qo_last4`: **+0.5 [0.1, 1.0]** |
-| Qwen3.5-4B · cur | `kv_sens16` | ruler16k | 96.1 | 59.2 | pending | pending | — | `kv_attn`: -0.0 [-1.3, 1.3] |
+| Qwen3.5-4B · cur | `kv_sens16` | ruler16k | 96.1 | 59.2 | 59.1 | -0.1 [-1.1, 0.9] | -0.4 % | `kv_attn`: -0.0 [-1.3, 1.3] |
 | Qwen3.5-4B · cur | `kv_sens16` | ruler32k | 96.2 | 57.6 | 57.5 | -0.1 [-1.1, 1.0] | -0.2 % | `kv_attn`: +0.2 [-1.1, 1.6] |
 | Qwen3.5-4B · cur | `kv_sens16` | longbench | 44.4 | 37.3 | 38.3 | **+1.0 [0.5, 1.5]** | 14.2 % | `kv_attn`: **+1.6 [1.0, 2.3]** |
 
 Reading:
 
-* **The same projections on measured layers beat the position heuristic in 14 of the 23 comparable cells and lose in 2.**
+* **The same projections on measured layers beat the position heuristic in 14 of the 24 comparable cells and lose in 2.**
   The clearest win is Ministral / cur / k+v: the sensitivity-selected layers 0–15 recover **+8.5 [6.5, 10.5]** on RULER-16K
   (15 % of the gap; the heuristic's layers 10–25: +4.2), **+6.1** on RULER-32K (vs +2.8) and **+1.7** on LongBench
   (vs +1.1) — twice the best cell of the position-heuristic pilot, at an identical parameter budget. Ministral / knorm
