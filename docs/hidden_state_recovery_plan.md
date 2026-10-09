@@ -557,8 +557,70 @@ indistinguishable, so a selection made at 16K transfers to 32K (consistent with 
 the selection signal on benchmark contexts would be the obvious next experiment, but it crosses the no-benchmark-data
 line of this protocol; a held-out *task-shaped* calibration set (synthetic needle/QA prompts) would not.
 
+### Layer-count ablation on the mixed corpora — training (2026-10-09, `--preset ablation_topk`)
+
+All 40 cells trained (jobs 321503–321526 and 23 follow-ups; one H200 each; mix cards: 1 024 windows / 256 steps,
+16 mixed calibration windows, LongBench evaluated on rows 0–99). Every run passed the sanity checks (same-model
+bitwise, gradients only on the selected projections, frozen tensors bitwise equal to the teacher, trained layers ==
+selection). The training mixture drawn per run is ≈ 38 % RULER, 29 % LongBench, 17 % PG-19, 16 % FineWeb-Edu windows
+(165 of the sampled LongBench rows at 16K were skipped by the token cap).
+
+| model · corpus · compressor | subset | selected layers | params | val loss first → last | Δ | wall | peak GiB |
+|---|---|---|---|---|---|---|---|
+| Ministral-3-3B · mix16k · knorm | `qo_sens4` | 12–15 | 100.7 M | 0.2221 → 0.1554 | -30 % | 18 min | 57 |
+| Ministral-3-3B · mix16k · knorm | `qo_sens8` | 11–18 | 201.3 M | 0.2214 → 0.1527 | -31 % | 23 min | 61 |
+| Ministral-3-3B · mix16k · knorm | `qo_sens16` | 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 22, 23, 24, 25 | 402.7 M | 0.2173 → 0.1427 | -34 % | 19 min | 71 |
+| Ministral-3-3B · mix16k · knorm | `kv_sens4` | 13–16 | 25.2 M | 0.2219 → 0.1675 | -25 % | 18 min | 53 |
+| Ministral-3-3B · mix16k · knorm | `kv_sens8` | 11–18 | 50.3 M | 0.2214 → 0.1594 | -28 % | 18 min | 59 |
+| Ministral-3-3B · mix16k · knorm | `kv_sens16` | 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 22, 23, 24, 25 | 100.7 M | 0.2173 → 0.1465 | -33 % | 19 min | 67 |
+| Ministral-3-3B · mix16k · cur | `qo_sens4` | 12–15 | 100.7 M | 0.2468 → 0.1520 | -38 % | 18 min | 57 |
+| Ministral-3-3B · mix16k · cur | `qo_sens8` | 11–18 | 201.3 M | 0.2477 → 0.1456 | -41 % | 18 min | 61 |
+| Ministral-3-3B · mix16k · cur | `qo_sens16` | 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23, 24 | 402.7 M | 0.2487 → 0.1366 | -45 % | 19 min | 71 |
+| Ministral-3-3B · mix16k · cur | `kv_sens4` | 12–15 | 25.2 M | 0.2468 → 0.1706 | -31 % | 18 min | 56 |
+| Ministral-3-3B · mix16k · cur | `kv_sens8` | 11–18 | 50.3 M | 0.2477 → 0.1636 | -34 % | 18 min | 59 |
+| Ministral-3-3B · mix16k · cur | `kv_sens16` | 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23, 24 | 100.7 M | 0.2487 → 0.1541 | -38 % | 18 min | 67 |
+| Ministral-3-3B · mix32k · knorm | `qo_sens4` | 12–15 | 100.7 M | 0.1805 → 0.1395 | -23 % | 38 min | 57 |
+| Ministral-3-3B · mix32k · knorm | `qo_sens8` | 10–17 | 201.3 M | 0.1803 → 0.1383 | -23 % | 39 min | 64 |
+| Ministral-3-3B · mix32k · knorm | `qo_sens16` | 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23, 25 | 402.7 M | 0.1790 → 0.1351 | -25 % | 39 min | 72 |
+| Ministral-3-3B · mix32k · knorm | `kv_sens4` | 12–15 | 25.2 M | 0.1805 → 0.1452 | -20 % | 39 min | 56 |
+| Ministral-3-3B · mix32k · knorm | `kv_sens8` | 10–17 | 50.3 M | 0.1803 → 0.1404 | -22 % | 39 min | 62 |
+| Ministral-3-3B · mix32k · knorm | `kv_sens16` | 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23, 25 | 100.7 M | 0.1790 → 0.1348 | -25 % | 39 min | 67 |
+| Ministral-3-3B · mix32k · cur | `qo_sens4` | 12–15 | 100.7 M | 0.2209 → 0.1492 | -32 % | 38 min | 57 |
+| Ministral-3-3B · mix32k · cur | `qo_sens8` | 2, 3, 11, 12, 13, 14, 15, 16 | 201.3 M | 0.2336 → 0.1249 | -47 % | 39 min | 84 |
+| Ministral-3-3B · mix32k · cur | `qo_sens16` | 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18 | 402.7 M | 0.2336 → 0.1162 | -50 % | 39 min | 88 |
+| Ministral-3-3B · mix32k · cur | `kv_sens4` | 12–15 | 25.2 M | 0.2209 → 0.1630 | -26 % | 38 min | 56 |
+| Ministral-3-3B · mix32k · cur | `kv_sens8` | 2, 3, 11, 12, 13, 14, 15, 16 | 50.3 M | 0.2336 → 0.1417 | -39 % | 39 min | 82 |
+| Ministral-3-3B · mix32k · cur | `kv_sens16` | 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18 | 100.7 M | 0.2336 → 0.1274 | -45 % | 39 min | 83 |
+| Qwen3.5-4B · mix16k · knorm | `qo_sens4` | 15, 19, 27, 31 | 125.8 M | 0.1582 → 0.1037 | -34 % | 27 min | 36 |
+| Qwen3.5-4B · mix16k · knorm | `qo_sens8` | 3, 7, 11, 15, 19, 23, 27, 31 | 251.7 M | 0.1283 → 0.0650 | -49 % | 27 min | 46 |
+| Qwen3.5-4B · mix16k · knorm | `kv_sens4` | 15, 19, 27, 31 | 21.0 M | 0.1582 → 0.1207 | -24 % | 26 min | 34 |
+| Qwen3.5-4B · mix16k · knorm | `kv_sens8` | 3, 7, 11, 15, 19, 23, 27, 31 | 41.9 M | 0.1283 → 0.0725 | -43 % | 27 min | 43 |
+| Qwen3.5-4B · mix16k · cur | `qo_sens4` | 15, 19, 27, 31 | 125.8 M | 0.1114 → 0.0751 | -33 % | 26 min | 36 |
+| Qwen3.5-4B · mix16k · cur | `qo_sens8` | 3, 7, 11, 15, 19, 23, 27, 31 | 251.7 M | 0.0920 → 0.0499 | -46 % | 27 min | 46 |
+| Qwen3.5-4B · mix16k · cur | `kv_sens4` | 15, 19, 27, 31 | 21.0 M | 0.1113 → 0.0886 | -20 % | 26 min | 34 |
+| Qwen3.5-4B · mix16k · cur | `kv_sens8` | 3, 7, 11, 15, 19, 23, 27, 31 | 41.9 M | 0.0920 → 0.0594 | -35 % | 27 min | 43 |
+| Qwen3.5-4B · mix32k · knorm | `qo_sens4` | 15, 19, 27, 31 | 125.8 M | 0.1805 → 0.1027 | -43 % | 45 min | 36 |
+| Qwen3.5-4B · mix32k · knorm | `qo_sens8` | 3, 7, 11, 15, 19, 23, 27, 31 | 251.7 M | 0.1500 → 0.0626 | -58 % | 46 min | 47 |
+| Qwen3.5-4B · mix32k · knorm | `kv_sens4` | 15, 19, 27, 31 | 21.0 M | 0.1805 → 0.1272 | -30 % | 45 min | 34 |
+| Qwen3.5-4B · mix32k · knorm | `kv_sens8` | 3, 7, 11, 15, 19, 23, 27, 31 | 41.9 M | 0.1499 → 0.0727 | -51 % | 47 min | 43 |
+| Qwen3.5-4B · mix32k · cur | `qo_sens4` | 15, 19, 27, 31 | 125.8 M | 0.1412 → 0.0850 | -40 % | 47 min | 36 |
+| Qwen3.5-4B · mix32k · cur | `qo_sens8` | 3, 7, 11, 15, 19, 23, 27, 31 | 251.7 M | 0.1156 → 0.0532 | -54 % | 48 min | 47 |
+| Qwen3.5-4B · mix32k · cur | `kv_sens4` | 15, 19, 27, 31 | 21.0 M | 0.1411 → 0.1013 | -28 % | 47 min | 34 |
+| Qwen3.5-4B · mix32k · cur | `kv_sens8` | 3, 7, 11, 15, 19, 23, 27, 31 | 41.9 M | 0.1156 → 0.0639 | -45 % | 48 min | 43 |
+
+Selections: on Ministral the top-4 is layers 12–15 in 7 of 8 settings (13–16 for knorm k+v at 16K), top-8 extends it to
+10/11–17/18, and top-16 to 8–19 plus the last layers; at 32K with cur the early layers (2–6) enter the top-8 / top-16 —
+the mixed 32K calibration windows revive the early-layer cur signal that the pure RULER profile did not show. On
+Qwen3.5 the top-4 is 15, 19, 27, 31 everywhere and top-8 is every K/V layer. Val-loss drops are only comparable within a
+(model, corpus, compressor) group that aligns the same layers; within the `qo` ladder they grow with k (e.g. Ministral
+mix16k cur −38 / −41 / −45 % for k = 4 / 8 / 16). The 120 evaluation cells (3 per run; dense and compressed cells shared,
+LongBench at 100 rows new) were submitted on 2026-10-09 13:27 and are landing;
+`python scripts/eval_kv_recovery.py report --run-name <run>` per run followed by
+`python scripts/kv_recovery_pilot_summary.py --glob 'outputs/kv_recovery/*_mix*' --out outputs/kv_recovery/ablation_topk_summary.md`
+produces the table, to be added here.
+
 ### Not run
 
-The pre-registered matrix (`configs/kv_recovery/matrix.yaml`, now 96 runs + evaluations, ≈270–300 GPU-h) and the
-pilot cell are launched only explicitly (`python scripts/kv_recovery_matrix.py --primary --submit`,
+The rest of the pre-registered matrix (`configs/kv_recovery/matrix.yaml`: ratio 0.5, 32K on the PG-19 cards, the five
+signal ablations; 64K / 128K later) is launched only explicitly (`python scripts/kv_recovery_matrix.py --primary --submit`,
 then `scripts/eval_kv_recovery.py run --submit` per run).
