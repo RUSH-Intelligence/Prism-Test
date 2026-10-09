@@ -48,17 +48,19 @@ class TestDefaultsAndCards(unittest.TestCase):
 
     def test_matrix_card_is_valid_yaml_with_expected_axes(self):
         m = yaml.safe_load((CARDS / "matrix.yaml").read_text())
-        self.assertEqual(set(m["base_configs"]), {"ministral_3b", "qwen35_4b"})
+        self.assertEqual(set(m["base_configs"]), {"ministral_3b", "qwen35_4b", "ministral_3b_mix", "qwen35_4b_mix"})
         self.assertEqual(m["compressors"], ["knorm", "cur"])
         self.assertEqual(m["ratios"], [0.75, 0.5])
-        self.assertEqual(set(m["trainable"]), {"last1", "last2", "qo_last4", "kv_attn", "qo_sens4", "kv_sens16"})
+        self.assertEqual(set(m["trainable"]), {"last1", "last2", "qo_last4", "kv_attn", "qo_sens4", "kv_sens16",
+                                               "qo_sens8", "qo_sens16", "kv_sens4", "kv_sens8"})
         self.assertEqual(m["primary"]["trainable"], ["last1", "last2", "qo_last4", "kv_attn", "qo_sens4", "kv_sens16"])
+        self.assertEqual(m["ablation_topk"]["trainable"], ["qo_sens4", "qo_sens8", "qo_sens16", "kv_sens4", "kv_sens8", "kv_sens16"])
         for name, overrides in m["trainable"].items():
             cfg = RecoveryConfig.from_dict(apply_overrides({}, shortcuts=overrides))
             self.assertIn(cfg.trainable.strategy, ("last_n_blocks", "attention_projections"), name)
-            if name.endswith(("sens4", "sens16")):
+            if "sens" in name:
                 self.assertEqual(cfg.trainable.layers, "sensitivity", name)
-                self.assertEqual(cfg.trainable.sensitivity.top_k, 4 if name.endswith("sens4") else 16)
+                self.assertEqual(cfg.trainable.sensitivity.top_k, int(name.rsplit("sens", 1)[1]))
         # budget matching: the sensitivity-selected subsets train the same projections and layer counts
         self.assertEqual(m["trainable"]["qo_sens4"]["trainable.modules"], m["trainable"]["qo_last4"]["trainable.modules"])
         self.assertEqual(m["trainable"]["kv_sens16"]["trainable.modules"], m["trainable"]["kv_attn"]["trainable.modules"])
