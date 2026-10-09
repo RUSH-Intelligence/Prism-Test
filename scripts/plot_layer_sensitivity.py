@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Figures for the layer-wise compression sensitivity E_l (``scripts/measure_layer_sensitivity.py`` output).
 
-  python scripts/plot_layer_sensitivity.py --inputs outputs/kv_recovery/sensitivity --out-dir docs/figures \
+  python scripts/plot_layer_sensitivity.py --inputs outputs/kv_recovery/sensitivity [--out-dir outputs/kv_recovery/figures] \
       [--models mistralai/Ministral-3-3B-Instruct-2512,Qwen/Qwen3.5-4B] [--formats png,svg] [--dpi 160]
 
 Reads every ``*.json`` the measurement script wrote (schema 1 = PG-19 calibration windows, schema 2 =
@@ -289,7 +289,7 @@ def plot_tasks(model: str, meas: List[Dict[str, Any]], compressor: str, ratio: f
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--inputs", default="outputs/kv_recovery/sensitivity", help="directory (searched recursively) or glob of measurement JSONs")
-    ap.add_argument("--out-dir", default="docs/figures")
+    ap.add_argument("--out-dir", default="outputs/kv_recovery/figures")
     ap.add_argument("--models", help="comma list of model names (default: every model found)")
     ap.add_argument("--formats", default="png,svg")
     ap.add_argument("--dpi", type=int, default=160)

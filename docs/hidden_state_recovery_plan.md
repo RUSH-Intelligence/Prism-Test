@@ -194,7 +194,7 @@ python scripts/eval_kv_recovery.py report --config configs/kv_recovery/ministral
 python scripts/measure_representation_alignment.py --config ... --run-name demo
 python scripts/kv_recovery_matrix.py --primary --dry-run
 python scripts/measure_layer_sensitivity.py --config configs/kv_recovery/ministral_3b.yaml --sources ruler16k,ruler32k --compressors knorm,cur --ratios 0.75,0.5   # analysis only
-python scripts/plot_layer_sensitivity.py --inputs outputs/kv_recovery/sensitivity --out-dir docs/figures
+python scripts/plot_layer_sensitivity.py --inputs outputs/kv_recovery/sensitivity        # -> outputs/kv_recovery/figures/ (not committed)
 ```
 
 ## 5. Experiment matrix (spec §24)
@@ -520,13 +520,10 @@ Reading:
 `scripts/measure_layer_sensitivity.py --sources ruler16k,ruler32k` measures the same `E_l` on benchmark contexts
 (2 seeded rows per task from the 100-row evaluation pool = 26 windows per length; the evaluation's own prompt shaping;
 the measured region is the question + answer prefix + gold answer, teacher-forced; **analysis only** — nothing here feeds
-training or selection), and `scripts/plot_layer_sensitivity.py` draws the figures (`docs/figures/`; jobs 321484 / 321485).
-
-![Ministral-3-3B profiles](figures/mistralai--Ministral-3-3B-Instruct-2512__profiles.png)
-
-![Qwen3.5-4B profiles](figures/Qwen--Qwen3.5-4B__profiles.png)
-
-Per-task small multiples (RULER-16K vs RULER-32K): `figures/<model>__tasks__knorm_r075.png`, `figures/<model>__tasks__cur_r075.png`.
+training or selection), and `scripts/plot_layer_sensitivity.py` draws the figures into `outputs/kv_recovery/figures/`
+(not committed; regenerate with the two commands in §4 — jobs 321484 / 321485 on 2026-10-09): `<model>__profiles.png`
+(E_l vs layer, panels PG-19 16K | RULER-16K | RULER-32K, hue = compressor, line style = ratio, ±1 std band) and
+`<model>__tasks__{knorm,cur}_r075.png` (per-task small multiples, RULER-16K vs RULER-32K).
 
 | | Ministral-3-3B (26 layers) | Qwen3.5-4B (K/V at 3, 7, …, 31) |
 |---|---|---|

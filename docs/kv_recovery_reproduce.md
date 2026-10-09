@@ -183,12 +183,12 @@ and is skipped when its `checkpoint/metadata.json` exists or its job is queued. 
 ```bash
 ARGS="scripts/measure_layer_sensitivity.py --config configs/kv_recovery/ministral_3b.yaml --sources ruler16k,ruler32k \
       --compressors knorm,cur --ratios 0.75,0.5 --rows-per-task 2" sbatch --time=1:30:00 scripts/slurm/kv_recovery_python.sbatch
-python scripts/plot_layer_sensitivity.py --inputs outputs/kv_recovery/sensitivity --out-dir docs/figures   # CPU, needs matplotlib
+python scripts/plot_layer_sensitivity.py --inputs outputs/kv_recovery/sensitivity   # CPU, needs matplotlib -> outputs/kv_recovery/figures/
 ```
 
 Benchmark sources are analysis only (their output is never read by the trainer). Writes
 `summary__ruler16k.md` / `summary__ruler32k.md` next to the PG-19 profiles and the figures
-`docs/figures/<model>__profiles.{png,svg}` and `<model>__tasks__<compressor>_r075.{png,svg}`. Correct: on Ministral
+`outputs/kv_recovery/figures/<model>__profiles.{png,svg}` and `<model>__tasks__<compressor>_r075.{png,svg}` (kept out of git). Correct: on Ministral
 the RULER profiles peak at layers 13–16 for both compressors and the 16K and 32K curves coincide; on Qwen3.5
 layers 0–2 are exactly 0 and the profile climbs to the last K/V layer.
 
