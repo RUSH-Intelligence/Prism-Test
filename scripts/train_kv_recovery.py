@@ -201,6 +201,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     val_ex, val_stats = load_split(cfg, tokenizer, "val", model=model, pipeline=student._pipe)
     assert_disjoint(train_ex, val_ex)
     logger.info("data: %d train / %d val windows (%s)", len(train_ex), len(val_ex), train_stats.as_dict())
+    if train_stats.by_source:
+        logger.info("training mixture by source: %s | by kind: %s", train_stats.by_source, train_stats.by_kind)
 
     # --- layer selection (trainable.layers: sensitivity) ----------------------------------------
     # Measured BEFORE any weight changes, on calibration windows disjoint from train and val, with

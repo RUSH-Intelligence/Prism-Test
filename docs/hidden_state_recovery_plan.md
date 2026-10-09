@@ -149,13 +149,26 @@ prior experiment's instability rule, validation every N steps, `train_metrics.js
 sanity checks of spec §21/§22 (same-model loss = 0, only intended parameters receive gradients,
 frozen parameters byte-identical, loss decreases on a fixed batch).
 
-### 3.5 Data (`data.py`, `scripts/prepare_kv_recovery_data.py`)
+### 3.5 Data (`data.py`, `scripts/prepare_kv_recovery_data.py`, `scripts/prepare_kv_recovery_mix.py`)
 
-PG-19 excerpts (`emozilla/pg19`, train books for training, validation books for validation),
-materialised to JSONL with a 13-word-shingle leakage filter against every evaluated benchmark
-context (LongBench `narrativeqa` is Gutenberg text, like PG-19). Windows are tokenised whole
-(`bos + text`) and split at the token level; `suffix_mode: recall` is a pre-registered ablation
-that copies an earlier span as the suffix. No benchmark label is ever used.
+Two corpora. **PG-19** (the original): excerpts of `emozilla/pg19` (train books for training, test books
+for validation) with a 13-word-shingle leakage filter against every evaluated benchmark context
+(LongBench `narrativeqa` is Gutenberg text, like PG-19); windows are tokenised whole (`bos + text`) and
+split at the token level into `[context | continuation]`; `suffix_mode: recall` is a pre-registered
+ablation. **Mixed** (`mix16k` / `mix32k`, 2026-10-09): rows of two kinds in one JSONL — `kind: qa` rows
+shaped exactly as the evaluation shapes them (chat template, stripped auto system block, the question
+never compressed) and aligned on the question + answer prefix + gold answer (teacher-forced,
+`data.qa_region`), and `kind: text` rows handled like PG-19. Sources: RULER-16K / RULER-32K rows
+**outside the evaluated pool** (the evaluation scores rows 0–99 of every task; training uses rows
+120–199, validation / calibration rows 100–119 — row-index disjointness is the leakage guarantee, since
+RULER haystacks share their essay text and a shingle filter would reject everything), LongBench rows
+100–199 of the 16 English tasks (the LongBench evaluation of the `*_mix.yaml` cards therefore scores rows
+0–99; contexts longer than the window are skipped, `data.max_context_tokens`), the PG-19 excerpts, and
+FineWeb-Edu documents (`HuggingFaceFW/fineweb-edu`, `sample-10BT`, streamed) packed back to back to the
+window length. Text rows are shingle-checked against the evaluated contexts; validation rows never share
+a context with training rows (LongBench asks several questions per document — whole documents go to one
+side). The manifest records the composition, row ranges, the eval-pool definition and sha256s. No label of
+an evaluated row is ever used.
 
 ### 3.6 Checkpoints (`checkpoint.py`)
 
@@ -200,18 +213,21 @@ python scripts/plot_layer_sensitivity.py --inputs outputs/kv_recovery/sensitivit
 ## 5. Experiment matrix (spec §24)
 
 `configs/kv_recovery/matrix.yaml`: 2 models × {16K, 32K} × {knorm, cur} × {0.75, 0.5} ×
-{last1, last2, qo_last4, kv_attn, qo_sens4, kv_sens16} = 96 training runs; `--primary` = 16K × 0.75
-(24 runs: the 16 static cells ran on 2026-10-06, the 8 sensitivity-selected cells were added with the
-layer-selection change; `--primary --trainable qo_sens4,kv_sens16` submits just those).
-Staged order: smoke (both models) → pilot (Ministral, cur 0.75, qo_last4 + last1) → knorm
-0.75 → ratio 0.5 / remaining subsets → Qwen3.5 → ablations on the pilot cell → 32K.
-Rough cost on one H200: training 5–20 min per 16K run; evaluation ≈ 3 GPU-h per
-(model, arm) for RULER-16K/32K + LongBench; full matrix ≈ 180–200 GPU-h.
+{last1, last2, qo_last4, kv_attn, qo_sens4, kv_sens16} = 96 training runs on the PG-19 cards; `--primary` =
+16K × 0.75 (24 runs: the 16 static cells ran on 2026-10-06, the 8 sensitivity-selected cells were added with
+the layer-selection change). **Layer-count ablation** (`--preset ablation_topk`, the `*_mix.yaml` cards on the
+mixed corpora): {mix16k, mix32k} × {knorm, cur} × ratio 0.75 × {qo_sens4, qo_sens8, qo_sens16, kv_sens4,
+kv_sens8, kv_sens16} = 24 Ministral runs + 16 Qwen3.5 runs (top-16 ≡ top-8 ≡ all 8 K/V layers there, skipped)
+= 40 runs of 1 024 windows / 256 steps; a cell is skipped when its checkpoint exists. 64K / 128K are left for
+later.
 
 ## 6. Validity rules
 
-No benchmark labels in training; layer selection uses only held-out PG-19 calibration windows
-(disjoint from train and val) and is recorded in the delta; identical compression block, prompt
+No evaluated benchmark row in training: the PG-19 corpus is shingle-filtered against every evaluated
+context; the mixed corpus uses only RULER / LongBench rows outside the evaluated pool (rows ≥ 100; the
+LongBench evaluation of the mix cards scores rows 0–99) and shingle-filters its text rows; layer selection
+uses only the corpus's held-out calibration windows (disjoint from train and val) and is recorded in the
+delta; identical compression block, prompt
 shaping, subsets, seeds and decoding in every arm; `strip_auto_system_block: true` everywhere (the model's auto system
 prompt is never compressed as context); hyper-parameters pre-registered, selection only on the
 validation alignment loss; determinism flags + `CUBLAS_WORKSPACE_CONFIG` for all evaluation

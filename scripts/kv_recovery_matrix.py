@@ -3,6 +3,7 @@
 
   python scripts/kv_recovery_matrix.py --dry-run                 # print every cell + sbatch command
   python scripts/kv_recovery_matrix.py --primary --submit        # the pilot preset (16K, ratio 0.75)
+  python scripts/kv_recovery_matrix.py --preset ablation_topk --dry-run   # top-4/8/16 layer ablation on the mixed corpus
   python scripts/kv_recovery_matrix.py --models ministral_3b --compressors cur --trainable qo_last4 --submit
   python scripts/kv_recovery_matrix.py --ablations --dry-run     # pilot-cell ablations
 
@@ -54,33 +55,57 @@ def _ratio_tag(r: float) -> str:
     return f"r{int(round(float(r) * 100)):03d}"
 
 
+def base_entry(matrix: dict, key: str) -> tuple[str, Optional[List[str]]]:
+    """``base_configs[key]`` -> (config path, allowed contexts or None)."""
+    entry = matrix["base_configs"][key]
+    if isinstance(entry, str):
+        return entry, None
+    return str(entry["config"]), (list(entry["contexts"]) if entry.get("contexts") else None)
+
+
+def cell_name(mk: str, ctx: str, comp: str, r: float, tk: str, abl: Optional[str] = None) -> str:
+    model_part = mk[:-4] if (mk.endswith("_mix") and ctx.startswith("mix")) else mk   # ministral_3b_mix + mix16k -> ministral_3b_mix16k
+    return f"{model_part}_{ctx}_{comp}_{_ratio_tag(r)}_{tk}" + (f"_{abl}" if abl else "")
+
+
 def expand(matrix: dict, *, models: Optional[List[str]] = None, contexts: Optional[List[str]] = None,
            compressors: Optional[List[str]] = None, ratios: Optional[List[float]] = None,
-           trainables: Optional[List[str]] = None, primary: bool = False, ablations: bool = False) -> List[MatrixCell]:
+           trainables: Optional[List[str]] = None, primary: bool = False, ablations: bool = False,
+           preset: Optional[str] = None) -> List[MatrixCell]:
     base = matrix["base_configs"]
     ctxs = matrix["contexts"]
-    hp = matrix.get("hyperparameters") or {}
+    hp = dict(matrix.get("hyperparameters") or {})
     model_ov = matrix.get("model_overrides") or {}
-    prim = matrix.get("primary") or {}
-    sel_models = models or list(base)
-    sel_ctx = contexts or (prim.get("contexts") if primary else None) or list(ctxs)
-    sel_comp = compressors or matrix["compressors"]
-    sel_ratios = ratios or (prim.get("ratios") if primary else None) or matrix["ratios"]
-    sel_train = trainables or (prim.get("trainable") if primary else None) or list(matrix["trainable"])
+    preset_name = preset or ("primary" if primary else None)
+    prim = (matrix.get(preset_name) or {}) if preset_name else {}
+    if preset_name and not prim:
+        raise ValueError(f"unknown preset {preset_name!r}")
+    hp.update(prim.get("hyperparameters") or {})
+    sel_models = models or prim.get("base_configs") or list(base)
+    sel_ctx = contexts or prim.get("contexts") or list(ctxs)
+    sel_comp = compressors or prim.get("compressors") or matrix["compressors"]
+    sel_ratios = ratios or prim.get("ratios") or matrix["ratios"]
+    sel_train = trainables or prim.get("trainable") or list(matrix["trainable"])
     cells: List[MatrixCell] = []
 
     def make(mk, ctx, comp, r, tk, extra=None, abl=None):
+        cfg_path, allowed = base_entry(matrix, mk)
+        if allowed is not None and ctx not in allowed:
+            return None
+        per_model = (model_ov.get(mk) or {}).get(tk) or {}
+        if per_model.get("skip"):
+            return None
         ov: Dict[str, Any] = dict(hp)
         ov.update(ctxs[ctx])
         ov["kv_compression.kv_compressor"] = comp
         ov["kv_compression.compression_ratio"] = float(r)
         ov.update(matrix["trainable"][tk])
-        ov.update((model_ov.get(mk) or {}).get(tk) or {})
+        ov.update({k: v for k, v in per_model.items() if k != "skip"})
         if extra:
             ov.update(extra)
-        name = f"{mk}_{ctx}_{comp}_{_ratio_tag(r)}_{tk}" + (f"_{abl}" if abl else "")
+        name = cell_name(mk, ctx, comp, r, tk, abl)
         ov["run_name"] = name
-        return MatrixCell(run_name=name, model_key=mk, base_config=base[mk], context=ctx, compressor=comp,
+        return MatrixCell(run_name=name, model_key=mk, base_config=cfg_path, context=ctx, compressor=comp,
                           ratio=float(r), trainable=tk, overrides=ov, ablation=abl)
 
     if ablations:
@@ -89,14 +114,18 @@ def expand(matrix: dict, *, models: Optional[List[str]] = None, contexts: Option
                                 pilot.get("compressor", sel_comp[0]), pilot.get("ratio", sel_ratios[0]),
                                 pilot.get("trainable", sel_train[0]))
         for abl, extra in (matrix.get("ablations") or {}).items():
-            cells.append(make(mk, ctx, comp, r, tk, extra=extra, abl=abl))
+            c = make(mk, ctx, comp, r, tk, extra=extra, abl=abl)
+            if c is not None:
+                cells.append(c)
         return cells
     for mk in sel_models:
         for ctx in sel_ctx:
             for comp in sel_comp:
                 for r in sel_ratios:
                     for tk in sel_train:
-                        cells.append(make(mk, ctx, comp, r, tk))
+                        c = make(mk, ctx, comp, r, tk)
+                        if c is not None:
+                            cells.append(c)
     return cells
 
 
@@ -123,7 +152,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--out-root", default=str(REPO_ROOT / "outputs" / "kv_recovery"))
     ap.add_argument("--models"); ap.add_argument("--contexts"); ap.add_argument("--compressors")
     ap.add_argument("--ratios"); ap.add_argument("--trainable")
-    ap.add_argument("--primary", action="store_true")
+    ap.add_argument("--primary", action="store_true", help="the 'primary' preset")
+    ap.add_argument("--preset", help="a preset block of the matrix (e.g. ablation_topk)")
     ap.add_argument("--ablations", action="store_true")
     ap.add_argument("--time", default="6:00:00")
     ap.add_argument("--max-jobs", type=int, default=16)
@@ -136,7 +166,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     matrix = load_matrix(Path(args.matrix))
     cells = expand(matrix, models=split(args.models), contexts=split(args.contexts), compressors=split(args.compressors),
                    ratios=[float(x) for x in split(args.ratios)] if args.ratios else None, trainables=split(args.trainable),
-                   primary=args.primary, ablations=args.ablations)
+                   primary=args.primary, ablations=args.ablations, preset=args.preset)
     out_root = Path(args.out_root)
     out_root.mkdir(parents=True, exist_ok=True)
     manifest = out_root / "matrix_manifest.tsv"

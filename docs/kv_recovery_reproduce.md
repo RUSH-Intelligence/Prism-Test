@@ -16,6 +16,7 @@ a compressed KV cache is trained — on a small subset of its own weights — to
 | 6 | one training run | 1 GPU | 7–12 min |
 | 7 | three-way evaluation + recovery report | 1 GPU / cell | 0.8–2.5 h / cell |
 | 8 | the pre-registered matrix | SLURM | 10 min / run, 4 h / run of evaluation |
+| 8b | mixed corpus + top-k layer ablation | CPU + SLURM | 10 min / corpus; 25–90 min / run |
 | 9 | misalignment figures on RULER | 1 GPU + CPU | 15 min / model |
 
 ## 1. Environment
@@ -177,6 +178,30 @@ for r in outputs/kv_recovery/*_16k_*_r075_*; do python scripts/eval_kv_recovery.
 `configs/kv_recovery/matrix.yaml` pre-registers the hyper-parameters; a cell is `<model>_<context>_<compressor>_r<ratio>_<subset>`
 and is skipped when its `checkpoint/metadata.json` exists or its job is queued. Expected pilot results (16K, ratio
 0.75) are tabulated in `hidden_state_recovery_plan.md` §7.
+
+## 8b. Mixed distillation corpus and the layer-count ablation
+
+```bash
+# corpora (login node, network, ~10 min each): RULER rows 120-199 (train) / 100-119 (val), LongBench rows 100-199,
+# PG-19 excerpts, FineWeb-Edu packed rows; text rows shingle-filtered against the evaluated contexts
+python scripts/prepare_kv_recovery_mix.py --name mix16k --context 16k
+python scripts/prepare_kv_recovery_mix.py --name mix32k --context 32k
+#    -> data/kv_recovery/mix{16k,32k}_{train,val}.jsonl + _manifest.json (composition per source, row ranges, sha256)
+
+# one run on the mixed corpus (the *_mix.yaml cards: 1 024 windows = 256 steps, LongBench evaluated on rows 0-99)
+python scripts/train_kv_recovery.py --config configs/kv_recovery/ministral_3b_mix.yaml --run-name demo_mix --sensitivity-top-k 8
+
+# the ablation: top-4 / 8 / 16 most sensitive layers, q+o and k+v, 16K and 32K, both compressors, both models (40 runs)
+python scripts/kv_recovery_matrix.py --preset ablation_topk --dry-run
+python scripts/kv_recovery_matrix.py --preset ablation_topk --submit
+for r in outputs/kv_recovery/*_mix*; do python scripts/eval_kv_recovery.py run --run-name $(basename $r) --submit; done
+python scripts/kv_recovery_pilot_summary.py --glob 'outputs/kv_recovery/*_mix*' --out outputs/kv_recovery/ablation_topk_summary.md
+```
+
+Correct: `layer_sensitivity.json` of a mix run lists calibration ids from all sources (`ruler16k/...`,
+`longbench/...`, `pg19-test-...`, `fineweb_edu-...`); `metadata.json` → `data.train.by_source` shows the mixture; the
+LongBench cells of a mix run carry a different barcode than the PG-19 runs' (100 vs 200 rows) and are shared
+across all mix runs of a model and compressor.
 
 ## 9. Misalignment figures on RULER-16K / RULER-32K
 

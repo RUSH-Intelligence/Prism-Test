@@ -84,9 +84,14 @@ class DataCfg:
     num_train_examples: int = 256
     num_val_examples: int = 16
     seed: int = 42                   # example selection / shuffling
-    format: str = "raw"              # raw: bos + text | chat: through ResearchGenerationPipeline.preprocess
+    format: str = "raw"              # raw: bos + text | chat: through ResearchGenerationPipeline.preprocess (text rows)
     suffix_mode: str = "continuation"  # continuation | recall (suffix = verbatim span from earlier in the window)
-    strip_auto_system_block: bool = True   # chat format only
+    strip_auto_system_block: bool = True   # chat format and qa rows
+    # Rows with ``kind: qa`` (benchmark-shaped: context / question / answer_prefix / answer, e.g. RULER rows outside the
+    # evaluated pool) are shaped exactly as the evaluation shapes them and aligned on the question (+ answer prefix)
+    # [+ gold answer, teacher-forced] region. ``max_context_tokens`` skips qa rows whose context is longer (None = no cap).
+    qa_region: str = "question_answer"     # question_answer | question
+    max_context_tokens: Optional[int] = None
 
 
 @dataclass
@@ -296,6 +301,10 @@ class RecoveryConfig:
             raise ValueError(f"data.format must be one of {DATA_FORMATS}, got {d.format!r}")
         if d.suffix_mode not in SUFFIX_MODES:
             raise ValueError(f"data.suffix_mode must be one of {SUFFIX_MODES}, got {d.suffix_mode!r}")
+        if d.qa_region not in ("question_answer", "question"):
+            raise ValueError(f"data.qa_region must be 'question_answer' or 'question', got {d.qa_region!r}")
+        if d.max_context_tokens is not None and int(d.max_context_tokens) <= 0:
+            raise ValueError("data.max_context_tokens must be a positive int or null")
         if d.num_train_examples <= 0 or d.num_val_examples < 0:
             raise ValueError("data.num_train_examples must be > 0 and data.num_val_examples >= 0")
         if d.val_path is not None and d.val_path == d.path:

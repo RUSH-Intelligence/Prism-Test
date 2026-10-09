@@ -1,7 +1,12 @@
 """Training data: long-text JSONL rows -> ``[context | suffix]`` token windows (spec §12).
 
-Rows need a ``text`` field (and an ``id``); ``scripts/prepare_kv_recovery_data.py`` writes
-them from PG-19. Nothing here touches benchmark data or labels.
+Rows need an ``id`` and either a ``text`` field (``kind: text``, the default — PG-19 / FineWeb-Edu excerpts
+written by ``scripts/prepare_kv_recovery_data.py`` / ``scripts/prepare_kv_recovery_mix.py``) or the
+benchmark-shaped fields ``context / question / answer_prefix / answer`` (``kind: qa`` — rows of RULER or
+LongBench OUTSIDE the evaluated pool, written by ``prepare_kv_recovery_mix.py``). qa rows are shaped exactly
+as the evaluation shapes them and aligned on the question (+ answer prefix) [+ gold answer] region
+(``data.qa_region``); the evaluated rows themselves never enter a corpus (row-index disjointness is
+enforced by the corpus builder and recorded in its manifest).
 
 Formats
 * ``raw``  : ids = [bos] + tokenize(text); the window is the first ``max_length`` ids,
@@ -38,11 +43,14 @@ class WindowStats:
     n_skipped_short: int = 0
     n_skipped_empty: int = 0
     n_skipped_excluded: int = 0
+    n_skipped_long: int = 0          # qa rows whose context exceeds data.max_context_tokens
     context_tokens: int = 0
     suffix_tokens: int = 0
     format: str = "raw"
     suffix_mode: str = "continuation"
     ids: List[str] = field(default_factory=list)
+    by_source: Dict[str, int] = field(default_factory=dict)   # used windows per row ``source``
+    by_kind: Dict[str, int] = field(default_factory=dict)     # used windows per row ``kind``
 
     def as_dict(self) -> Dict[str, Any]:
         return {k: v for k, v in self.__dict__.items() if k != "ids"} | {"n_ids": len(self.ids)}
@@ -141,11 +149,30 @@ def _chat_example(row: dict, tokenizer, dcfg: DataCfg, *, pipeline, rng: random.
                          "title": row.get("title")})
 
 
+def _qa_example(row: dict, tokenizer, dcfg: DataCfg, *, pipeline) -> Optional[Example]:
+    """A ``kind: qa`` corpus row -> benchmark-shaped window (see :func:`benchmark_example`); ``None`` when the
+    context exceeds ``data.max_context_tokens``."""
+    if pipeline is None:
+        raise ValueError("qa rows need the ResearchGenerationPipeline (pass pipeline=)")
+    r = dict(row)
+    r.setdefault("_task", r.get("task", "?"))
+    r.setdefault("_row", r.get("row", 0))
+    ex = benchmark_example(r, tokenizer, pipeline=pipeline, bench_name=str(r.get("source", r.get("benchmark", "qa"))),
+                           region=dcfg.qa_region, use_chat_template=True,
+                           strip_auto_system_block=bool(dcfg.strip_auto_system_block), example_id=str(row["id"]))
+    if dcfg.max_context_tokens is not None and ex.context_len > int(dcfg.max_context_tokens):
+        return None
+    ex.meta["source"] = row.get("source")
+    ex.meta["kind"] = "qa"
+    return ex
+
+
 def build_examples(rows: Iterable[dict], tokenizer, dcfg: DataCfg, *, n_examples: int, seed: int,
                    model=None, pipeline=None, exclude_ids: Optional[Iterable[str]] = None
                    ) -> Tuple[List[Example], WindowStats]:
     """The first ``n_examples`` usable windows of ``rows`` in seeded order (rows whose id is in
-    ``exclude_ids`` are skipped — used to carve a calibration set disjoint from train / val)."""
+    ``exclude_ids`` are skipped — used to carve a calibration set disjoint from train / val). Text rows
+    become ``[context | continuation]`` windows, qa rows benchmark-shaped ``[context | question (+ answer)]``."""
     rows = list(rows)
     order = list(range(len(rows)))
     random.Random(seed).shuffle(order)
@@ -161,29 +188,43 @@ def build_examples(rows: Iterable[dict], tokenizer, dcfg: DataCfg, *, n_examples
             stats.n_skipped_excluded += 1
             continue
         rng = random.Random(f"{seed}:{row.get('id', idx)}")
-        if dcfg.format == "raw":
+        kind = str(row.get("kind") or "text")
+        if kind == "qa":
+            ex = _qa_example(row, tokenizer, dcfg, pipeline=pipeline)
+            if ex is None:
+                stats.n_skipped_long += 1
+                continue
+        elif kind == "text" and dcfg.format == "raw":
             ex = _raw_example(row, tokenizer, dcfg, bos_id=bos_id, rng=rng)
-        elif dcfg.format == "chat":
+        elif kind == "text" and dcfg.format == "chat":
             if pipeline is None:
                 raise ValueError("data.format=chat needs the ResearchGenerationPipeline (pass pipeline=)")
             ex = _chat_example(row, tokenizer, dcfg, pipeline=pipeline, rng=rng)
-        else:
+        elif kind == "text":
             raise ValueError(f"unknown data.format {dcfg.format!r}")
+        else:
+            raise ValueError(f"row {row.get('id', idx)}: unknown kind {kind!r} (text | qa)")
         if ex is None:
             if (row.get("text") or "").strip():
                 stats.n_skipped_short += 1
             else:
                 stats.n_skipped_empty += 1
             continue
+        ex.meta.setdefault("source", row.get("source"))
+        ex.meta.setdefault("kind", kind)
         examples.append(ex)
         stats.n_used += 1
         stats.context_tokens += ex.context_len
         stats.suffix_tokens += ex.suffix_len
         stats.ids.append(ex.id)
+        src = str(ex.meta.get("source") or "?")
+        stats.by_source[src] = stats.by_source.get(src, 0) + 1
+        stats.by_kind[kind] = stats.by_kind.get(kind, 0) + 1
     if len(examples) < n_examples:
         raise ValueError(f"only {len(examples)} usable windows of {n_examples} requested "
                          f"(rows={len(rows)}, too short={stats.n_skipped_short}, empty={stats.n_skipped_empty}, "
-                         f"excluded={stats.n_skipped_excluded}); prepare more / longer rows, lower data.max_length"
+                         f"excluded={stats.n_skipped_excluded}, long={stats.n_skipped_long}); prepare more / longer rows, "
+                         f"lower data.max_length or raise data.max_context_tokens"
                          + (" or lower trainable.sensitivity.num_examples / data.num_val_examples" if excluded else ""))
     return examples, stats
 
@@ -243,7 +284,8 @@ def benchmark_rows(bench_name: str, subsets: Optional[List[str]], *, pool_rows: 
 
 
 def benchmark_example(row: dict, tokenizer, *, pipeline, bench_name: str, region: str = "question_answer",
-                      use_chat_template: bool = True, strip_auto_system_block: bool = True) -> Example:
+                      use_chat_template: bool = True, strip_auto_system_block: bool = True,
+                      example_id: Optional[str] = None) -> Example:
     """One benchmark row -> ``[context | measured region]`` shaped EXACTLY as the evaluation
     shapes it (``ResearchGenerationPipeline.preprocess``: chat template, stripped auto system block,
     ``query_aware: false`` so the question never enters the context). The measured region is the
@@ -271,7 +313,7 @@ def benchmark_example(row: dict, tokenizer, *, pipeline, bench_name: str, region
                 suffix = torch.cat([suffix, torch.tensor([ans], dtype=torch.long)], dim=1)
                 n_answer = len(ans)
     task = str(row.get("_task", row.get("task", "?")))
-    return Example(id=f"{bench_name}/{task}/row{int(row.get('_row', 0))}", ctx_ids=ctx, suffix_ids=suffix,
+    return Example(id=example_id or f"{bench_name}/{task}/row{int(row.get('_row', 0))}", ctx_ids=ctx, suffix_ids=suffix,
                    meta={"format": "benchmark", "benchmark": bench_name, "task": task, "row": int(row.get("_row", 0)),
                          "region": region, "n_question_tokens": n_question, "n_answer_tokens": n_answer,
                          "context_tokens": int(ctx.shape[1])})
@@ -296,16 +338,21 @@ def benchmark_examples(bench_name: str, subsets: Optional[List[str]], tokenizer,
     return examples, stats
 
 
+def _context_key(e: Example) -> str:
+    return hashlib.sha256(e.ctx_ids[0].to(torch.int64).numpy().tobytes()).hexdigest()
+
+
 def assert_disjoint(train: List[Example], val: List[Example]) -> None:
-    """Validation windows must come from different rows AND different text than training."""
+    """Validation windows must come from different rows AND different text than training (ids and the full
+    context token sequence; benchmark rows of one task legitimately share their instruction prefix)."""
     tid = {e.id for e in train}
     overlap = [e.id for e in val if e.id in tid]
     if overlap:
         raise AssertionError(f"validation ids also in training: {overlap[:5]}")
-    heads = {tuple(e.ctx_ids[0, :64].tolist()) for e in train}
-    dup = [e.id for e in val if tuple(e.ctx_ids[0, :64].tolist()) in heads]
+    keys = {_context_key(e) for e in train}
+    dup = [e.id for e in val if _context_key(e) in keys]
     if dup:
-        raise AssertionError(f"validation windows share their first 64 tokens with training windows: {dup[:5]}")
+        raise AssertionError(f"validation windows repeat a training context: {dup[:5]}")
 
 
 def describe_split(examples: List[Example], stats: WindowStats, path: Optional[str]) -> Dict[str, Any]:
