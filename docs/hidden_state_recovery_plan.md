@@ -440,8 +440,38 @@ K/V-carrying layer, exactly 0 on Qwen3.5's layers 0–2, bitwise identical acros
 from the eligible pool only, E_l ≡ 0 without a compressor — and S8–S13 ran on the selected layers
 (Ministral: [0, 6], Qwen3.5: [27, 31] on the 1K-token synthetic smoke windows).
 
-Training / evaluation of the eight sensitivity-selected pilot cells (`--primary --trainable qo_sens4,kv_sens16`):
-see the table below as results land.
+**Sensitivity-selected pilot training runs** (`kv_recovery_matrix.py --primary --trainable qo_sens4,kv_sens16 --submit`,
+2026-10-08, jobs 320584–320591; same pre-registered budget as the static cells: 16K windows, 256 train + 16 val excerpts,
+lr 1e-5, 64 steps, one H200 each). The selection inside each run reproduced the standalone measurement exactly (same
+calibration windows → identical `E_l` → identical layers); every run passed the same-model / stray-gradient / frozen-weight
+checks and `sanity_checks.json` confirms the trained layers equal the selection.
+
+| run | selected layers | trainable params | % text LM | val loss first → last | Δ | wall | peak GiB |
+|---|---|---|---|---|---|---|---|
+| `ministral_3b_16k_cur_r075_kv_sens16` | 0–15 | 100.7 M | 2.94 | 0.1385 → 0.0474 | -65.8 % | 7.2 min | 28.9 |
+| `ministral_3b_16k_cur_r075_qo_sens4` | [2, 3, 4, 5] | 100.7 M | 2.94 | 0.1373 → 0.0815 | -40.7 % | 7.3 min | 28.0 |
+| `ministral_3b_16k_knorm_r075_kv_sens16` | 5–19 + 22 | 100.7 M | 2.94 | 0.1101 → 0.0824 | -25.2 % | 7.1 min | 26.6 |
+| `ministral_3b_16k_knorm_r075_qo_sens4` | [12, 13, 14, 15] | 100.7 M | 2.94 | 0.1074 → 0.0873 | -18.8 % | 7.1 min | 23.4 |
+| `qwen35_4b_16k_knorm_r075_kv_sens16` | [15, 19, 27, 31] | 21.0 M | 0.50 | 0.0526 → 0.0460 | -12.6 % | 10.1 min | 20.5 |
+| `qwen35_4b_16k_knorm_r075_qo_sens4` | [15, 19, 27, 31] | 125.8 M | 2.99 | 0.0526 → 0.0426 | -19.0 % | 10.2 min | 22.3 |
+
+Val-loss drops are only comparable between runs that align the same layers (`from_first_trainable` starts at the first
+selected layer, so `kv_sens16` on Ministral/cur aligns layers 0–25 while `kv_attn` aligned 10–25); within the `qo` family
+the sensitivity-selected runs lowered the held-out alignment loss by 19–41 % against 12–21 % for the position heuristic.
+
+**Sensitivity-selected pilot evaluation** (`compressed_recovered` arms through `eval_kv_recovery.py run --submit`; dense and
+compressed cells reused; paired bootstrap, 2 000 resamples; cells landing 2026-10-08/09 — the table is updated as they
+complete, `scripts/kv_recovery_pilot_summary.py --glob 'outputs/kv_recovery/*_16k_*_r075_*sens*'` regenerates it):
+
+| run | benchmark | dense | compressed | recovered | drop | recovery [CI] | fraction [CI] | static twin's recovery |
+|---|---|---|---|---|---|---|---|---|
+| `ministral_3b_16k_knorm_r075_qo_sens4` (layers 12–15) | ruler16k | 89.2 | 29.3 | 31.6 | 59.9 | **+2.3 [1.2, 3.3]** | 3.8 % [2, 5] | `qo_last4` (22–25): −0.1 [−0.7, 0.5] |
+
+First reading: on the cell where the position heuristic recovered nothing (Ministral / knorm / q+o on the last four
+layers), the same projections on the four most compression-sensitive layers recover +2.3 points (significant); per task
+the gain sits on `cwe` (+21.2 [16.6, 25.9]), `niah_single_1` (+10.0) and `qa_1` (+7.0), with regressions on `vt`
+(−5.8 [−9.6, −2.2]) and `fwe` (−3.3) — the needle tasks that compression destroys outright (`niah_multikey_2/3`,
+`niah_multiquery`, `niah_single_2/3`: 0–2 % compressed) stay at 0, as in every pilot cell.
 
 ### Not run
 
