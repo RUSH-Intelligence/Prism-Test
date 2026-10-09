@@ -96,7 +96,7 @@ optim:
   epochs: 1
   max_steps: null
   warmup_fraction: 0.0
-  val_every_steps: 8
+  val_every_steps: 32                # 256 steps -> 8 validations of 32 windows (every 8 would cost ~40 min per run)
   shuffle_seed: 0
   master_weights_fp32: true          # BF16 weights, FP32 masters + AdamW state (prior D10)
   deterministic_backward: false      # math SDPA backend for the grad-enabled suffix forward
