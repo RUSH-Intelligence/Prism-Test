@@ -3,7 +3,8 @@
 # ============================================================================
 #   python scripts/train_kv_recovery.py --config configs/kv_recovery/qwen35_4b.yaml \
 #       [--run-name NAME] [--set a.b.c=value ...] [--learning-rate 1e-5]
-#       [--trainable-last-n-blocks 1 | --trainable-attention-projections k_proj,v_proj]
+#       [--trainable-last-n-blocks 1 | --trainable-attention-projections q_proj,o_proj]
+#       [--trainable-layers sensitivity --sensitivity-top-k 4 | --trainable-layers last_n:4]
 #       [--kv-compressor knorm] [--compression-ratio 0.75 | --kv-budget-ratio 0.25]
 #       [--max-length 16384] [--suffix-length 512] [--num-train-examples 256]
 #
@@ -18,7 +19,7 @@
 # block (31) is full attention. `attention_projections` only ever selects those 8
 # layers; `last_n_blocks: 2` = {30 (linear), 31 (full)}.
 
-run_name: qwen35_4b_knorm_r075_last1_16k
+run_name: qwen35_4b_knorm_r075_qo_sens4_16k
 seed: 42                 # python / numpy / torch / cuda (EvalRunner._set_seed)
 deterministic: true      # EvalRunner._enable_determinism (pair with CUBLAS_WORKSPACE_CONFIG=:4096:8)
 
@@ -70,11 +71,18 @@ loss:
   temperature: 1.0
 
 trainable:
-  strategy: last_n_blocks            # last_n_blocks | attention_projections | mlp | norms | full
-  n: 1
-  modules: [k_proj, v_proj]          # attention_projections only
-  layers: all                        # attention_projections / mlp / norms: all | "last_n:<k>" | [indices]
+  strategy: attention_projections    # last_n_blocks | blocks | attention_projections | mlp | norms | full
+  n: 1                               # last_n_blocks only
+  modules: [q_proj, o_proj]          # attention_projections only (the calibrated set {W_Q, W_O} of the selected layers)
+  layers: sensitivity                # attention_projections / blocks / mlp / norms: all | "last_n:<k>" | [indices] | sensitivity
   include_embeddings: false
+  sensitivity:                       # layers: sensitivity -> top_k layers with the largest hidden-state misalignment
+    top_k: 4                         #   E_l = ||H_dense - H_comp||_F / (||H_dense||_F + eps) over the suffix tokens,
+    num_examples: 8                  #   averaged over `num_examples` held-out calibration windows (val rows disjoint
+    split: val                       #   from the validation windows); only K/V-carrying layers are eligible
+    positions: {strategy: all, n: 128}
+    eps: 1.0e-6
+    aggregate: mean                  # mean | median over calibration windows
 
 optim:
   learning_rate: 1.0e-5

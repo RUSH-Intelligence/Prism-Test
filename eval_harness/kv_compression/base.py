@@ -98,9 +98,14 @@ def _is_non_full_attention_layer(layer: nn.Module) -> bool:
     # under ``.mixer`` (there is NO ``.self_attn``). Only "attention" blocks
     # carry a standard K/V cache, so mamba/mlp blocks must be skipped. Checked
     # first because these blocks expose neither ``layer_type`` nor ``self_attn``.
+    # transformers >= 5.11 also tags Qwen3.5 decoder layers with ``block_type``
+    # ∈ {"linear_attention", "full_attention"} (5.10 used ``layer_type``), so the
+    # string is read with the same vocabulary as the ``layer_type`` hints below:
+    # "attention" / "*full*" -> full softmax attention, anything else -> skip.
     block_type = getattr(layer, "block_type", None)
     if isinstance(block_type, str):
-        return block_type.lower() != "attention"
+        lowered = block_type.lower()
+        return not (lowered == "attention" or "full" in lowered)
 
     # Decoder-layer-level type hints first. These are present even when the
     # layer has NO ``self_attn`` submodule (e.g. Qwen3.5 linear-attention

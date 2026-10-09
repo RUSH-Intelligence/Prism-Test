@@ -167,50 +167,64 @@ def assert_no_hooks(model: nn.Module) -> None:
             raise AssertionError(f"layer {i}: attention module carries forward hooks (compressor leaked onto this model)")
 
 
+def _detach_state_buffers(layer) -> None:
+    """Rebind every stored linear-attention state tensor of ``layer`` to a fresh clone.
+
+    Works for every cache-layer layout seen so far: one tensor per attribute (transformers 5.10)
+    or one container of per-``state_idx`` tensors (transformers >= 5.11: a ``dict`` built with
+    ``dict.fromkeys(range(number_of_states))``; lists/tuples handled the same way). Non-tensor
+    entries (lazy ``None``) are left alone.
+    """
+    def _clone(t):
+        return t.clone() if isinstance(t, torch.Tensor) else t
+
+    for attr in ("recurrent_states", "conv_states"):
+        cur = getattr(layer, attr, None)
+        if isinstance(cur, torch.Tensor):
+            setattr(layer, attr, cur.clone())
+        elif isinstance(cur, dict):
+            setattr(layer, attr, {k: _clone(t) for k, t in cur.items()})
+        elif isinstance(cur, (list, tuple)):
+            setattr(layer, attr, type(cur)(_clone(t) for t in cur))
+
+
 @contextlib.contextmanager
 def rebinding_linear_cache_updates(cache):
-    """Make linear-attention cache layers REBIND their state tensors instead of ``copy_``-ing into
-    them during a gradient-enabled forward.
+    """Keep linear-attention cache layers from ``copy_``-ing into tensors autograd has saved, during
+    a gradient-enabled forward.
 
     transformers' ``LinearAttentionLayer.update_recurrent_state`` / ``update_conv_state`` write the
     new state in place into a static buffer (for CUDA graphs). Qwen3.5's GatedDeltaNet passes that
     buffer to the chunked kernel as ``initial_state``, which the kernel saves for backward; the
     in-place write then bumps its version and the backward raises ``one of the variables needed for
-    gradient computation has been modified by an inplace operation``. Rebinding leaves the saved
-    tensor untouched. The student cache is discarded after the segment, so nothing relies on the
-    static address. No-op for caches without linear-attention layers.
+    gradient computation has been modified by an inplace operation``. Here every update first
+    rebinds the layer's stored state tensors to clones and then calls the ORIGINAL method, so the
+    in-place write lands in the clone and the saved tensor stays untouched. Wrapping the original
+    (instead of re-implementing it) keeps this independent of the cache layer's signature and
+    state layout, which changed between transformers 5.10 and 5.11+. The student cache is discarded
+    after the segment, so nothing relies on the static address. No-op for caches without
+    linear-attention layers.
     """
+    import types
+
     patched = []
     for layer in getattr(cache, "layers", []) or []:
         if not (hasattr(layer, "update_recurrent_state") and hasattr(layer, "recurrent_states")):
             continue
+        orig_rec = layer.update_recurrent_state
+        orig_conv = getattr(layer, "update_conv_state", None)
 
-        def update_recurrent_state(self, recurrent_states, **kwargs):
-            if not self.is_recurrent_states_initialized:
-                self.lazy_initialization(recurrent_states=recurrent_states)
-            self.recurrent_states = recurrent_states
-            return self.recurrent_states
-
-        def update_conv_state(self, conv_states, **kwargs):
-            if not self.is_conv_states_initialized:
-                self.lazy_initialization(conv_states=conv_states)
-            if not self.has_previous_state:
-                self.conv_states = conv_states
-                self.has_previous_state = True
-            else:
-                n = conv_states.shape[-1]
-                if n >= self.conv_kernel_size:
-                    self.conv_states = conv_states[..., -self.conv_kernel_size:]
-                else:
-                    new = self.conv_states.roll(shifts=-n, dims=-1)
-                    new = torch.cat([new[..., :-n], conv_states], dim=-1)
-                    self.conv_states = new
-            return self.conv_states
-
-        import types
+        def update_recurrent_state(self, *args, _orig=orig_rec, **kwargs):
+            _detach_state_buffers(self)
+            return _orig(*args, **kwargs)
 
         layer.update_recurrent_state = types.MethodType(update_recurrent_state, layer)
-        layer.update_conv_state = types.MethodType(update_conv_state, layer)
+        if orig_conv is not None:
+            def update_conv_state(self, *args, _orig=orig_conv, **kwargs):
+                _detach_state_buffers(self)
+                return _orig(*args, **kwargs)
+
+            layer.update_conv_state = types.MethodType(update_conv_state, layer)
         patched.append(layer)
     try:
         yield

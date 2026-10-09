@@ -3,19 +3,27 @@
 
   python scripts/train_kv_recovery.py --config configs/kv_recovery/ministral_3b.yaml \
       [--run-name NAME] [--set a.b.c=value ...] [--learning-rate 1e-5]
-      [--trainable-last-n-blocks 1 | --trainable-attention-projections k_proj,v_proj]
+      [--trainable-last-n-blocks 1 | --trainable-attention-projections q_proj,o_proj]
+      [--trainable-layers all|last_n:4|sensitivity|3,7,11] [--sensitivity-top-k 4] [--sensitivity-examples 8]
       [--kv-compressor knorm] [--compression-ratio 0.75 | --kv-budget-ratio 0.25]
       [--max-length 16384] [--suffix-length 512] [--num-train-examples 256] [--seed 42]
       [--epochs 1] [--max-steps N] [--kl-weight 0.0] [--teacher-states DIR]
 
+Layer selection: ``trainable.layers: sensitivity`` measures, on held-out calibration windows, how
+strongly the compressor perturbs every layer's hidden states
+(E_l = ||H_dense - H_comp||_F / (||H_dense||_F + eps) on the suffix) and trains the top-k most
+affected eligible layers (``eval_harness/kv_recovery/sensitivity.py``); the measurement is written to
+layer_sensitivity.{json,csv} and recorded in the delta metadata.
+
 Outputs (outputs/kv_recovery/<run_name>/): config.yaml, metadata.json, train_metrics.jsonl,
-val_loss.csv, weight_update_norms.csv, trainable_parameters.txt, sanity_checks.json,
-checkpoint/{adapted_weights.safetensors, metadata.json, config.yaml}, logs/.
+val_loss.csv, weight_update_norms.csv, trainable_parameters.txt, layer_sensitivity.{json,csv},
+sanity_checks.json, checkpoint/{adapted_weights.safetensors, metadata.json, config.yaml}, logs/.
 """
 from __future__ import annotations
 
 import argparse
 import csv
+import dataclasses
 import json
 import logging
 import shutil
@@ -29,7 +37,13 @@ sys.path.insert(0, str(REPO_ROOT))
 
 import yaml  # noqa: E402
 
-from eval_harness.kv_recovery.config import RecoveryConfig, kv_budget_to_ratio, load_config, training_identity  # noqa: E402
+from eval_harness.kv_recovery.config import (  # noqa: E402
+    LAYER_SELECTOR_SENSITIVITY,
+    RecoveryConfig,
+    kv_budget_to_ratio,
+    load_config,
+    training_identity,
+)
 
 logger = logging.getLogger("kv_recovery.train")
 
@@ -42,7 +56,10 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--learning-rate", type=float)
     ap.add_argument("--trainable-last-n-blocks", type=int)
     ap.add_argument("--trainable-attention-projections", help="comma list, e.g. k_proj,v_proj")
-    ap.add_argument("--trainable-layers", help="all | last_n:<k> | comma list of layer indices (attention_projections)")
+    ap.add_argument("--trainable-layers", help="all | last_n:<k> | sensitivity | comma list of layer indices "
+                                               "(attention_projections / blocks / mlp / norms)")
+    ap.add_argument("--sensitivity-top-k", type=int, help="trainable.sensitivity.top_k (layers: sensitivity)")
+    ap.add_argument("--sensitivity-examples", type=int, help="trainable.sensitivity.num_examples (calibration windows)")
     ap.add_argument("--kv-compressor")
     ap.add_argument("--compression-ratio", type=float, help="fraction of the context KV pruned")
     ap.add_argument("--kv-budget-ratio", type=float, help="fraction KEPT (spec wording) = 1 - compression_ratio")
@@ -72,7 +89,10 @@ def shortcuts_from_args(args: argparse.Namespace) -> Dict[str, Any]:
         s["trainable.modules"] = [m.strip() for m in args.trainable_attention_projections.split(",") if m.strip()]
     if args.trainable_layers:
         v = args.trainable_layers
-        s["trainable.layers"] = v if v == "all" or v.startswith("last_n:") else [int(x) for x in v.split(",")]
+        s["trainable.layers"] = (v if v in ("all", LAYER_SELECTOR_SENSITIVITY) or v.startswith("last_n:")
+                                 else [int(x) for x in v.split(",")])
+    if args.sensitivity_top_k is not None: s["trainable.sensitivity.top_k"] = args.sensitivity_top_k
+    if args.sensitivity_examples is not None: s["trainable.sensitivity.num_examples"] = args.sensitivity_examples
     if args.kv_compressor: s["kv_compression.kv_compressor"] = args.kv_compressor
     if args.compression_ratio is not None and args.kv_budget_ratio is not None:
         raise SystemExit("pass either --compression-ratio or --kv-budget-ratio, not both")
@@ -142,6 +162,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     from eval_harness.kv_recovery.checkpoint import frozen_sample_names, hashes_of, write_delta
     from eval_harness.kv_recovery.data import assert_disjoint, describe_split, load_split
     from eval_harness.kv_recovery.model_spec import inspect_model, resolve_base_revision
+    from eval_harness.kv_recovery.sensitivity import select_layers_by_sensitivity
     from eval_harness.kv_recovery.student import build_compressor, load_adapter, resolve_segment_mode
     from eval_harness.kv_recovery.trainable import (assert_trainable, changed_parameters, format_parameter_summary,
                                                     freeze_all_but, parameter_summary, select_trainable,
@@ -167,8 +188,43 @@ def main(argv: Optional[List[str]] = None) -> int:
     logger.info("model family=%s layers=%d hidden=%d full_attention_layers=%s hybrid=%s",
                 spec.family, spec.n_layers, spec.hidden_size, list(spec.full_attention_layers), spec.is_hybrid)
 
+    # --- teacher/student identity, segment mode, data -----------------------------------------
+    if teacher is not None:
+        tp = dict(teacher._model.named_parameters())
+        mismatch = [n for n, p in model.named_parameters() if not torch.equal(p.detach(), tp[n].detach())]
+        if mismatch:
+            raise SystemExit(f"teacher and student weights differ at load time: {mismatch[:5]}")
+        logger.info("teacher and student parameters bitwise identical at start (%d tensors)", len(tp))
+    mode = resolve_segment_mode(model, cfg.student)
+    tokenizer = student._tokenizer
+    train_ex, train_stats = load_split(cfg, tokenizer, "train", model=model, pipeline=student._pipe)
+    val_ex, val_stats = load_split(cfg, tokenizer, "val", model=model, pipeline=student._pipe)
+    assert_disjoint(train_ex, val_ex)
+    logger.info("data: %d train / %d val windows (%s)", len(train_ex), len(val_ex), train_stats.as_dict())
+
+    # --- layer selection (trainable.layers: sensitivity) ----------------------------------------
+    # Measured BEFORE any weight changes, on calibration windows disjoint from train and val, with
+    # the student's ORIGINAL weights and the production compressor; recorded in the metadata.
+    sensitivity_report = None
+    calib_ex, calib_stats, resolved_layers = [], None, None
+    if cfg.trainable.layers == LAYER_SELECTOR_SENSITIVITY:
+        if teacher is None:
+            raise SystemExit("trainable.layers='sensitivity' needs the online teacher (teacher.mode: online)")
+        used = {e.id for e in train_ex} | {e.id for e in val_ex}
+        calib_ex, calib_stats = load_split(cfg, tokenizer, "calibration", model=model, pipeline=student._pipe,
+                                           exclude_ids=used)
+        assert_disjoint(train_ex, calib_ex)
+        assert_disjoint(val_ex, calib_ex)
+        sensitivity_report = select_layers_by_sensitivity(cfg, teacher, student, compressor, calib_ex, spec=spec, mode=mode)
+        resolved_layers = sensitivity_report.selected
+        print(sensitivity_report.table(), flush=True)
+        (run_dir / "layer_sensitivity.json").write_text(json.dumps(sensitivity_report.to_dict(), indent=2))
+        write_csv(run_dir / "layer_sensitivity.csv", sensitivity_report.rows())
+        logger.info("sensitivity selection on %d calibration windows (%.1fs): layers %s",
+                    len(calib_ex), sensitivity_report.seconds, resolved_layers)
+
     # --- trainable subset --------------------------------------------------------------
-    names = select_trainable(model, spec, cfg.trainable)
+    names = select_trainable(model, spec, cfg.trainable, resolved_layers=resolved_layers)
     expected = freeze_all_but(model, names)
     assert_trainable(model, expected, spec)
     summary = parameter_summary(model, spec)
@@ -176,12 +232,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     print(text, flush=True)
     (run_dir / "trainable_parameters.txt").write_text(text + "\n")
     trainable = trainable_parameters(model, names)
-    if teacher is not None:
-        tp = dict(teacher._model.named_parameters())
-        mismatch = [n for n, p in model.named_parameters() if not torch.equal(p.detach(), tp[n].detach())]
-        if mismatch:
-            raise SystemExit(f"teacher and student weights differ at load time: {mismatch[:5]}")
-        logger.info("teacher and student parameters bitwise identical at start (%d tensors)", len(tp))
 
     # --- alignment setup ----------------------------------------------------------------
     first_tl = summary["first_trainable_layer"]
@@ -189,7 +239,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     dead = check_alignment_has_gradient(keys, first_tl, allow=cfg.alignment.allow_dead_terms)
     if dead:
         logger.warning("aligned keys %s carry no gradient (allowed by config)", dead)
-    mode = resolve_segment_mode(model, cfg.student)
     setup = AlignmentSetup(keys=keys, layer_indices=[k for k in keys if isinstance(k, int)],
                            include_final_norm=cfg.alignment.include_final_norm, positions_cfg=cfg.alignment.positions,
                            loss_name=cfg.alignment.loss, layer_weights=cfg.alignment.layer_weights, loss_cfg=cfg.loss,
@@ -198,13 +247,6 @@ def main(argv: Optional[List[str]] = None) -> int:
                            prefill_chunk_size=cfg.kv_compression.prefill_chunk_size, prefill_grad=cfg.student.prefill_grad,
                            deterministic_backward=cfg.optim.deterministic_backward)
     logger.info("alignment keys=%s positions=%s loss=%s segment_mode=%s", keys, cfg.alignment.positions, cfg.alignment.loss, mode)
-
-    # --- data ---------------------------------------------------------------------------
-    tokenizer = student._tokenizer
-    train_ex, train_stats = load_split(cfg, tokenizer, "train", model=model, pipeline=student._pipe)
-    val_ex, val_stats = load_split(cfg, tokenizer, "val", model=model, pipeline=student._pipe)
-    assert_disjoint(train_ex, val_ex)
-    logger.info("data: %d train / %d val windows (%s)", len(train_ex), len(val_ex), train_stats.as_dict())
     if store is not None:
         store.check(cfg, keys)
         missing = [e.id for e in train_ex + val_ex if not store.has(e.id)]
@@ -257,6 +299,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         if drift:
             raise SystemExit(f"frozen parameters changed during training: {drift[:5]}")
     sanity["trainable_changed"] = {"n_changed": len(changed_parameters(model, originals)), "n_trainable": len(names)}
+    if sensitivity_report is not None:
+        from eval_harness.kv_recovery.trainable import layer_index_of
+        touched = sorted({layer_index_of(n, spec) for n in names} - {None})
+        sanity["layer_selection"] = {"passed": touched == sorted(sensitivity_report.selected),
+                                     "selected": sensitivity_report.selected, "trainable_layers": touched,
+                                     "candidates": sensitivity_report.candidates}
     (run_dir / "sanity_checks.json").write_text(json.dumps(sanity, indent=2, default=str))
     write_csv(run_dir / "weight_update_norms.csv",
               weight_update_norms(originals, trainable, state.masters, state.optimizer_steps, cfg.optim.learning_rate, spec))
@@ -269,7 +317,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         "base_revision": cfg.model.revision or resolve_base_revision(model),
         "base_dtype": str(next(model.parameters()).dtype).replace("torch.", ""),
         **training_identity(cfg),
-        "trainable": cfg.trainable.__dict__,
+        "trainable": dataclasses.asdict(cfg.trainable),
+        "layer_selection": (sensitivity_report.to_dict() if sensitivity_report is not None
+                            else {"method": "static", "layers": cfg.trainable.layers}),
         "parameter_summary": {k: v for k, v in summary.items() if k != "trainable_names"},
         "alignment": {"keys": [str(k) for k in keys], "dead_keys": [str(k) for k in dead], "positions": cfg.alignment.positions.__dict__,
                       "loss": cfg.alignment.loss, "layer_weights": cfg.alignment.layer_weights,
@@ -280,6 +330,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                   "precision": "bf16 forward/backward, fp32 master weights + AdamW state" if cfg.optim.master_weights_fp32 else "bf16",
                   "steps": state.optimizer_steps, "micro_batches": state.micro_batches, "instability_restart": restart_note},
         "data": {"train": describe_split(train_ex, train_stats, cfg.data.path), "val": describe_split(val_ex, val_stats, cfg.data.val_path),
+                 "calibration": (describe_split(calib_ex, calib_stats,
+                                                cfg.data.val_path if cfg.trainable.sensitivity.split == "val" else cfg.data.path)
+                                 if calib_stats is not None else None),
                  "max_length": cfg.data.max_length, "suffix_length": cfg.data.suffix_length, "format": cfg.data.format,
                  "suffix_mode": cfg.data.suffix_mode, "seed": cfg.data.seed},
         "sequence_length": cfg.data.max_length,

@@ -50,6 +50,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     teacher = load_adapter(cfg, compressed=False)
     model = teacher._model
     spec = inspect_model(model)
+    if cfg.trainable.layers == "sensitivity":
+        raise SystemExit("trainable.layers=sensitivity selects the layers from a dense-vs-compressed measurement at training "
+                         "time and therefore needs the ONLINE teacher (every layer's states); precomputed teacher states only "
+                         "work with a static selector (e.g. --set trainable.layers=last_n:4 or an explicit layer list).")
     names = select_trainable(model, spec, cfg.trainable)
     keys = alignment_keys_for(cfg.alignment, spec.n_layers, first_trainable_layer=first_trainable_layer(names, spec))
     mode = resolve_segment_mode(model, cfg.student)

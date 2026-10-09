@@ -8,13 +8,18 @@ must never be selected. Ported and generalised from
 Strategies (``TrainableCfg.strategy``):
 
 * ``last_n_blocks``          every parameter of the last ``n`` decoder blocks (attention + MLP + norms).
+* ``blocks``                 every parameter of the decoder blocks selected by ``layers``.
 * ``attention_projections``  ``modules`` (q_proj/k_proj/v_proj/o_proj) of the softmax-attention layers
-                             selected by ``layers`` (``all`` | ``last_n:<k>`` | explicit indices). On
-                             hybrid models only full-attention layers qualify (linear layers have no
-                             ``self_attn``).
+                             selected by ``layers`` (``all`` | ``last_n:<k>`` | explicit indices |
+                             ``sensitivity``). On hybrid models only full-attention layers qualify
+                             (linear layers have no ``self_attn``).
 * ``mlp`` / ``norms``        the MLP / every ``*norm*`` parameter of the selected layers.
 * ``full``                   the whole text LM (embeddings only with ``include_embeddings``); vision
                              tower, projector, MTP head and ``lm_head`` stay frozen. Ablation only.
+
+``layers: sensitivity`` is resolved OUTSIDE this module (``sensitivity.select_layers_by_sensitivity``
+needs the teacher, the student, the compressor and calibration windows); the resolved list is
+passed to :func:`select_trainable` as ``resolved_layers``.
 """
 from __future__ import annotations
 
@@ -36,6 +41,9 @@ from .model_spec import (
 def select_layers(selector: Any, candidates: Sequence[int]) -> List[int]:
     """``'all'`` | ``'last_n:<k>'`` | list of indices -> sorted subset of ``candidates``."""
     cands = sorted(int(c) for c in candidates)
+    if selector == "sensitivity":
+        raise ValueError("trainable.layers='sensitivity' must be resolved first "
+                         "(kv_recovery.sensitivity.select_layers_by_sensitivity) and passed as resolved_layers")
     if selector == "all" or selector is None:
         return cands
     if isinstance(selector, str) and selector.startswith("last_n:"):
@@ -54,12 +62,24 @@ def _params_under(names: Iterable[str], prefix: str) -> List[str]:
     return [n for n in names if n.startswith(prefix)]
 
 
-def select_trainable(model: nn.Module, spec: ModelSpec, tcfg: TrainableCfg) -> List[str]:
-    """Full parameter names selected by ``tcfg``; raises if the selection is empty."""
+def select_trainable(model: nn.Module, spec: ModelSpec, tcfg: TrainableCfg, *,
+                     resolved_layers: Optional[Sequence[int]] = None) -> List[str]:
+    """Full parameter names selected by ``tcfg``; raises if the selection is empty.
+
+    ``resolved_layers`` is the layer list a ``layers: sensitivity`` selector resolved to (required in
+    that case, ignored otherwise).
+    """
     all_names = [n for n, _ in model.named_parameters()]
     layers = decoder_layers(model)
     n_layers = len(layers)
     strategy = tcfg.strategy
+    selector: Any = tcfg.layers
+    if selector == "sensitivity":
+        if resolved_layers is None:
+            raise ValueError("trainable.layers='sensitivity' needs resolved_layers (run the sensitivity selection first)")
+        selector = sorted(int(i) for i in resolved_layers)
+        if not selector:
+            raise ValueError("sensitivity selection resolved to no layers")
     out: List[str] = []
 
     if strategy == "last_n_blocks":
@@ -69,11 +89,15 @@ def select_trainable(model: nn.Module, spec: ModelSpec, tcfg: TrainableCfg) -> L
         for i in range(n_layers - n, n_layers):
             out += _params_under(all_names, spec.layer_prefix(i))
 
+    elif strategy == "blocks":
+        for i in select_layers(selector, range(n_layers)):
+            out += _params_under(all_names, spec.layer_prefix(i))
+
     elif strategy == "attention_projections":
         wanted_modules = [str(m) for m in tcfg.modules]
         if not wanted_modules:
             raise ValueError("trainable.modules must not be empty for attention_projections")
-        for i in select_layers(tcfg.layers, spec.full_attention_layers):
+        for i in select_layers(selector, spec.full_attention_layers):
             attr = attention_attr_name(layers[i])
             if attr is None:
                 continue
@@ -85,7 +109,7 @@ def select_trainable(model: nn.Module, spec: ModelSpec, tcfg: TrainableCfg) -> L
                 out += found
 
     elif strategy in ("mlp", "norms"):
-        for i in select_layers(tcfg.layers, range(n_layers)):
+        for i in select_layers(selector, range(n_layers)):
             block = _params_under(all_names, spec.layer_prefix(i))
             if strategy == "mlp":
                 out += [n for n in block if n[len(spec.layer_prefix(i)):].startswith("mlp.")]

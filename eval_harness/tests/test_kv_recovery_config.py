@@ -51,10 +51,23 @@ class TestDefaultsAndCards(unittest.TestCase):
         self.assertEqual(set(m["base_configs"]), {"ministral_3b", "qwen35_4b"})
         self.assertEqual(m["compressors"], ["knorm", "cur"])
         self.assertEqual(m["ratios"], [0.75, 0.5])
-        self.assertEqual(set(m["trainable"]), {"last1", "last2", "qo_last4", "kv_attn"})
+        self.assertEqual(set(m["trainable"]), {"last1", "last2", "qo_last4", "kv_attn", "qo_sens4", "kv_sens16"})
+        self.assertEqual(m["primary"]["trainable"], ["last1", "last2", "qo_last4", "kv_attn", "qo_sens4", "kv_sens16"])
         for name, overrides in m["trainable"].items():
             cfg = RecoveryConfig.from_dict(apply_overrides({}, shortcuts=overrides))
             self.assertIn(cfg.trainable.strategy, ("last_n_blocks", "attention_projections"), name)
+            if name.endswith(("sens4", "sens16")):
+                self.assertEqual(cfg.trainable.layers, "sensitivity", name)
+                self.assertEqual(cfg.trainable.sensitivity.top_k, 4 if name.endswith("sens4") else 16)
+        # budget matching: the sensitivity-selected subsets train the same projections and layer counts
+        self.assertEqual(m["trainable"]["qo_sens4"]["trainable.modules"], m["trainable"]["qo_last4"]["trainable.modules"])
+        self.assertEqual(m["trainable"]["kv_sens16"]["trainable.modules"], m["trainable"]["kv_attn"]["trainable.modules"])
+        self.assertEqual(m["model_overrides"]["qwen35_4b"]["kv_sens16"], {"trainable.sensitivity.top_k": 4})
+        # the shipped run cards default to the sensitivity-selected q/o projections
+        for name in ("ministral_3b.yaml", "qwen35_4b.yaml", "smoke_ministral_3b.yaml", "smoke_qwen35_4b.yaml"):
+            cfg = load_config(CARDS / name)
+            self.assertEqual((cfg.trainable.strategy, cfg.trainable.modules, cfg.trainable.layers),
+                             ("attention_projections", ["q_proj", "o_proj"], "sensitivity"), name)
 
 
 class TestStrictness(unittest.TestCase):

@@ -36,11 +36,16 @@ LONGBENCH_16 = [
 LAYER_STRATEGIES = ("last_n", "explicit", "all", "from_first_trainable")
 POSITION_STRATEGIES = ("all", "recent", "first_k", "post_eviction")
 LOSSES = ("normalized_mse", "normalized_mse_elementwise", "cosine", "relative_mse")
-TRAINABLE_STRATEGIES = ("last_n_blocks", "attention_projections", "mlp", "norms", "full")
+TRAINABLE_STRATEGIES = ("last_n_blocks", "blocks", "attention_projections", "mlp", "norms", "full")
 DATA_FORMATS = ("raw", "chat")
 SUFFIX_MODES = ("continuation", "recall")
 TEACHER_MODES = ("online", "offline")
 SEGMENT_MODES = ("auto", "block", "token_by_token")
+# ``trainable.layers`` value that selects the top-k compression-sensitive layers (kv_recovery/sensitivity.py).
+LAYER_SELECTOR_SENSITIVITY = "sensitivity"
+LAYER_SELECTED_STRATEGIES = ("attention_projections", "blocks", "mlp", "norms")   # strategies that honour trainable.layers
+SENSITIVITY_SPLITS = ("val", "train")
+SENSITIVITY_AGGREGATES = ("mean", "median")
 
 
 # ---------------------------------------------------------------------------
@@ -116,13 +121,30 @@ class LossCfg:
 
 
 @dataclass
+class SensitivityCfg:
+    """``trainable.layers: sensitivity`` — select the top-k layers whose hidden states the compressor
+    perturbs most: ``E_l = ||H_l^dense - H_l^comp||_F / (||H_l^dense||_F + eps)`` over the suffix
+    tokens, aggregated over held-out calibration windows (``kv_recovery/sensitivity.py``)."""
+    top_k: int = 4                   # layers selected among the eligible ones (strategy-dependent pool)
+    num_examples: int = 8            # calibration windows, disjoint from the training AND validation windows
+    split: str = "val"               # val (rows of data.val_path) | train (rows of data.path)
+    positions: PositionsCfg = field(default_factory=PositionsCfg)   # suffix positions forming H_l (default: all)
+    eps: float = 1e-6
+    aggregate: str = "mean"          # mean | median of the per-window E_l
+    _NESTED: ClassVar[Dict[str, type]] = {"positions": PositionsCfg}
+
+
+@dataclass
 class TrainableCfg:
-    strategy: str = "last_n_blocks"   # last_n_blocks | attention_projections | mlp | norms | full
-    n: int = 1
+    strategy: str = "last_n_blocks"   # last_n_blocks | blocks | attention_projections | mlp | norms | full
+    n: int = 1                        # last_n_blocks only
     modules: List[str] = field(default_factory=lambda: ["k_proj", "v_proj"])
-    # For attention_projections / mlp / norms: "all" | "last_n:<k>" | explicit list of layer indices.
+    # For attention_projections / blocks / mlp / norms: "all" | "last_n:<k>" | explicit list of layer
+    # indices | "sensitivity" (top-k compression-sensitive layers, configured by ``sensitivity``).
     layers: Any = "all"
     include_embeddings: bool = False
+    sensitivity: SensitivityCfg = field(default_factory=SensitivityCfg)
+    _NESTED: ClassVar[Dict[str, type]] = {"sensitivity": SensitivityCfg}
 
 
 @dataclass
@@ -299,6 +321,28 @@ class RecoveryConfig:
         if t.strategy == "attention_projections" and not t.modules:
             raise ValueError("trainable.modules must list at least one projection")
         _validate_layer_selector(t.layers)
+        if t.layers == LAYER_SELECTOR_SENSITIVITY:
+            if t.strategy not in LAYER_SELECTED_STRATEGIES:
+                raise ValueError(f"trainable.layers='sensitivity' needs trainable.strategy in {LAYER_SELECTED_STRATEGIES} "
+                                 f"(got {t.strategy!r}; last_n_blocks / full do not take a layer selector)")
+            s = t.sensitivity
+            if s.top_k <= 0 or s.num_examples <= 0:
+                raise ValueError("trainable.sensitivity.top_k and .num_examples must be > 0")
+            if s.split not in SENSITIVITY_SPLITS:
+                raise ValueError(f"trainable.sensitivity.split must be one of {SENSITIVITY_SPLITS}, got {s.split!r}")
+            if s.aggregate not in SENSITIVITY_AGGREGATES:
+                raise ValueError(f"trainable.sensitivity.aggregate must be one of {SENSITIVITY_AGGREGATES}")
+            if s.eps < 0:
+                raise ValueError("trainable.sensitivity.eps must be >= 0")
+            if s.positions.strategy not in POSITION_STRATEGIES:
+                raise ValueError(f"trainable.sensitivity.positions.strategy must be one of {POSITION_STRATEGIES}")
+            if s.positions.strategy in ("recent", "first_k") and s.positions.n <= 0:
+                raise ValueError("trainable.sensitivity.positions.n must be > 0 for 'recent' / 'first_k'")
+            if s.split == "val" and d.val_path is None:
+                raise ValueError("trainable.sensitivity.split='val' needs data.val_path")
+            if self.teacher.mode != "online":
+                raise ValueError("trainable.layers='sensitivity' needs teacher.mode == 'online': the dense pass over EVERY "
+                                 "layer is measured before the aligned layers are known (offline stores hold only those)")
         lo = self.loss
         if lo.hidden_weight < 0 or lo.kl_weight < 0 or lo.temperature <= 0:
             raise ValueError("loss weights must be >= 0 and loss.temperature > 0")
@@ -369,7 +413,7 @@ def _plain(obj: Any) -> Any:
 
 def _validate_layer_selector(sel: Any) -> None:
     if isinstance(sel, str):
-        if sel == "all":
+        if sel in ("all", LAYER_SELECTOR_SENSITIVITY):
             return
         if sel.startswith("last_n:"):
             try:
@@ -379,12 +423,12 @@ def _validate_layer_selector(sel: Any) -> None:
             if k <= 0:
                 raise ValueError("trainable.layers 'last_n:<k>' needs k > 0")
             return
-        raise ValueError(f"trainable.layers must be 'all', 'last_n:<k>' or a list of ints, got {sel!r}")
+        raise ValueError(f"trainable.layers must be 'all', 'last_n:<k>', 'sensitivity' or a list of ints, got {sel!r}")
     if isinstance(sel, (list, tuple)):
         if not all(isinstance(i, int) for i in sel):
             raise ValueError("trainable.layers list must contain ints")
         return
-    raise ValueError(f"trainable.layers must be 'all', 'last_n:<k>' or a list of ints, got {sel!r}")
+    raise ValueError(f"trainable.layers must be 'all', 'last_n:<k>', 'sensitivity' or a list of ints, got {sel!r}")
 
 
 # ---------------------------------------------------------------------------

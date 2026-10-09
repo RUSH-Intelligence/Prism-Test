@@ -21,12 +21,18 @@ Checks (each recorded in <run_dir>/smoke_report.json; the exit code is non-zero 
       optimisation check (8 steps on a fixed batch lower the loss)
   S12 identity delta reproduces compressed generations bitwise
   S13 (--with-benchmark) three-way eval on 3 RULER subsets x 5 rows through eval_harness.cli + report
+  S14 compression-sensitivity layer selection (runs before S10): calibration windows disjoint from
+      train/val, E_l finite and > 0 on every K/V-carrying layer, exactly 0 on layers before the first
+      full-attention layer (hybrids), bitwise deterministic across two measurements, top-k drawn from
+      the eligible layers only, E_l == 0 without a compressor; the selection feeds S10-S13 when the
+      card uses ``trainable.layers: sensitivity``
 """
 from __future__ import annotations
 
 import argparse
 import copy
 import json
+import math
 import os
 import random
 import shutil
@@ -265,8 +271,43 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "min_cos_token_by_token": min(v["min_cos"] for v in probe["layers"]["token_by_token"].values())}
     rep.run("S7_segment_continuation", s7)
 
+    # ---- S14 compression-sensitivity layer selection -----------------------------------------------------
+    sens: Dict[str, Any] = {}
+
+    def s14():
+        from eval_harness.kv_recovery.config import LAYER_SELECTED_STRATEGIES
+        from eval_harness.kv_recovery.sensitivity import candidate_layers, measure_layer_sensitivity, select_layers_by_sensitivity
+        used = {e.id for e in train_ex} | {e.id for e in val_ex}
+        calib, cstats = load_split(cfg, tokenizer, "calibration", model=model, pipeline=student._pipe, exclude_ids=used)
+        assert_disjoint(train_ex, calib); assert_disjoint(val_ex, calib)
+        strategy = cfg.trainable.strategy if cfg.trainable.strategy in LAYER_SELECTED_STRATEGIES else "attention_projections"
+        r1 = select_layers_by_sensitivity(cfg, teacher, student, compressor, calib, spec=spec, mode=mode, strategy=strategy)
+        r2 = select_layers_by_sensitivity(cfg, teacher, student, compressor, calib, spec=spec, mode=mode, strategy=strategy)
+        assert r1.scores == r2.scores and r1.selected == r2.selected, "sensitivity measurement is not deterministic"
+        assert all(math.isfinite(v) and v >= 0.0 for v in r1.scores.values()), r1.scores
+        hooked = list(spec.full_attention_layers)
+        assert all(r1.scores[l] > 0.0 for l in hooked), {l: r1.scores[l] for l in hooked}
+        pre = [l for l in r1.layers if l < spec.first_full_attention_layer]
+        assert all(r1.scores[l] == 0.0 for l in pre), {l: r1.scores[l] for l in pre}      # untouched by K/V pruning
+        cands = candidate_layers(strategy, spec)
+        assert set(r1.selected) <= set(cands), (r1.selected, cands)
+        assert len(r1.selected) == min(int(cfg.trainable.sensitivity.top_k), len(cands)), r1.selected
+        assert r1.ranking == sorted(r1.layers, key=lambda l: (-r1.scores[l], -l)), "ranking inconsistent with scores"
+        zero = measure_layer_sensitivity(teacher, student, None, calib[:1], spec=spec, mode=mode)
+        assert all(v == 0.0 for sc in zero.values() for v in sc.values()), zero       # no compressor -> no divergence
+        assert_no_hooks(model); assert_no_hooks(teacher._model)
+        print(r1.table(), flush=True)
+        (run_dir / "layer_sensitivity.json").write_text(json.dumps(r1.to_dict(), indent=2))
+        sens.update(report=r1, calibration=calib)
+        return {"selected": r1.selected, "ranking": r1.ranking, "scores": {str(l): round(v, 6) for l, v in r1.scores.items()},
+                "n_calibration": len(calib), "calibration_stats": cstats.as_dict(), "seconds": r1.seconds, "notes": r1.notes}
+    rep.run("S14_layer_sensitivity_selection", s14)
+    resolved = sens["report"].selected if "report" in sens else None
+    if cfg.trainable.layers == "sensitivity" and resolved is None:
+        print(json.dumps(rep.checks, indent=2, default=str)); return 1
+
     # ---- trainable + alignment setup -------------------------------------------------------------------
-    names = select_trainable(model, spec, cfg.trainable)
+    names = select_trainable(model, spec, cfg.trainable, resolved_layers=resolved)
     expected = freeze_all_but(model, names)
     summary = parameter_summary(model, spec)
     first_tl = summary["first_trainable_layer"]

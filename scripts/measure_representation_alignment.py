@@ -76,7 +76,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     import torch
 
     from eval_harness.kv_recovery.alignment import alignment_keys_for, position_index
-    from eval_harness.kv_recovery.checkpoint import apply_delta, checkpoint_digest
+    from eval_harness.kv_recovery.checkpoint import apply_delta, checkpoint_digest, load_metadata
     from eval_harness.kv_recovery.data import build_examples, read_jsonl
     from eval_harness.kv_recovery.hidden_states import FINAL_NORM_KEY, gather_positions
     from eval_harness.kv_recovery.metrics import representation_metrics
@@ -91,7 +91,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     model = adapter._model
     spec = inspect_model(model)
     compressor = build_compressor(cfg)
-    names = select_trainable(model, spec, cfg.trainable)
+    # A sensitivity-selected run stores its resolved layers in the checkpoint metadata; re-use them
+    # (never re-measure here: the delta must be compared on the layers it was actually trained on).
+    resolved = None
+    if cfg.trainable.layers == "sensitivity":
+        sel = (load_metadata(ckpt).get("layer_selection") or {}).get("selected")
+        if not sel:
+            raise SystemExit(f"{ckpt}: trainable.layers=sensitivity but the checkpoint metadata records no layer_selection.selected")
+        resolved = [int(i) for i in sel]
+        print(f"sensitivity-selected trainable layers (from checkpoint metadata): {resolved}", flush=True)
+    names = select_trainable(model, spec, cfg.trainable, resolved_layers=resolved)
     first_tl = first_trainable_layer(names, spec)
     aligned = alignment_keys_for(cfg.alignment, spec.n_layers, first_trainable_layer=first_tl)
     keys: List[Any] = (list(range(spec.n_layers)) + ([FINAL_NORM_KEY] if spec.has_final_norm else [])) if args.all_layers else list(aligned)
@@ -171,6 +180,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                      "format": cfg.data.format, "suffix_mode": cfg.data.suffix_mode, "segment_mode": mode,
                      "data_path": path, "window_stats": stats.as_dict()},
         "aligned_layers": [str(k) for k in aligned], "trainable_first_layer": first_tl,
+        "trainable_layers_resolved": resolved,
         "hooked_layers": list(spec.full_attention_layers), "layers": layers_out,
         "per_position_bucket": {name: {b: {m: sum(v) / len(v) for m, v in mm.items()} for b, mm in bb.items()}
                                 for name, bb in buckets.items()},

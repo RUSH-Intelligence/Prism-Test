@@ -66,7 +66,7 @@ def expand(matrix: dict, *, models: Optional[List[str]] = None, contexts: Option
     sel_ctx = contexts or (prim.get("contexts") if primary else None) or list(ctxs)
     sel_comp = compressors or matrix["compressors"]
     sel_ratios = ratios or (prim.get("ratios") if primary else None) or matrix["ratios"]
-    sel_train = trainables or list(matrix["trainable"])
+    sel_train = trainables or (prim.get("trainable") if primary else None) or list(matrix["trainable"])
     cells: List[MatrixCell] = []
 
     def make(mk, ctx, comp, r, tk, extra=None, abl=None):

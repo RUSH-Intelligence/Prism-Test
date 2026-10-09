@@ -9,6 +9,9 @@ config.py        ``RecoveryConfig`` (YAML + dotted CLI overrides) and the ONE sh
 model_spec.py    per-family isolation (decoder layers, full-attention layers,
                  parameter-name prefixes) built on ``kv_compression.base`` helpers.
 trainable.py     trainable-subset selection, freezing, parameter accounting.
+sensitivity.py   compression-sensitivity layer selection (``trainable.layers: sensitivity``):
+                 E_l = ||H_dense - H_comp||_F / (||H_dense||_F + eps) per layer on held-out
+                 calibration windows -> top-k eligible layers.
 hidden_states.py forward-hook capture of decoder-layer outputs (+ final norm).
 alignment.py     layer / position resolution and the alignment losses.
 student.py       teacher / student execution through the production

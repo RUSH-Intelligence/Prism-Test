@@ -2,7 +2,8 @@
 # Initial experiment matrix (spec §24) — expanded by scripts/kv_recovery_matrix.py
 # ============================================================================
 #   python scripts/kv_recovery_matrix.py --matrix configs/kv_recovery/matrix.yaml --dry-run
-#   python scripts/kv_recovery_matrix.py --primary --submit        # 16K x ratio 0.75 only (16 runs)
+#   python scripts/kv_recovery_matrix.py --primary --submit        # 16K x ratio 0.75 only (24 runs, done cells skipped)
+#   python scripts/kv_recovery_matrix.py --primary --trainable qo_sens4,kv_sens16 --submit   # the sensitivity-selected cells
 #   python scripts/kv_recovery_matrix.py --models ministral_3b --compressors cur --trainable qo_last4 --submit
 #
 # Every cell = <base config> + the `--set` overrides of its axes, run_name =
@@ -21,20 +22,29 @@ contexts:
 compressors: [knorm, cur]          # -> kv_compression.kv_compressor
 ratios: [0.75, 0.5]                # -> kv_compression.compression_ratio (fraction PRUNED)
 
-# Budget-matched trainable subsets (spec §24: last-1, last-2 blocks, K/V, Q/O).
-# Projections are restricted to a layer subset so the parameter budgets stay
-# comparable (q+o over ALL 26 Ministral layers would be 654M = 19 % of the LM):
+# Budget-matched trainable subsets. Two families:
+#   static   (spec §24: last-1, last-2 blocks, Q/O on the last 4 attention layers, K/V on the last 16)
+#   sensitivity-selected (paper §"Identifying Compression-Sensitive Layers"): the SAME projections and the
+#            SAME layer count, but the layers are the top-k by E_l = ||H_dense - H_comp||_F / (||H_dense||_F + eps)
+#            measured on held-out calibration windows (trainable.layers: sensitivity) -> a controlled
+#            comparison "heuristic position" vs "measured misalignment" at an identical parameter budget.
+# Projections are restricted to a layer subset so the parameter budgets stay comparable (q+o over ALL
+# 26 Ministral layers would be 654M = 19 % of the LM):
 #   Ministral-3-3B: last1 116M | last2 233M | qo_last4 (layers 22-25) 100.7M | kv_attn (last 16 attn layers) 101M
+#                   qo_sens4 (top-4 sensitive layers) 100.7M | kv_sens16 (top-16 sensitive layers) 101M
 #   Qwen3.5-4B:     last1 (full-attn block 31) | last2 (30 linear + 31) | qo_last4 (19,23,27,31) | kv_attn (all 8 full layers)
+#                   qo_sens4 (top-4 of the 8 full layers) | kv_sens16 -> top-4 of the 8 full layers (override below; top-16 == all)
 trainable:
   last1:
     trainable.strategy: last_n_blocks
     trainable.n: 1
+    trainable.layers: all
     alignment.layers.strategy: last_n
     alignment.layers.n: 1
   last2:
     trainable.strategy: last_n_blocks
     trainable.n: 2
+    trainable.layers: all
     alignment.layers.strategy: last_n
     alignment.layers.n: 2
   qo_last4:
@@ -47,12 +57,28 @@ trainable:
     trainable.modules: [k_proj, v_proj]
     trainable.layers: "last_n:16"
     alignment.layers.strategy: from_first_trainable
+  qo_sens4:
+    trainable.strategy: attention_projections
+    trainable.modules: [q_proj, o_proj]
+    trainable.layers: sensitivity
+    trainable.sensitivity.top_k: 4
+    trainable.sensitivity.num_examples: 8
+    alignment.layers.strategy: from_first_trainable
+  kv_sens16:
+    trainable.strategy: attention_projections
+    trainable.modules: [k_proj, v_proj]
+    trainable.layers: sensitivity
+    trainable.sensitivity.top_k: 16
+    trainable.sensitivity.num_examples: 8
+    alignment.layers.strategy: from_first_trainable
 
 # Per-model overrides of a trainable subset (applied on top of the generic ones).
 model_overrides:
   qwen35_4b:
     kv_attn:
       trainable.layers: all          # all 8 full-attention layers (42M)
+    kv_sens16:
+      trainable.sensitivity.top_k: 4 # 8 full-attention layers in total: top-16 would equal kv_attn; top-4 is a real selection
 
 # Pre-registered hyper-parameters (identical for every cell).
 hyperparameters:
@@ -63,10 +89,12 @@ hyperparameters:
   data.num_val_examples: 16
   data.suffix_length: 512
 
-# The pilot preset: 16K, ratio 0.75, all four subsets, both compressors, both models (16 runs).
+# The pilot preset: 16K, ratio 0.75, both compressors, both models; six subsets (24 runs; the 16 static
+# ones were run 2026-10-06, the sensitivity-selected ones are added by the layer-selection change).
 primary:
   contexts: [16k]
   ratios: [0.75]
+  trainable: [last1, last2, qo_last4, kv_attn, qo_sens4, kv_sens16]
 
 # The pilot cell (ablations run on it only, one axis at a time).
 pilot: {model: ministral_3b, context: 16k, compressor: cur, ratio: 0.75, trainable: qo_last4}

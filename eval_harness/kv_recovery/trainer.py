@@ -10,6 +10,7 @@ with the objective replaced by the alignment loss.
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import hashlib
 import json
 import logging
@@ -102,7 +103,7 @@ def teacher_digest(cfg: RecoveryConfig) -> str:
         "alignment": {"layers": cfg.alignment.layers.__dict__, "include_final_norm": cfg.alignment.include_final_norm,
                       "positions": cfg.alignment.positions.__dict__},
         "segment_mode": cfg.student.segment_mode,
-        "trainable": cfg.trainable.__dict__,
+        "trainable": dataclasses.asdict(cfg.trainable),
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()[:16]
 

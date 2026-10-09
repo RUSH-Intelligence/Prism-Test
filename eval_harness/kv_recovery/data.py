@@ -37,6 +37,7 @@ class WindowStats:
     n_used: int = 0
     n_skipped_short: int = 0
     n_skipped_empty: int = 0
+    n_skipped_excluded: int = 0
     context_tokens: int = 0
     suffix_tokens: int = 0
     format: str = "raw"
@@ -141,18 +142,24 @@ def _chat_example(row: dict, tokenizer, dcfg: DataCfg, *, pipeline, rng: random.
 
 
 def build_examples(rows: Iterable[dict], tokenizer, dcfg: DataCfg, *, n_examples: int, seed: int,
-                   model=None, pipeline=None) -> Tuple[List[Example], WindowStats]:
-    """The first ``n_examples`` usable windows of ``rows`` in seeded order."""
+                   model=None, pipeline=None, exclude_ids: Optional[Iterable[str]] = None
+                   ) -> Tuple[List[Example], WindowStats]:
+    """The first ``n_examples`` usable windows of ``rows`` in seeded order (rows whose id is in
+    ``exclude_ids`` are skipped — used to carve a calibration set disjoint from train / val)."""
     rows = list(rows)
     order = list(range(len(rows)))
     random.Random(seed).shuffle(order)
     stats = WindowStats(n_rows=len(rows), format=dcfg.format, suffix_mode=dcfg.suffix_mode)
     bos_id = bos_id_for(tokenizer, model)
+    excluded = set(str(i) for i in (exclude_ids or ()))
     examples: List[Example] = []
     for idx in order:
         if len(examples) >= n_examples:
             break
         row = rows[idx]
+        if str(row.get("id", idx)) in excluded:
+            stats.n_skipped_excluded += 1
+            continue
         rng = random.Random(f"{seed}:{row.get('id', idx)}")
         if dcfg.format == "raw":
             ex = _raw_example(row, tokenizer, dcfg, bos_id=bos_id, rng=rng)
@@ -175,12 +182,17 @@ def build_examples(rows: Iterable[dict], tokenizer, dcfg: DataCfg, *, n_examples
         stats.ids.append(ex.id)
     if len(examples) < n_examples:
         raise ValueError(f"only {len(examples)} usable windows of {n_examples} requested "
-                         f"(rows={len(rows)}, too short={stats.n_skipped_short}, empty={stats.n_skipped_empty}); "
-                         f"prepare more / longer rows or lower data.max_length")
+                         f"(rows={len(rows)}, too short={stats.n_skipped_short}, empty={stats.n_skipped_empty}, "
+                         f"excluded={stats.n_skipped_excluded}); prepare more / longer rows, lower data.max_length"
+                         + (" or lower trainable.sensitivity.num_examples / data.num_val_examples" if excluded else ""))
     return examples, stats
 
 
-def load_split(cfg: RecoveryConfig, tokenizer, which: str, *, model=None, pipeline=None) -> Tuple[List[Example], WindowStats]:
+def load_split(cfg: RecoveryConfig, tokenizer, which: str, *, model=None, pipeline=None,
+               exclude_ids: Optional[Iterable[str]] = None) -> Tuple[List[Example], WindowStats]:
+    """``train`` / ``val`` windows, or the ``calibration`` windows of the sensitivity layer selection
+    (``trainable.sensitivity``: ``num_examples`` rows of ``split`` under seed ``data.seed + 2``, skipping
+    ``exclude_ids`` — pass the train and val window ids so the three sets are disjoint)."""
     d = cfg.data
     if which == "train":
         path, n, seed = d.path, d.num_train_examples, d.seed
@@ -188,12 +200,19 @@ def load_split(cfg: RecoveryConfig, tokenizer, which: str, *, model=None, pipeli
         if d.val_path is None:
             return [], WindowStats(format=d.format, suffix_mode=d.suffix_mode)
         path, n, seed = d.val_path, d.num_val_examples, d.seed + 1
+    elif which == "calibration":
+        s = cfg.trainable.sensitivity
+        path = d.val_path if s.split == "val" else d.path
+        if path is None:
+            raise ValueError("trainable.sensitivity.split='val' needs data.val_path")
+        n, seed = s.num_examples, d.seed + 2
     else:
         raise ValueError(which)
     if n == 0:
         return [], WindowStats(format=d.format, suffix_mode=d.suffix_mode)
     rows = read_jsonl(path)
-    return build_examples(rows, tokenizer, d, n_examples=n, seed=seed, model=model, pipeline=pipeline)
+    return build_examples(rows, tokenizer, d, n_examples=n, seed=seed, model=model, pipeline=pipeline,
+                          exclude_ids=exclude_ids)
 
 
 def assert_disjoint(train: List[Example], val: List[Example]) -> None:

@@ -66,11 +66,18 @@ loss:
   temperature: 1.0
 
 trainable:
-  strategy: last_n_blocks            # last_n_blocks | attention_projections | mlp | norms | full
-  n: 1
-  modules: [k_proj, v_proj]          # attention_projections only
-  layers: all                        # attention_projections / mlp / norms: all | "last_n:<k>" | [indices]
+  strategy: attention_projections    # last_n_blocks | blocks | attention_projections | mlp | norms | full
+  n: 1                               # last_n_blocks only
+  modules: [q_proj, o_proj]          # attention_projections only (the calibrated set {W_Q, W_O} of the selected layers)
+  layers: sensitivity                # attention_projections / blocks / mlp / norms: all | "last_n:<k>" | [indices] | sensitivity
   include_embeddings: false
+  sensitivity:                       # layers: sensitivity -> top_k layers with the largest hidden-state misalignment
+    top_k: 2                         #   E_l = ||H_dense - H_comp||_F / (||H_dense||_F + eps) over the suffix tokens,
+    num_examples: 2                  #   (smoke: 2 synthetic rows)   averaged over `num_examples` held-out calibration windows (val rows disjoint
+    split: val                       #   from the validation windows); only K/V-carrying layers are eligible
+    positions: {strategy: all, n: 128}
+    eps: 1.0e-6
+    aggregate: mean                  # mean | median over calibration windows
 
 optim:
   learning_rate: 1.0e-4
