@@ -181,6 +181,8 @@ normalized MSE / relative error for pretrained-compressed and recovered-compress
 
 ## 4. How to run
 
+Step-by-step reproduction with the expected output of every step: [kv_recovery_reproduce.md](kv_recovery_reproduce.md).
+
 ```bash
 python scripts/prepare_kv_recovery_data.py --num-train 256 --num-val 32 --seed 42   # login node
 CONFIG=configs/kv_recovery/smoke_ministral_3b.yaml EXTRA=--with-benchmark sbatch scripts/slurm/kv_recovery_smoke.sbatch
@@ -191,6 +193,8 @@ python scripts/eval_kv_recovery.py run --config configs/kv_recovery/ministral_3b
 python scripts/eval_kv_recovery.py report --config configs/kv_recovery/ministral_3b.yaml --run-name demo
 python scripts/measure_representation_alignment.py --config ... --run-name demo
 python scripts/kv_recovery_matrix.py --primary --dry-run
+python scripts/measure_layer_sensitivity.py --config configs/kv_recovery/ministral_3b.yaml --sources ruler16k,ruler32k --compressors knorm,cur --ratios 0.75,0.5   # analysis only
+python scripts/plot_layer_sensitivity.py --inputs outputs/kv_recovery/sensitivity --out-dir docs/figures
 ```
 
 ## 5. Experiment matrix (spec §24)
@@ -462,30 +466,83 @@ selected layer, so `kv_sens16` on Ministral/cur aligns layers 0–25 while `kv_a
 `kv_sens16` cells are top-4 k+v (21 M parameters, the model override) and the knorm / cur selections differ in exactly one
 layer (31 vs 11). All eight runs lowered the held-out alignment loss (−12.6 % to −65.8 %); none triggered the instability rule.
 
-**Sensitivity-selected pilot evaluation** (`compressed_recovered` arms through `eval_kv_recovery.py run --submit`; dense and
-compressed cells reused; paired bootstrap, 2 000 resamples; cells landing 2026-10-08/09 — the table is updated as they
-complete, `scripts/kv_recovery_pilot_summary.py --glob 'outputs/kv_recovery/*_16k_*_r075_*sens*'` regenerates it):
+**Sensitivity-selected pilot evaluation** (`compressed_recovered` arms, dense and compressed cells reused; paired
+task-stratified bootstrap, 2 000 resamples; 23 of 24 cells complete on 2026-10-09 — the last RULER-16K cell of
+Qwen3.5 / cur / `kv_sens16` was resubmitted after a transient HF-cache error and is running; **bold** = CI excludes 0;
+`scripts/kv_recovery_pilot_summary.py --glob 'outputs/kv_recovery/*_16k_*_r075_*sens*'` regenerates the raw table):
 
-| run | benchmark | dense | compressed | recovered | drop | recovery [CI] | fraction [CI] | static twin's recovery |
+| model · compressor | subset | benchmark | dense | compressed | recovered (sens) | recovery sens [CI] | fraction | recovery heuristic twin [CI] |
 |---|---|---|---|---|---|---|---|---|
-| `ministral_3b_16k_knorm_r075_qo_sens4` (layers 12–15) | ruler16k | 89.2 | 29.3 | 31.6 | 59.9 | **+2.3 [1.2, 3.3]** | 3.8 % [2, 5] | `qo_last4` (22–25): −0.1 [−0.7, 0.5] |
-| `ministral_3b_16k_knorm_r075_kv_sens16` (layers 5–19, 22) | ruler16k | 89.2 | 29.3 | 30.3 | 59.9 | **+1.0 [0.2, 2.0]** | 1.7 % [0, 3] | `kv_attn` (10–25): −0.0 [−1.0, 0.9] |
-| `ministral_3b_16k_cur_r075_qo_sens4` (layers 2–5) | ruler16k | 89.2 | 33.5 | 34.9 | 55.7 | +1.4 [−0.1, 3.0] | 2.5 % [−0, 5] | `qo_last4` (22–25): +1.8 [0.9, 2.8] |
-| `ministral_3b_16k_knorm_r075_kv_sens16` (layers 5–19, 22) | ruler32k | 88.4 | 27.5 | 30.0 | 60.9 | **+2.5 [1.4, 3.6]** | 4.2 % [2, 6] | `kv_attn` (10–25): +1.4 [0.4, 2.4] |
+| Ministral-3-3B · knorm | `qo_sens4` | ruler16k | 89.2 | 29.3 | 31.6 | **+2.3 [1.2, 3.3]** | 3.8 % | `qo_last4`: -0.1 [-0.7, 0.5] |
+| Ministral-3-3B · knorm | `qo_sens4` | ruler32k | 88.4 | 27.5 | 31.2 | **+3.7 [2.7, 4.8]** | 6.1 % | `qo_last4`: +0.4 [-0.2, 1.1] |
+| Ministral-3-3B · knorm | `qo_sens4` | longbench | 44.3 | 29.9 | 31.8 | **+1.9 [1.1, 2.6]** | 12.9 % | `qo_last4`: **+0.5 [0.2, 0.9]** |
+| Ministral-3-3B · knorm | `kv_sens16` | ruler16k | 89.2 | 29.3 | 30.3 | **+1.0 [0.2, 2.0]** | 1.7 % | `kv_attn`: -0.0 [-1.0, 0.9] |
+| Ministral-3-3B · knorm | `kv_sens16` | ruler32k | 88.4 | 27.5 | 30.0 | **+2.5 [1.4, 3.6]** | 4.2 % | `kv_attn`: **+1.4 [0.4, 2.4]** |
+| Ministral-3-3B · knorm | `kv_sens16` | longbench | 44.3 | 29.9 | 31.6 | **+1.7 [1.0, 2.4]** | 12.0 % | `kv_attn`: **+1.1 [0.4, 1.7]** |
+| Ministral-3-3B · cur | `qo_sens4` | ruler16k | 89.2 | 33.5 | 34.9 | +1.4 [-0.1, 3.0] | 2.5 % | `qo_last4`: **+1.8 [0.9, 2.8]** |
+| Ministral-3-3B · cur | `qo_sens4` | ruler32k | 88.4 | 31.1 | 33.1 | **+2.0 [0.4, 3.6]** | 3.5 % | `qo_last4`: **+1.3 [0.5, 2.1]** |
+| Ministral-3-3B · cur | `qo_sens4` | longbench | 44.3 | 41.4 | 41.9 | +0.5 [-0.2, 1.1] | 16.1 % | `qo_last4`: +0.2 [-0.1, 0.6] |
+| Ministral-3-3B · cur | `kv_sens16` | ruler16k | 89.2 | 33.5 | 42.0 | **+8.5 [6.5, 10.5]** | 15.2 % | `kv_attn`: **+4.2 [2.7, 5.8]** |
+| Ministral-3-3B · cur | `kv_sens16` | ruler32k | 88.4 | 31.1 | 37.3 | **+6.1 [4.2, 8.0]** | 10.7 % | `kv_attn`: **+2.8 [1.2, 4.3]** |
+| Ministral-3-3B · cur | `kv_sens16` | longbench | 44.3 | 41.4 | 43.1 | **+1.7 [0.9, 2.5]** | 57.7 % | `kv_attn`: **+1.1 [0.4, 1.8]** |
+| Qwen3.5-4B · knorm | `qo_sens4` | ruler16k | 96.1 | 46.4 | 47.3 | +0.9 [-0.5, 2.3] | 1.8 % | `qo_last4`: **+1.2 [0.0, 2.5]** |
+| Qwen3.5-4B · knorm | `qo_sens4` | ruler32k | 96.2 | 51.3 | 52.8 | **+1.5 [0.2, 2.7]** | 3.4 % | `qo_last4`: **+2.0 [0.8, 3.2]** |
+| Qwen3.5-4B · knorm | `qo_sens4` | longbench | 44.4 | 30.6 | 31.9 | **+1.3 [0.7, 2.0]** | 9.5 % | `qo_last4`: **+0.9 [0.3, 1.5]** |
+| Qwen3.5-4B · knorm | `kv_sens16` | ruler16k | 96.1 | 46.4 | 48.4 | **+2.0 [0.9, 3.2]** | 4.1 % | `kv_attn`: +1.0 [-0.3, 2.4] |
+| Qwen3.5-4B · knorm | `kv_sens16` | ruler32k | 96.2 | 51.3 | 54.0 | **+2.7 [1.4, 3.9]** | 5.9 % | `kv_attn`: **+2.9 [1.4, 4.3]** |
+| Qwen3.5-4B · knorm | `kv_sens16` | longbench | 44.4 | 30.6 | 31.3 | **+0.7 [0.1, 1.3]** | 5.0 % | `kv_attn`: **+1.0 [0.4, 1.7]** |
+| Qwen3.5-4B · cur | `qo_sens4` | ruler16k | 96.1 | 59.2 | 59.6 | +0.3 [-1.0, 1.6] | 0.9 % | `qo_last4`: +0.1 [-0.8, 1.1] |
+| Qwen3.5-4B · cur | `qo_sens4` | ruler32k | 96.2 | 57.6 | 58.1 | +0.5 [-0.7, 1.8] | 1.3 % | `qo_last4`: -0.3 [-1.3, 0.8] |
+| Qwen3.5-4B · cur | `qo_sens4` | longbench | 44.4 | 37.3 | 38.7 | **+1.3 [0.7, 2.0]** | 18.8 % | `qo_last4`: **+0.5 [0.1, 1.0]** |
+| Qwen3.5-4B · cur | `kv_sens16` | ruler16k | 96.1 | 59.2 | pending | pending | — | `kv_attn`: -0.0 [-1.3, 1.3] |
+| Qwen3.5-4B · cur | `kv_sens16` | ruler32k | 96.2 | 57.6 | 57.5 | -0.1 [-1.1, 1.0] | -0.2 % | `kv_attn`: +0.2 [-1.1, 1.6] |
+| Qwen3.5-4B · cur | `kv_sens16` | longbench | 44.4 | 37.3 | 38.3 | **+1.0 [0.5, 1.5]** | 14.2 % | `kv_attn`: **+1.6 [1.0, 2.3]** |
 
-First reading (RULER-16K, Ministral): with **knorm**, where both position-heuristic subsets recovered nothing, the same
-projections on the measured layers recover +2.3 (q+o, layers 12–15; significant) and +1.0 (k+v, layers 5–19 + 22;
-significant). The q+o gain sits on `cwe` (+21.2 [16.6, 25.9]), `niah_single_1` (+10.0) and `qa_1` (+7.0), with
-regressions on `vt` (−5.8 [−9.6, −2.2]) and `fwe` (−3.3); the k+v gain on `niah_single_1` (+7.0) and `qa_1` (+5.0).
-With **cur**, the early-layer pick (2–5) is on par with the heuristic rather than better: +1.4 [−0.1, 3.0] (not
-significant) against `qo_last4`'s +1.8 [0.9, 2.8], trading `niah_multikey_2` (+13.0 [5, 21]) and `qa_1` (+8.0) against
-`niah_multikey_1` (−7.0 [−15, 1]). The needle tasks that compression destroys outright (`niah_multikey_3`,
-`niah_single_3`, and under knorm also `niah_multikey_1/2`, `niah_multiquery`, `niah_single_2`) stay at 0 in every cell.
-The first transfer result, RULER-32K for Ministral / knorm / k+v, is also above its heuristic twin: +2.5 [1.4, 3.6] vs +1.4
-[0.4, 2.4] (`niah_single_1` +15.0 [7, 23], `qa_2` +6.0). The remaining 20 cells (Ministral cur k+v, all four Qwen3.5 runs,
-RULER-32K and LongBench everywhere) were queued on 2026-10-08 21:50 CDT (jobs 320600–320605, 320608–320613, 320619–320621, 320623–320625, 320657–320659, 320682–320684);
-`python scripts/eval_kv_recovery.py report --run-name <run>` per run followed by
-`python scripts/kv_recovery_pilot_summary.py --glob 'outputs/kv_recovery/*_16k_*_r075_*sens*'` produces the full table.
+Reading:
+
+* **The same projections on measured layers beat the position heuristic in 14 of the 23 comparable cells and lose in 2.**
+  The clearest win is Ministral / cur / k+v: the sensitivity-selected layers 0–15 recover **+8.5 [6.5, 10.5]** on RULER-16K
+  (15 % of the gap; the heuristic's layers 10–25: +4.2), **+6.1** on RULER-32K (vs +2.8) and **+1.7** on LongBench
+  (vs +1.1) — twice the best cell of the position-heuristic pilot, at an identical parameter budget. Ministral / knorm
+  q+o on layers 12–15 turns the heuristic's zero into +2.3 / +3.7 / +1.9 across the three benchmarks.
+* **Where the heuristic already sat on the right layers the two tie.** On Qwen3.5 the measured top-4 (15, 19, 27, 31 for
+  knorm; 11, 15, 19, 27 for cur) shares two to three layers with the heuristic (19, 23, 27, 31), and the paired
+  differences are within noise except LongBench (sensitivity better for q+o: +1.3 vs +0.9 / +0.5; heuristic better for
+  k+v: +1.0 / +1.6 vs +0.7 / +1.0 — but `kv_sens16` on Qwen3.5 trains 4 of the 8 layers, half the parameters of `kv_attn`).
+* **Ministral / cur / q+o is the one exception**: the early-layer pick (2–5) is on par with the heuristic (+1.4 n.s. /
+  **+2.0** / +0.5 vs **+1.8** / **+1.3** / +0.2). Its k+v sibling, which covers layers 0–15, is the best cell overall —
+  calibrating the early layers helps when enough of the stack above them is adapted too.
+* Effect sizes remain modest in absolute terms (≤ 15 % of a 56-point RULER gap); the alignment signal, not the layer choice,
+  is still the main lever, and the pre-registered ablations on the signal remain the next step.
+
+### Where the misalignment sits on RULER-16K / RULER-32K (figures, 2026-10-09)
+
+`scripts/measure_layer_sensitivity.py --sources ruler16k,ruler32k` measures the same `E_l` on benchmark contexts
+(2 seeded rows per task from the 100-row evaluation pool = 26 windows per length; the evaluation's own prompt shaping;
+the measured region is the question + answer prefix + gold answer, teacher-forced; **analysis only** — nothing here feeds
+training or selection), and `scripts/plot_layer_sensitivity.py` draws the figures (`docs/figures/`; jobs 321484 / 321485).
+
+![Ministral-3-3B profiles](figures/mistralai--Ministral-3-3B-Instruct-2512__profiles.png)
+
+![Qwen3.5-4B profiles](figures/Qwen--Qwen3.5-4B__profiles.png)
+
+Per-task small multiples (RULER-16K vs RULER-32K): `figures/<model>__tasks__knorm_r075.png`, `figures/<model>__tasks__cur_r075.png`.
+
+| | Ministral-3-3B (26 layers) | Qwen3.5-4B (K/V at 3, 7, …, 31) |
+|---|---|---|
+| shape on RULER | unimodal for **both** compressors: rise from layer 0, plateau over 12–17, slow decline to 20–25, peak at 13–15 (knorm @ 0.75: L15 0.49 / 0.52; cur @ 0.75: L15 0.62 / L13 0.63 at 16K / 32K) | climbs through the stack in steps (one per K/V layer; the linear-attention layers in between carry the state unchanged) and peaks at the **last** K/V layer 31 (knorm @ 0.75: 0.52 / 0.51; cur: 0.48 / 0.48) |
+| vs the PG-19 profile | the early-layer cur peak (layers 2–5) is **absent**; on RULER cur sits above knorm at every layer, on PG-19 knorm was above cur in the middle | PG-19 peaked at layer 15; on RULER the late K/V layers (27, 31) dominate |
+| magnitude vs PG-19 | 1.3–1.5× larger (mean over layers 0.42 knorm / 0.54 cur vs 0.33 / 0.37) | ≈ 2× larger (mean over K/V layers 0.40 / 0.39 vs 0.22 / 0.16) |
+| 16K vs 32K | the same curve within ≈ 0.02 (means 0.419 vs 0.430 knorm, 0.541 vs 0.540 cur) | the same within ≈ 0.02 (0.399 vs 0.381, 0.387 vs 0.381) |
+| top-4 on RULER | [13, 14, 15, 16] in every setting (cur @ 0.5 at 16K: [12, 13, 14, 15]) — 3 of 4 overlap with the PG-19 knorm pick, 0 of 4 with the PG-19 cur pick | [15, 19, 27, 31] for knorm @ 0.75 and cur (= the PG-19 knorm pick; the PG-19 cur pick differs by one layer), [15, 23, 27, 31] for knorm @ 0.5 |
+| per task | `fwe` and `vt` under knorm stay flat and low (0.15–0.4; the tasks compression does not hurt); `niah_multikey_3` rises monotonically to 1.2 at the last layer (the task compression destroys); the early-layer cur signature comes from needle tasks (`niah_single_1` jumps to 0.75 at layer 2) and `vt`; `qa_1` / `qa_2` are the only tasks where 16K and 32K differ visibly | `fwe` flat at 0.15; `cwe` jumps at the last layers (0.35 → 0.6); needle tasks saturate at layer 15–19; `qa_1` is higher at 16K than at 32K over the upper half of the stack |
+
+Reading: the question/answer tokens of RULER are perturbed more, and in different layers, than PG-19 continuations are —
+the training-distribution profile that drives the layer selection is a proxy, and on Ministral it picked cur's layers
+where RULER shows no peak. Context length barely matters: at a fixed compression ratio the 16K and 32K profiles are
+indistinguishable, so a selection made at 16K transfers to 32K (consistent with the RULER-32K recoveries above). Measuring
+the selection signal on benchmark contexts would be the obvious next experiment, but it crosses the no-benchmark-data
+line of this protocol; a held-out *task-shaped* calibration set (synthetic needle/QA prompts) would not.
 
 ### Not run
 

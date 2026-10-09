@@ -215,6 +215,87 @@ def load_split(cfg: RecoveryConfig, tokenizer, which: str, *, model=None, pipeli
                           exclude_ids=exclude_ids)
 
 
+# ---------------------------------------------------------------------------
+# Benchmark-context windows — ANALYSIS ONLY (never for training or layer selection)
+# ---------------------------------------------------------------------------
+def benchmark_rows(bench_name: str, subsets: Optional[List[str]], *, pool_rows: int = 100, rows_per_task: int = 2,
+                   seed: int = 0, request_offset: int = 0) -> List[dict]:
+    """A seeded sample of ``rows_per_task`` rows per task from the first ``pool_rows`` rows of each
+    subset — the same pool the evaluation protocol scores (``max_requests`` rows from
+    ``request_offset``). Rows are plain dicts with the benchmark's columns plus ``_task`` / ``_row``."""
+    from eval_harness.benchmarks.registry import get_benchmark
+
+    bench = get_benchmark(bench_name)
+    df = bench.load(subsets)
+    if "task" not in df.columns:
+        raise ValueError(f"{bench_name}: rows carry no 'task' column")
+    out: List[dict] = []
+    for task in list(dict.fromkeys(df["task"].astype(str).tolist())):
+        sub = df[df["task"].astype(str) == task].iloc[int(request_offset):int(request_offset) + int(pool_rows)]
+        idx = list(range(len(sub)))
+        rng = random.Random(f"{seed}:{bench_name}:{task}")
+        pick = sorted(rng.sample(idx, min(int(rows_per_task), len(idx))))
+        for i in pick:
+            row = sub.iloc[i].to_dict()
+            row["_task"], row["_row"] = task, int(i) + int(request_offset)
+            out.append(row)
+    return out
+
+
+def benchmark_example(row: dict, tokenizer, *, pipeline, bench_name: str, region: str = "question_answer",
+                      use_chat_template: bool = True, strip_auto_system_block: bool = True) -> Example:
+    """One benchmark row -> ``[context | measured region]`` shaped EXACTLY as the evaluation
+    shapes it (``ResearchGenerationPipeline.preprocess``: chat template, stripped auto system block,
+    ``query_aware: false`` so the question never enters the context). The measured region is the
+    question (+ chat suffix + the benchmark's answer prefix) — ``region='question'`` — optionally
+    followed by the gold answer, teacher-forced (``'question_answer'``, the paper's question/answer
+    region). Nothing here feeds training or selection; it exists for the layer-wise analysis."""
+    from eval_harness.benchmarks.common import parse_answers
+
+    if region not in ("question", "question_answer"):
+        raise ValueError(f"region must be 'question' or 'question_answer', got {region!r}")
+    enc = pipeline.preprocess(str(row["context"]), questions=[str(row["question"])],
+                              answer_prefix=str(row.get("answer_prefix", "") or ""), max_context_length=int(1e10),
+                              use_chat_template=use_chat_template, strip_auto_system_block=strip_auto_system_block)
+    ctx = enc["context_ids"].to(torch.long)
+    suffix = enc["questions_ids"][0].to(torch.long)
+    n_question = int(suffix.shape[1])
+    n_answer = 0
+    if region == "question_answer":
+        answers = parse_answers(row.get("answer", ""))
+        text = ", ".join(a for a in answers if a) if len(answers) > 1 and str(row.get("_task", "")).startswith(("cwe", "niah_multi")) \
+            else (answers[0] if answers else "")
+        if text:
+            ans = tokenizer.encode(" " + text, add_special_tokens=False)
+            if ans:
+                suffix = torch.cat([suffix, torch.tensor([ans], dtype=torch.long)], dim=1)
+                n_answer = len(ans)
+    task = str(row.get("_task", row.get("task", "?")))
+    return Example(id=f"{bench_name}/{task}/row{int(row.get('_row', 0))}", ctx_ids=ctx, suffix_ids=suffix,
+                   meta={"format": "benchmark", "benchmark": bench_name, "task": task, "row": int(row.get("_row", 0)),
+                         "region": region, "n_question_tokens": n_question, "n_answer_tokens": n_answer,
+                         "context_tokens": int(ctx.shape[1])})
+
+
+def benchmark_examples(bench_name: str, subsets: Optional[List[str]], tokenizer, *, pipeline, rows_per_task: int = 2,
+                       pool_rows: int = 100, seed: int = 0, region: str = "question_answer",
+                       use_chat_template: bool = True, strip_auto_system_block: bool = True,
+                       request_offset: int = 0) -> Tuple[List[Example], WindowStats]:
+    rows = benchmark_rows(bench_name, subsets, pool_rows=pool_rows, rows_per_task=rows_per_task, seed=seed,
+                          request_offset=request_offset)
+    stats = WindowStats(n_rows=len(rows), format="benchmark", suffix_mode=region)
+    examples: List[Example] = []
+    for row in rows:
+        ex = benchmark_example(row, tokenizer, pipeline=pipeline, bench_name=bench_name, region=region,
+                               use_chat_template=use_chat_template, strip_auto_system_block=strip_auto_system_block)
+        examples.append(ex)
+        stats.n_used += 1
+        stats.context_tokens += ex.context_len
+        stats.suffix_tokens += ex.suffix_len
+        stats.ids.append(ex.id)
+    return examples, stats
+
+
 def assert_disjoint(train: List[Example], val: List[Example]) -> None:
     """Validation windows must come from different rows AND different text than training."""
     tid = {e.id for e in train}

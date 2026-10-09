@@ -94,7 +94,8 @@ For the full field reference, see [eval_harness/config.py](eval_harness/config.p
 ### Evaluating a trained weight delta (`llm_kwargs.weight_delta`)
 
 The hidden-state KV-recovery branch (`eval_harness/kv_recovery/`, see
-[docs/hidden_state_recovery_plan.md](docs/hidden_state_recovery_plan.md)) stores only the
+[docs/hidden_state_recovery_plan.md](docs/hidden_state_recovery_plan.md), reproduction recipe in
+[docs/kv_recovery_reproduce.md](docs/kv_recovery_reproduce.md)) stores only the
 trained tensors of a model as a lightweight delta checkpoint. Any `hf` / `research` run can
 evaluate such a delta by adding
 
