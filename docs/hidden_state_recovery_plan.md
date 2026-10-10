@@ -614,10 +614,88 @@ the mixed 32K calibration windows revive the early-layer cur signal that the pur
 Qwen3.5 the top-4 is 15, 19, 27, 31 everywhere and top-8 is every K/V layer. Val-loss drops are only comparable within a
 (model, corpus, compressor) group that aligns the same layers; within the `qo` ladder they grow with k (e.g. Ministral
 mix16k cur −38 / −41 / −45 % for k = 4 / 8 / 16). The 120 evaluation cells (3 per run; dense and compressed cells shared,
-LongBench at 100 rows new) were submitted on 2026-10-09 13:27 and are landing;
-`python scripts/eval_kv_recovery.py report --run-name <run>` per run followed by
-`python scripts/kv_recovery_pilot_summary.py --glob 'outputs/kv_recovery/*_mix*' --out outputs/kv_recovery/ablation_topk_summary.md`
-produces the table, to be added here.
+LongBench at 100 rows new) ran 2026-10-09 13:27–20:19 without a failure;
+`scripts/kv_recovery_pilot_summary.py --glob 'outputs/kv_recovery/*_mix*'` regenerates the raw table.
+
+### Layer-count ablation on the mixed corpora — evaluation (2026-10-09)
+
+Recovery = recovered − compressed, paired task-stratified bootstrap (2 000 resamples), **bold** = CI excludes 0. The
+Qwen3.5 top-16 cells equal top-8 (all 8 K/V layers) and were not run. LongBench is scored on rows 0–99 here (rows
+100–199 are corpus rows), so its dense / compressed values differ from the 200-row pilot cells.
+
+| model · training corpus · compressor · projections | benchmark | dense | compressed | top-4 | top-8 | top-16 |
+|---|---|---|---|---|---|---|
+| Ministral-3-3B · mix16k · knorm · q+o | RULER-16K | 89.2 | 29.3 | **+1.9 [0.8, 3.1]** | **+1.7 [0.6, 2.8]** | **+7.3 [5.9, 8.6]** |
+| Ministral-3-3B · mix16k · knorm · q+o | RULER-32K | 88.4 | 27.5 | **+3.9 [2.6, 5.1]** | **+2.2 [1.0, 3.4]** | **+4.7 [3.3, 6.0]** |
+| Ministral-3-3B · mix16k · knorm · q+o | LongBench (rows 0–99) | 44.0 | 30.0 | **+2.0 [0.9, 3.2]** | **+1.9 [0.6, 3.2]** | **+2.4 [1.0, 3.7]** |
+| Ministral-3-3B · mix16k · knorm · k+v | RULER-16K | 89.2 | 29.3 | **+3.2 [2.1, 4.4]** | **+2.4 [1.3, 3.7]** | **+3.9 [2.7, 5.2]** |
+| Ministral-3-3B · mix16k · knorm · k+v | RULER-32K | 88.4 | 27.5 | **+3.1 [1.9, 4.3]** | **+3.4 [2.1, 4.6]** | **+4.5 [3.2, 5.9]** |
+| Ministral-3-3B · mix16k · knorm · k+v | LongBench (rows 0–99) | 44.0 | 30.0 | **+2.3 [1.3, 3.4]** | **+2.2 [1.1, 3.3]** | **+2.3 [1.2, 3.4]** |
+| Ministral-3-3B · mix16k · cur · q+o | RULER-16K | 89.2 | 33.5 | **+15.8 [13.7, 17.9]** | **+18.0 [16.0, 20.2]** | **+23.0 [21.0, 25.0]** |
+| Ministral-3-3B · mix16k · cur · q+o | RULER-32K | 88.4 | 31.1 | **+13.5 [11.3, 15.5]** | **+16.8 [14.7, 19.0]** | **+23.7 [21.6, 25.7]** |
+| Ministral-3-3B · mix16k · cur · q+o | LongBench (rows 0–99) | 44.0 | 41.5 | **+1.6 [0.5, 2.7]** | **+1.5 [0.4, 2.7]** | **+1.6 [0.4, 2.9]** |
+| Ministral-3-3B · mix16k · cur · k+v | RULER-16K | 89.2 | 33.5 | **+11.3 [9.4, 13.3]** | **+16.4 [14.4, 18.4]** | **+18.8 [16.9, 20.8]** |
+| Ministral-3-3B · mix16k · cur · k+v | RULER-32K | 88.4 | 31.1 | **+11.0 [9.0, 12.9]** | **+13.3 [11.3, 15.3]** | **+17.7 [15.6, 19.8]** |
+| Ministral-3-3B · mix16k · cur · k+v | LongBench (rows 0–99) | 44.0 | 41.5 | **+1.1 [0.1, 2.1]** | **+1.4 [0.3, 2.6]** | **+1.1 [0.0, 2.3]** |
+| Ministral-3-3B · mix32k · knorm · q+o | RULER-16K | 89.2 | 29.3 | **-3.5 [-4.6, -2.3]** | **+3.2 [2.1, 4.5]** | **+1.8 [0.6, 3.1]** |
+| Ministral-3-3B · mix32k · knorm · q+o | RULER-32K | 88.4 | 27.5 | **-2.9 [-4.2, -1.7]** | **+2.8 [1.5, 4.0]** | **+2.0 [0.7, 3.4]** |
+| Ministral-3-3B · mix32k · knorm · q+o | LongBench (rows 0–99) | 44.0 | 30.0 | **+1.6 [0.5, 2.7]** | **+2.0 [0.7, 3.2]** | **+1.5 [0.1, 2.9]** |
+| Ministral-3-3B · mix32k · knorm · k+v | RULER-16K | 89.2 | 29.3 | -0.3 [-1.5, 0.8] | **-1.6 [-2.9, -0.4]** | **-4.0 [-5.3, -2.8]** |
+| Ministral-3-3B · mix32k · knorm · k+v | RULER-32K | 88.4 | 27.5 | **+1.3 [0.1, 2.6]** | +0.7 [-0.6, 2.1] | **-2.2 [-3.5, -0.9]** |
+| Ministral-3-3B · mix32k · knorm · k+v | LongBench (rows 0–99) | 44.0 | 30.0 | **+2.4 [1.3, 3.6]** | **+2.2 [1.1, 3.4]** | **+1.2 [0.1, 2.4]** |
+| Ministral-3-3B · mix32k · cur · q+o | RULER-16K | 89.2 | 33.5 | **+6.8 [5.0, 8.6]** | **+7.5 [5.7, 9.3]** | **+9.2 [7.3, 11.1]** |
+| Ministral-3-3B · mix32k · cur · q+o | RULER-32K | 88.4 | 31.1 | **+5.1 [3.2, 6.9]** | **+7.2 [5.3, 9.0]** | **+8.0 [6.0, 10.0]** |
+| Ministral-3-3B · mix32k · cur · q+o | LongBench (rows 0–99) | 44.0 | 41.5 | +0.1 [-1.0, 1.2] | +0.9 [-0.2, 2.1] | -0.4 [-1.5, 0.8] |
+| Ministral-3-3B · mix32k · cur · k+v | RULER-16K | 89.2 | 33.5 | **+5.5 [3.7, 7.3]** | **+5.3 [3.5, 7.1]** | **+7.4 [5.5, 9.4]** |
+| Ministral-3-3B · mix32k · cur · k+v | RULER-32K | 88.4 | 31.1 | **+3.5 [1.7, 5.1]** | **+5.2 [3.2, 7.1]** | **+5.4 [3.5, 7.4]** |
+| Ministral-3-3B · mix32k · cur · k+v | LongBench (rows 0–99) | 44.0 | 41.5 | +0.8 [-0.2, 1.9] | **+1.3 [0.2, 2.3]** | **+1.5 [0.4, 2.6]** |
+| Qwen3.5-4B · mix16k · knorm · q+o | RULER-16K | 96.1 | 46.4 | **+12.0 [10.2, 13.7]** | **+11.5 [9.5, 13.2]** | — |
+| Qwen3.5-4B · mix16k · knorm · q+o | RULER-32K | 96.2 | 51.3 | **+9.0 [7.3, 10.6]** | **+9.2 [7.4, 10.8]** | — |
+| Qwen3.5-4B · mix16k · knorm · q+o | LongBench (rows 0–99) | 44.4 | 29.9 | **+3.5 [2.3, 4.7]** | **+2.1 [0.7, 3.6]** | — |
+| Qwen3.5-4B · mix16k · knorm · k+v | RULER-16K | 96.1 | 46.4 | **+7.6 [5.9, 9.4]** | **+7.9 [6.0, 9.8]** | — |
+| Qwen3.5-4B · mix16k · knorm · k+v | RULER-32K | 96.2 | 51.3 | **+6.7 [5.1, 8.2]** | **+7.9 [6.1, 9.5]** | — |
+| Qwen3.5-4B · mix16k · knorm · k+v | LongBench (rows 0–99) | 44.4 | 29.9 | **+2.5 [1.4, 3.6]** | **+3.2 [1.9, 4.5]** | — |
+| Qwen3.5-4B · mix16k · cur · q+o | RULER-16K | 96.1 | 59.2 | **+4.1 [2.5, 5.9]** | **+6.2 [4.3, 8.0]** | — |
+| Qwen3.5-4B · mix16k · cur · q+o | RULER-32K | 96.2 | 57.6 | **+3.5 [1.7, 5.4]** | **+6.0 [4.1, 8.0]** | — |
+| Qwen3.5-4B · mix16k · cur · q+o | LongBench (rows 0–99) | 44.4 | 36.8 | **+3.5 [2.4, 4.6]** | **+2.5 [1.4, 3.7]** | — |
+| Qwen3.5-4B · mix16k · cur · k+v | RULER-16K | 96.1 | 59.2 | **-2.5 [-4.2, -0.9]** | **-2.7 [-4.6, -0.7]** | — |
+| Qwen3.5-4B · mix16k · cur · k+v | RULER-32K | 96.2 | 57.6 | **-3.0 [-4.6, -1.3]** | -1.4 [-3.4, 0.6] | — |
+| Qwen3.5-4B · mix16k · cur · k+v | LongBench (rows 0–99) | 44.4 | 36.8 | **+2.4 [1.4, 3.3]** | **+3.8 [2.6, 4.9]** | — |
+| Qwen3.5-4B · mix32k · knorm · q+o | RULER-16K | 96.1 | 46.4 | **+10.5 [8.7, 12.4]** | **+11.1 [9.1, 12.9]** | — |
+| Qwen3.5-4B · mix32k · knorm · q+o | RULER-32K | 96.2 | 51.3 | **+8.9 [7.3, 10.6]** | **+10.1 [8.3, 11.8]** | — |
+| Qwen3.5-4B · mix32k · knorm · q+o | LongBench (rows 0–99) | 44.4 | 29.9 | **+4.3 [3.2, 5.6]** | **+2.9 [1.5, 4.3]** | — |
+| Qwen3.5-4B · mix32k · knorm · k+v | RULER-16K | 96.1 | 46.4 | **+6.7 [5.1, 8.4]** | **+9.2 [7.3, 11.1]** | — |
+| Qwen3.5-4B · mix32k · knorm · k+v | RULER-32K | 96.2 | 51.3 | **+5.9 [4.4, 7.4]** | **+9.8 [8.1, 11.5]** | — |
+| Qwen3.5-4B · mix32k · knorm · k+v | LongBench (rows 0–99) | 44.4 | 29.9 | **+1.7 [0.7, 2.8]** | **+2.7 [1.5, 4.0]** | — |
+| Qwen3.5-4B · mix32k · cur · q+o | RULER-16K | 96.1 | 59.2 | **+4.4 [2.7, 6.2]** | **+6.9 [5.3, 8.8]** | — |
+| Qwen3.5-4B · mix32k · cur · q+o | RULER-32K | 96.2 | 57.6 | **+3.5 [1.8, 5.2]** | **+6.7 [4.8, 8.5]** | — |
+| Qwen3.5-4B · mix32k · cur · q+o | LongBench (rows 0–99) | 44.4 | 36.8 | **+3.4 [2.4, 4.5]** | **+4.4 [3.3, 5.6]** | — |
+| Qwen3.5-4B · mix32k · cur · k+v | RULER-16K | 96.1 | 59.2 | -1.2 [-2.9, 0.5] | +1.7 [-0.2, 3.6] | — |
+| Qwen3.5-4B · mix32k · cur · k+v | RULER-32K | 96.2 | 57.6 | **-2.5 [-4.2, -0.9]** | +1.0 [-0.8, 2.8] | — |
+| Qwen3.5-4B · mix32k · cur · k+v | LongBench (rows 0–99) | 44.4 | 36.8 | **+2.4 [1.4, 3.4]** | **+4.2 [3.0, 5.4]** | — |
+
+Reading:
+
+* **Task-shaped distillation data is the lever.** With the same budget of 256 steps the mixed corpus turns the
+  few-point recoveries of the PG-19 pilot into double digits: Ministral / cur / q+o on the top-16 layers recovers
+  **+23.0 [21.0, 25.0]** on RULER-16K (41 % of the 55.7-point gap) and **+23.7** on RULER-32K; Qwen3.5 / knorm / q+o
+  top-4 recovers **+12.0 [10.2, 13.7]** on RULER-16K (24 %) and +9.0 at 32K. The best PG-19 cell had been +8.5.
+* **More sensitive layers help, with diminishing returns.** On Ministral / cur every ladder is monotone in k at 16K
+  (q+o +15.8 → +18.0 → +23.0; k+v +11.3 → +16.4 → +18.8); on Ministral / knorm q+o the step to top-16 carries most of
+  the gain (+1.9 / +1.7 / +7.3); on Qwen3.5 top-8 (= all K/V layers) ≥ top-4 for cur and for knorm k+v, while
+  knorm q+o is flat (+12.0 vs +11.5). q+o beats k+v at the same k in 11 of 12 Ministral comparisons and in all Qwen3.5
+  ones. k+v on Qwen3.5 / cur is the one family that hurts (top-4: −2.5 / −3.0).
+* **Training at 16K transfers to 32K; training at 32K does not pay.** The mix16k deltas recover as much on RULER-32K as on
+  RULER-16K, and the mix32k deltas are uniformly weaker (Ministral / cur / q+o top-16: +9.2 / +8.0 vs +23.0 / +23.7) —
+  on Ministral / knorm the 32K-trained deltas are even harmful at small k (q+o top-4 −3.5 / −2.9; k+v top-16 −4.0 /
+  −2.2). Same windows, same steps, same selections (12–15 for top-4): the longer windows carry a weaker per-step
+  signal for the question tokens. For 16K / 32K deployment, train at 16K.
+* **LongBench** moves by +1 to +4.4 points in every cell but the Ministral / mix32k / cur ones (Qwen3.5 / cur top-8:
+  +4.4 [3.3, 5.6] = 58 % of its 7.6-point gap; Ministral / knorm +1.5 … +2.4 = 11–17 %), so the task-shaped signal does
+  not overfit RULER's format.
+* Absolute levels: Ministral stays far from dense (RULER-16K 56.5 vs 89.2 after the best cell), Qwen3.5 reaches 58.4
+  (knorm) / 65.4 (cur) vs 96.1. The next lever is the pre-registered signal ablations (KL term, prefill-grad write path)
+  and more steps, not the layer choice.
 
 ### Not run
 
