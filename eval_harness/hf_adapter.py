@@ -103,7 +103,17 @@ class HFAdapter:
         if load_kwargs.pop("dequantize_fp8", False):
             _apply_fp8_dequantize(model, load_kwargs)
 
+        # Opt-in: apply a trained weight delta (eval_harness/kv_recovery checkpoint)
+        # to the freshly loaded base weights. Popped like ``dequantize_fp8`` so it
+        # never reaches ``from_pretrained``; it stays in EvalConfig.llm_kwargs, so
+        # config.yaml records it and run_spec fingerprints it (``load_flags``).
+        # Applied on the CPU copy, before ``.to("cuda")``.
+        weight_delta = load_kwargs.pop("weight_delta", None)
+
         self._model = _load_model(model, load_kwargs)
+        self._weight_delta_meta: Optional[dict[str, Any]] = None
+        if weight_delta:
+            self._weight_delta_meta = _apply_weight_delta(self._model, weight_delta)
         if torch.cuda.is_available():
             self._model = self._model.to("cuda")
         self._model.eval()
@@ -255,6 +265,27 @@ def _resolve_dtype(dtype: str) -> Optional[torch.dtype]:
         "bfloat16": torch.bfloat16, "bf16": torch.bfloat16,
         "float32": torch.float32, "fp32": torch.float32,
     }.get(dtype)
+
+
+def _apply_weight_delta(model: torch.nn.Module, spec: Any) -> dict[str, Any]:
+    """Apply a hidden-state KV-recovery delta (``eval_harness.kv_recovery.checkpoint``).
+
+    ``spec`` is the checkpoint directory (str) or ``{"path": str, "sha256": str|None,
+    "strict": bool}``. The loader verifies that every target tensor still holds the
+    original bytes the delta was trained from (so a double application or a wrong base
+    raises) and, when given, that the checkpoint file matches ``sha256``.
+    """
+    from .kv_recovery.checkpoint import apply_delta
+
+    if isinstance(spec, str):
+        spec = {"path": spec}
+    if not isinstance(spec, dict) or not spec.get("path"):
+        raise ValueError(f"llm_kwargs.weight_delta must be a path or {{'path': ..., 'sha256': ...}}, got {spec!r}")
+    info = apply_delta(model, spec["path"], strict=bool(spec.get("strict", True)),
+                       expected_sha256=spec.get("sha256"))
+    logger.info("Applied weight delta %s (%d tensors, sha256 %s)", spec["path"], len(info["applied"]),
+                str(info.get("weights_sha256", ""))[:12])
+    return info
 
 
 def _apply_fp8_dequantize(model_name: str, load_kwargs: dict[str, Any]) -> None:

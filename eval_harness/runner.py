@@ -135,6 +135,15 @@ class EvalRunner:
             torch.backends.cuda.enable_mem_efficient_sdp(False)
             torch.backends.cuda.enable_flash_sdp(True)
             torch.backends.cuda.enable_math_sdp(True)
+            # The cuDNN SDPA backend (preferred on Hopper for bf16 in recent
+            # torch) is NOT run-to-run reproducible: with it enabled, repeated
+            # greedy generations of the same prompt differed within one process
+            # on H200 (kv_compression_adaptation, 2026-09: 80/520 RULER
+            # generations changed between two runs). Disable it so
+            # ``deterministic=True`` keeps only flash + math, both of which
+            # reproduce bit-for-bit across jobs and nodes.
+            if hasattr(torch.backends.cuda, "enable_cudnn_sdp"):
+                torch.backends.cuda.enable_cudnn_sdp(False)
 
     def _build_prompt(self, context: str, question: str, answer_prefix: str) -> str:
         # Match sparse-attention-hub request assembly for RULER benchmarks.

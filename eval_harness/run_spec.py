@@ -38,7 +38,10 @@ SPEC_SCHEMA_VERSION = 2
 # Global behavior version for shared machinery (research pipeline, RoPE handling,
 # prompt assembly) that isn't owned by one component. Bump to force a rerun of
 # everything after a cross-cutting behavior change. Folds into the barcode.
-FRAMEWORK_VERSION = 1
+# 2 (2026-10): deterministic=True now also disables the cuDNN SDPA backend
+# (runner._enable_determinism), which changes the attention kernel set of
+# deterministic runs on Hopper.
+FRAMEWORK_VERSION = 2
 
 # Keys present in the receipt but NOT part of the identity barcode: the barcode
 # itself, the record-keeping schema version, and the code-provenance metadata

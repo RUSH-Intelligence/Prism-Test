@@ -1,0 +1,161 @@
+# ============================================================================
+# Initial experiment matrix (spec §24) — expanded by scripts/kv_recovery_matrix.py
+# ============================================================================
+#   python scripts/kv_recovery_matrix.py --matrix configs/kv_recovery/matrix.yaml --dry-run
+#   python scripts/kv_recovery_matrix.py --primary --submit        # 16K x ratio 0.75 only (24 runs, done cells skipped)
+#   python scripts/kv_recovery_matrix.py --preset ablation_topk --dry-run   # top-4/8/16 layer ablation on the mixed corpus (40 runs)
+#   python scripts/kv_recovery_matrix.py --primary --trainable qo_sens4,kv_sens16 --submit   # the sensitivity-selected cells
+#   python scripts/kv_recovery_matrix.py --models ministral_3b --compressors cur --trainable qo_last4 --submit
+#
+# Every cell = <base config> + the `--set` overrides of its axes, run_name =
+# <model>_<context>_<compressor>_r<ratio>_<trainable>. Nothing is submitted
+# without --submit. Hyper-parameters are PRE-REGISTERED here (not tuned on any
+# benchmark); the only selection signal allowed is the validation alignment loss.
+
+base_configs:                      # <key>: path, or {config: path, contexts: [...]} to restrict the contexts a card runs with
+  ministral_3b: {config: configs/kv_recovery/ministral_3b.yaml, contexts: [16k, 32k]}
+  qwen35_4b: {config: configs/kv_recovery/qwen35_4b.yaml, contexts: [16k, 32k]}
+  ministral_3b_mix: {config: configs/kv_recovery/ministral_3b_mix.yaml, contexts: [mix16k, mix32k]}
+  qwen35_4b_mix: {config: configs/kv_recovery/qwen35_4b_mix.yaml, contexts: [mix16k, mix32k]}
+
+contexts:
+  16k: {data.max_length: 16384}
+  32k: {data.max_length: 32768}
+  # mixed distillation corpora (scripts/prepare_kv_recovery_mix.py): RULER rows outside the evaluated pool,
+  # LongBench rows 100-199 (evaluation on rows 0-99), PG-19, FineWeb-Edu; qa contexts capped at the window length
+  mix16k: {data.path: data/kv_recovery/mix16k_train.jsonl, data.val_path: data/kv_recovery/mix16k_val.jsonl,
+           data.max_length: 16384, data.max_context_tokens: 16384}
+  mix32k: {data.path: data/kv_recovery/mix32k_train.jsonl, data.val_path: data/kv_recovery/mix32k_val.jsonl,
+           data.max_length: 32768, data.max_context_tokens: 32768}
+
+compressors: [knorm, cur]          # -> kv_compression.kv_compressor
+ratios: [0.75, 0.5]                # -> kv_compression.compression_ratio (fraction PRUNED)
+
+# Budget-matched trainable subsets. Two families:
+#   static   (spec §24: last-1, last-2 blocks, Q/O on the last 4 attention layers, K/V on the last 16)
+#   sensitivity-selected (paper §"Identifying Compression-Sensitive Layers"): the SAME projections and the
+#            SAME layer count, but the layers are the top-k by E_l = ||H_dense - H_comp||_F / (||H_dense||_F + eps)
+#            measured on held-out calibration windows (trainable.layers: sensitivity) -> a controlled
+#            comparison "heuristic position" vs "measured misalignment" at an identical parameter budget.
+# Projections are restricted to a layer subset so the parameter budgets stay comparable (q+o over ALL
+# 26 Ministral layers would be 654M = 19 % of the LM):
+#   Ministral-3-3B: last1 116M | last2 233M | qo_last4 (layers 22-25) 100.7M | kv_attn (last 16 attn layers) 101M
+#                   qo_sens4 (top-4 sensitive layers) 100.7M | kv_sens16 (top-16 sensitive layers) 101M
+#   Qwen3.5-4B:     last1 (full-attn block 31) | last2 (30 linear + 31) | qo_last4 (19,23,27,31) | kv_attn (all 8 full layers)
+#                   qo_sens4 (top-4 of the 8 full layers) | kv_sens16 -> top-4 of the 8 full layers (override below; top-16 == all)
+trainable:
+  last1:
+    trainable.strategy: last_n_blocks
+    trainable.n: 1
+    trainable.layers: all
+    alignment.layers.strategy: last_n
+    alignment.layers.n: 1
+  last2:
+    trainable.strategy: last_n_blocks
+    trainable.n: 2
+    trainable.layers: all
+    alignment.layers.strategy: last_n
+    alignment.layers.n: 2
+  qo_last4:
+    trainable.strategy: attention_projections
+    trainable.modules: [q_proj, o_proj]
+    trainable.layers: "last_n:4"
+    alignment.layers.strategy: from_first_trainable
+  kv_attn:
+    trainable.strategy: attention_projections
+    trainable.modules: [k_proj, v_proj]
+    trainable.layers: "last_n:16"
+    alignment.layers.strategy: from_first_trainable
+  qo_sens4:
+    trainable.strategy: attention_projections
+    trainable.modules: [q_proj, o_proj]
+    trainable.layers: sensitivity
+    trainable.sensitivity.top_k: 4
+    trainable.sensitivity.num_examples: 8
+    alignment.layers.strategy: from_first_trainable
+  kv_sens16:
+    trainable.strategy: attention_projections
+    trainable.modules: [k_proj, v_proj]
+    trainable.layers: sensitivity
+    trainable.sensitivity.top_k: 16
+    trainable.sensitivity.num_examples: 8
+    alignment.layers.strategy: from_first_trainable
+  # top-k ladder for the layer-count ablation (same projections, k = 4 / 8 / 16 most sensitive layers)
+  qo_sens8:
+    trainable.strategy: attention_projections
+    trainable.modules: [q_proj, o_proj]
+    trainable.layers: sensitivity
+    trainable.sensitivity.top_k: 8
+    alignment.layers.strategy: from_first_trainable
+  qo_sens16:
+    trainable.strategy: attention_projections
+    trainable.modules: [q_proj, o_proj]
+    trainable.layers: sensitivity
+    trainable.sensitivity.top_k: 16
+    alignment.layers.strategy: from_first_trainable
+  kv_sens4:
+    trainable.strategy: attention_projections
+    trainable.modules: [k_proj, v_proj]
+    trainable.layers: sensitivity
+    trainable.sensitivity.top_k: 4
+    alignment.layers.strategy: from_first_trainable
+  kv_sens8:
+    trainable.strategy: attention_projections
+    trainable.modules: [k_proj, v_proj]
+    trainable.layers: sensitivity
+    trainable.sensitivity.top_k: 8
+    alignment.layers.strategy: from_first_trainable
+
+# Per-model overrides of a trainable subset (applied on top of the generic ones); ``skip: true`` drops the cell.
+model_overrides:
+  qwen35_4b:
+    kv_attn:
+      trainable.layers: all          # all 8 full-attention layers (42M)
+    kv_sens16:
+      trainable.sensitivity.top_k: 4 # 8 full-attention layers in total: top-16 would equal kv_attn; top-4 is a real selection
+  qwen35_4b_mix:                     # 8 K/V layers: top-8 is already every layer, top-16 would duplicate it
+    qo_sens16: {skip: true}
+    kv_sens16: {skip: true}
+
+# Pre-registered hyper-parameters (identical for every cell).
+hyperparameters:
+  optim.learning_rate: 1.0e-5
+  optim.grad_accum: 4
+  optim.epochs: 1
+  data.num_train_examples: 256
+  data.num_val_examples: 16
+  data.suffix_length: 512
+
+# Presets (``--preset NAME``; ``--primary`` == ``--preset primary``). A preset may fix base_configs, contexts,
+# compressors, ratios, trainable and add hyperparameters on top of the pre-registered ones.
+# The pilot preset: 16K, ratio 0.75, both compressors, both PG-19 cards; six subsets (24 runs; the 16 static
+# ones were run 2026-10-06, the sensitivity-selected ones were added by the layer-selection change).
+primary:
+  base_configs: [ministral_3b, qwen35_4b]
+  contexts: [16k]
+  ratios: [0.75]
+  trainable: [last1, last2, qo_last4, kv_attn, qo_sens4, kv_sens16]
+
+# Layer-count ablation on the MIXED corpus: how many of the most compression-sensitive layers to calibrate
+# (top-4 / 8 / 16, q+o and k+v) at 16K and 32K, ratio 0.75, both compressors, both models:
+# Ministral 2 contexts x 2 compressors x 6 subsets = 24 runs; Qwen3.5 2 x 2 x 4 (top-16 == top-8 == all 8 K/V layers) = 16 runs.
+ablation_topk:
+  base_configs: [ministral_3b_mix, qwen35_4b_mix]
+  contexts: [mix16k, mix32k]
+  compressors: [knorm, cur]
+  ratios: [0.75]
+  trainable: [qo_sens4, qo_sens8, qo_sens16, kv_sens4, kv_sens8, kv_sens16]
+  hyperparameters:
+    data.num_train_examples: 1024
+    data.num_val_examples: 32
+    trainable.sensitivity.num_examples: 16
+
+# The pilot cell (ablations run on it only, one axis at a time).
+pilot: {model: ministral_3b, context: 16k, compressor: cur, ratio: 0.75, trainable: qo_last4}
+
+ablations:
+  relative_mse: {alignment.loss: relative_mse}
+  first_k64: {alignment.positions.strategy: first_k, alignment.positions.n: 64}
+  plus_kl: {loss.kl_weight: 0.5, loss.temperature: 2.0}
+  prefill_grad_kv: {trainable.strategy: attention_projections, trainable.modules: [k_proj, v_proj], trainable.layers: "last_n:16", student.prefill_grad: true}
+  recall_suffix: {data.suffix_mode: recall}

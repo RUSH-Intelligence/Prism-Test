@@ -32,6 +32,20 @@ CORE_MODULES = [
     "eval_harness.profiling.audit",
     "eval_harness.profiling.cell",
     "eval_harness.profiling.runner",
+    # Hidden-state KV recovery (CPU-importable; torch-heavy pieces import lazily).
+    "eval_harness.kv_recovery",
+    "eval_harness.kv_recovery.config",
+    "eval_harness.kv_recovery.model_spec",
+    "eval_harness.kv_recovery.provenance",
+    "eval_harness.kv_recovery.hidden_states",
+    "eval_harness.kv_recovery.alignment",
+    "eval_harness.kv_recovery.trainable",
+    "eval_harness.kv_recovery.student",
+    "eval_harness.kv_recovery.data",
+    "eval_harness.kv_recovery.trainer",
+    "eval_harness.kv_recovery.checkpoint",
+    "eval_harness.kv_recovery.metrics",
+    "eval_harness.kv_recovery.eval_configs",
 ]
 
 OPTIONAL_MODULES = {
